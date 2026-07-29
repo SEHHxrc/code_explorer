@@ -9,22 +9,25 @@
       </template>
       <el-form :inline="true" class="demo-form-inline">
         <el-form-item label="Git 仓库链接">
-          <el-input v-model="repoUrl" placeholder="https://github.com/xxx/xxx" style="width: 300px" />
+          <el-input v-model="repoUrl" placeholder="https://github.com/xxx/xxx" style="width: 300px" clearable />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="loading" @click="handleAnalyzeGit">分析 Git 项目</el-button>
+          <!-- 清空重置按钮 -->
+          <el-button v-if="fileTree.length > 0" type="danger" plain @click="handleReset">清空当前项目</el-button>
         </el-form-item>
       </el-form>
 
       <el-divider>或者本地上传</el-divider>
 
       <el-upload
-          class="upload-demo"
-          drag
-          action="#"
-          :http-request="handleCustomUpload"
-          :limit="1"
-          :show-file-list="false"
+        class="upload-demo"
+        drag
+        action="#"
+        :auto-upload="false"
+        :http-request="handleCustomUpload"
+        :on-change="handleFileChange"
+        :limit="1"
       >
         <el-icon class="el-icon--upload"><upload-filled /></el-icon>
         <div class="el-upload__text">
@@ -138,6 +141,8 @@ const filterText = ref('')
 const treeRef = ref()
 const selectedNode = ref(null)
 const pluginResults = ref([])
+// 保存当前分析成功的项目 ID
+const currentProjectId = ref('')
 
 // Element Plus 树形控件字段映射
 const defaultProps = {
@@ -147,7 +152,7 @@ const defaultProps = {
 
 // 监听过滤输入
 watch(filterText, (val) => {
-  treeRef.value!.filter(val)
+  treeRef.value?.filter(val)
 })
 
 const filterNode = (value, data) => {
@@ -169,6 +174,7 @@ const handleAnalyzeGit = async () => {
     const res = await axios.post('http://localhost:8000/api/projects/analyze', formData)
     if (res.data.code === 200) {
       fileTree.value = res.data.data.file_tree
+      currentProjectId.value = res.data.data.project_id
       ElMessage.success(`项目加载成功！已安全清洗 ${res.data.data.sanitize_report.filtered_out_files} 个违规/噪音文件。`)
     } else {
       ElMessage.error(res.data.message)
@@ -180,22 +186,32 @@ const handleAnalyzeGit = async () => {
   }
 }
 
-// 2. 处理本地 Zip 上传请求
-const handleCustomUpload = async (options) => {
+// 2. 处理本地 Zip 上传请求, 当文件被选择或拖入时触发
+const handleFileChange = (uploadFile) => {
+  if (uploadFile && uploadFile.raw) {
+    handleCustomUpload(uploadFile)
+  }
+}
+
+// 对应修改后的自定义上传函数
+const handleCustomUpload = async (uploadItem) => {
   loading.value = true
   try {
     const formData = new FormData()
-    formData.append('file', options.file)
+    // 兼容 el-upload 的 raw 文件对象
+    const file = uploadItem.raw || uploadItem
+    formData.append('file', file)
 
     const res = await axios.post('http://localhost:8000/api/projects/analyze', formData)
     if (res.data.code === 200) {
       fileTree.value = res.data.data.file_tree
+      currentProjectId.value = res.data.data.project_id
       ElMessage.success(`本地项目上传并清洗成功！`)
     } else {
       ElMessage.error(res.data.message)
     }
   } catch (error) {
-    ElMessage.error('上传失败')
+    ElMessage.error('上传失败，请检查后端服务')
   } finally {
     loading.value = false
   }
@@ -217,6 +233,28 @@ const simulateVulnPlugin = () => {
     ]
     ElMessage.success('插件执行完毕，已按可能性从高到低排序！')
   }, 1000)
+}
+
+// 前后端同步清理项目
+const handleReset = async () => {
+  if (currentProjectId.value) {
+    try {
+      // 调用后端清理接口释放服务器资源
+      await axios.delete(`http://localhost:8000/api/projects/clear/${currentProjectId.value}`)
+    } catch (e) {
+      console.error('Backend cleanup notification failed:', e)
+    }
+  }
+
+  // 重置前端状态
+  fileTree.value = []
+  repoUrl.value = ''
+  selectedNode.value = null
+  pluginResults.value = []
+  filterText.value = ''
+  currentProjectId.value = ''
+
+  ElMessage.info('已清空当前项目，服务器临时缓存和前端视图均已释放。')
 }
 </script>
 
