@@ -5,16 +5,16 @@ from sqlalchemy.orm import Session
 from backend.app.models import ProjectModel
 
 
-def _remove_readonly(func, path, excinfo):
-  """错误处理器：当 shutil.rmtree 因为 Windows 只读权限报错时，
+def _remove_readonly(func, path):
+    """错误处理器：当 shutil.rmtree 因为 Windows 只读权限报错时，
 
-  强行修改文件权限为可写 (W_OK)，然后再次尝试删除。
-  """
-  try:
-    os.chmod(path, stat.S_IWRITE)
-    func(path)
-  except Exception as e:
-    print(f"[Warning] Failed to remove readonly for {path}: {e}")
+    强行修改文件权限为可写 (W_OK)，然后再次尝试删除。
+    """
+    try:
+        os.chmod(path, stat.S_IWRITE)
+        func(path)
+    except Exception as e:
+        print(f"[Warning] Failed to remove readonly for {path}: {e}")
 
 def remove_project_by_id(db: Session, project_id: str, user_id: str) -> bool:
     """清理服务：负责从数据库和本地物理沙箱中彻底移除指定项目"""
