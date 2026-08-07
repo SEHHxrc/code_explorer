@@ -5,10 +5,10 @@ from sqlalchemy.orm import Session
 from backend.app.models import ProjectModel
 
 
-def _remove_readonly(func, path):
+def _remove_readonly(func, path, excinfo):
     """错误处理器：当 shutil.rmtree 因为 Windows 只读权限报错时，
 
-    强行修改文件权限为可写 (W_OK)，然后再次尝试删除。
+    强行修改文件权限为可写 (W_OK)，然后再次尝试删除。（必须接收 3 个参数）
     """
     try:
         os.chmod(path, stat.S_IWRITE)

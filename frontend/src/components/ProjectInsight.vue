@@ -73,20 +73,48 @@
       <!-- 右侧：核心分析视图与插件扩展插槽 -->
       <div class="right-panel">
 
-        <!-- 架构视图与当前选中详情 -->
+        <!-- 宏观架构视图：点击左侧文件后显示对应的包含关系（类与函数） -->
         <el-card class="detail-card">
           <template #header>
             <div class="card-header">
-              <span>🔍 模块与代码详情视图</span>
+              <span>🔍 宏观架构视图 (当前文件的包含关系)</span>
+              <el-tag v-if="selectedNode" size="small" type="primary">{{ selectedNode.path }}</el-tag>
             </div>
           </template>
+
           <div v-if="selectedNode">
-            <p><strong>当前选中路径：</strong> {{ selectedNode.path }}</p>
-            <p><strong>类型：</strong> {{ selectedNode.is_dir ? '目录/模块' : '代码文件' }}</p>
-            <el-alert title="后续这里将渲染：1. 模块架构总结；2. 函数级依赖关系图 (NetworkX)" type="info" :closable="false" style="margin-top: 15px;" />
+            <div v-if="!selectedNode.is_dir">
+              <div v-if="fileHierarchy.length > 0">
+                <p class="arch-title">📦 该文件包含的类与函数结构：</p>
+                  <el-tree
+                    :data="fileHierarchy"
+                    :props="{ label: 'name', children: 'children' }"
+                    default-expand-all
+                    class="arch-tree"
+                  >
+                    <template #default="{ node, data }">
+                      <span class="custom-tree-node" style="display: flex; justify-content: space-between; width: 100%;">
+                        <div>
+                          <el-tag size="small" :type="data.type === 'class' ? 'success' : 'warning'" style="margin-right: 8px;">
+                            {{ data.type }}
+                          </el-tag>
+                          <span>{{ node.label }}</span>
+                        </div>
+                        <span style="color: #909399; font-size: 12px; margin-right: 15px;">Line {{ data.line }}</span>
+                      </span>
+                    </template>
+                  </el-tree>
+              </div>
+              <div v-else class="empty-tip" style="padding: 10px 0;">
+                该文件没有检测到类或函数定义（可能是纯配置或静态资源文件）。
+              </div>
+            </div>
+            <div v-else class="empty-tip" style="padding: 10px 0;">
+              您当前点击的是目录：<strong>{{ selectedNode.name }}</strong>，请点击具体的代码文件查看宏观架构。
+            </div>
           </div>
           <div v-else class="empty-tip">
-            请在左侧点击任意文件或目录查看详情
+            请在左侧点击任意代码文件，查看其对应的宏观架构与包含关系
           </div>
         </el-card>
 
@@ -160,6 +188,18 @@ const filterNode = (value, data) => {
   return data.name.toLowerCase().includes(value.toLowerCase())
 }
 
+const getTagType = (type) => {
+  switch (type) {
+    case 'class': return 'success'
+    case 'method': return 'warning'
+    case 'function': return ''
+    case 'variable': return 'primary'
+    case 'property': return 'danger'
+    case 'constant': return 'info'
+    default: return 'info'
+  }
+}
+
 // 1. 处理 Git 分析请求
 const handleAnalyzeGit = async () => {
   if (!repoUrl.value) {
@@ -175,6 +215,9 @@ const handleAnalyzeGit = async () => {
     if (res.data.code === 200) {
       fileTree.value = res.data.data.file_tree
       currentProjectId.value = res.data.data.project_id
+      // 接收后端的多语言图谱数据
+      console.log('后端返回的完整图谱数据:', res.data.data.dependency_graph)
+      dependencyGraph.value = res.data.data.dependency_graph || { nodes: [], links: [] }
       ElMessage.success(`项目加载成功！已安全清洗 ${res.data.data.sanitize_report.filtered_out_files} 个违规/噪音文件。`)
     } else {
       ElMessage.error(res.data.message)
@@ -206,6 +249,9 @@ const handleCustomUpload = async (uploadItem) => {
     if (res.data.code === 200) {
       fileTree.value = res.data.data.file_tree
       currentProjectId.value = res.data.data.project_id
+      // 接收后端的多语言图谱数据
+      console.log('后端返回的完整图谱数据:', res.data.data.dependency_graph)
+      dependencyGraph.value = res.data.data.dependency_graph || { nodes: [], links: [] }
       ElMessage.success(`本地项目上传并清洗成功！`)
     } else {
       ElMessage.error(res.data.message)
@@ -218,8 +264,91 @@ const handleCustomUpload = async (uploadItem) => {
 }
 
 // 3. 点击文件树节点
+// 保存后端返回的完整依赖图
+const dependencyGraph = ref({ nodes: [], links: [] })
+// 当前选中文件内部包含的结构化层级数据（供右侧展示）
+const fileHierarchy = ref([])
+// 点击左侧文件树节点时触发
 const handleNodeClick = (data) => {
   selectedNode.value = data
+  fileHierarchy.value = []
+
+  if (!data.is_dir && data.symbols) {
+    // data.symbols 直接就是符号列表
+    console.log('当前文件的 GitHub 风格符号:', data.symbols)
+
+    const classesMap = {}
+    const topLevelFunctions = []
+    const topLevelConstants = []
+
+    data.symbols.forEach(sym => {
+      if (sym.kind === 'class') {
+        classesMap[sym.fully_qualified_name] = {
+          name: sym.name,
+          type: 'class',
+          line: sym.extent_utf16.start.line_number,
+          children: []
+        }
+      }else if (sym.kind === 'constant') {
+        // 检查这个 constant 是属于某个类（带点号），还是顶层全局常量
+        if (sym.fully_qualified_name.includes('.')) {
+          const parts = sym.fully_qualified_name.split('.')
+          const className = parts[0]
+          const attrName = parts.slice(1).join('.')
+
+          if (classesMap[className]) {
+            classesMap[className].children.push({
+              name: attrName,
+              type: 'property', // 识别为类属性
+              line: sym.extent_utf16.start.line_number
+            })
+          }
+        } else {
+          topLevelConstants.push({
+            name: sym.name,
+            type: 'constant',
+            line: sym.extent_utf16.start.line_number
+          })
+        }
+      } else if (sym.kind === 'function') {
+        // 判断是类方法还是函数
+        if (sym.fully_qualified_name.includes('.')) {
+          const className = sym.fully_qualified_name.split('.')[0]
+          // 寻找对应的类
+          const targetClassKey = Object.keys(classesMap).find(k => k === className || k.endsWith('.' + className))
+          if (targetClassKey && classesMap[targetClassKey]) {
+            classesMap[targetClassKey].children.push({
+              name: sym.name,
+              type: 'method',
+              line: sym.extent_utf16.start.line_number
+            })
+          } else {
+            topLevelFunctions.push({
+              name: sym.name,
+              type: 'function',
+              line: sym.extent_utf16.start.line_number
+            })
+          }
+        } else {
+          topLevelFunctions.push({
+            name: sym.name,
+            type: 'function',
+            line: sym.extent_utf16.start.line_number
+          })
+        }
+      }
+    })
+
+    const resultTree = []
+    if (topLevelConstants.length > 0) {
+      resultTree.push({ name: 'Constants', type: 'category', children: topLevelConstants })
+    }
+    Object.values(classesMap).forEach(cls => resultTree.push(cls))
+    if (topLevelFunctions.length > 0) {
+      resultTree.push({ name: 'Functions', type: 'category', children: topLevelFunctions })
+    }
+    fileHierarchy.value = resultTree
+  }
 }
 
 // 4. 模拟插件运行（例如：漏洞挖掘插件）
@@ -303,5 +432,27 @@ const handleReset = async () => {
 }
 .vuln-results {
   margin-top: 15px;
+}
+.network-card {
+  min-height: 200px;
+}
+.empty-network-area {
+  color: #909399;
+  text-align: center;
+  padding: 30px;
+  background-color: #fafafa;
+  border: 1px dashed #dcdfe6;
+  border-radius: 4px;
+}
+.arch-title {
+  font-weight: bold;
+  font-size: 14px;
+  color: #303133;
+  margin-bottom: 10px;
+}
+.arch-tree {
+  background: #fcfcfc;
+  border-radius: 4px;
+  padding: 5px;
 }
 </style>

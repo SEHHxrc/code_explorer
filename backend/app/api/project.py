@@ -4,12 +4,11 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile, HTTPException
 from backend.app.core.deps import get_current_user
 from backend.app.middleware.sanitizer import ProjectSanitizer
 from backend.app.models import SessionLocal
-from backend.app.services.analyzer import build_file_tree
-from backend.app.services.git_loader import load_git_repo
-from backend.app.services.zip_loader import load_zip_file
+from backend.app.services.analyzer import build_file_tree_with_symbols
+from backend.app.services.loader import load_git_repo, load_zip_file
 from backend.app.services.project_adder import add_project_to_db
 from backend.app.services.project_cleaner import remove_project_by_id
-
+from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
 
 router = APIRouter(prefix="/api/projects", tags=["Projects"])
 
@@ -38,8 +37,20 @@ async def analyze_project(
     # 安全清洗
     sanitize_info = ProjectSanitizer.clean_directory(target_dir)
 
-    # 生成文件树
-    file_tree = build_file_tree(target_dir)
+    # 运行统一的高性能并发代码分析引擎（单次解析、双向产出）
+    try:
+        analyzer = UnifiedCodeAnalyzer(target_dir, max_workers=4)
+        analysis_result = analyzer.run_full_analysis()
+
+        file_symbols_map = analysis_result.get("file_symbols", {})
+        dependency_graph_data = analysis_result.get("dependency_graph", {})
+    except Exception as e:
+        print(f"[Analysis Error]: {e}")
+        file_symbols_map = {}
+        dependency_graph_data = {"nodes": [], "edges": []}
+
+    # 生成附带 symbols 的文件树
+    file_tree = build_file_tree_with_symbols(target_dir, file_symbols_map)
 
     # 入库
     db = SessionLocal()
@@ -52,6 +63,7 @@ async def analyze_project(
             "project_id": project_id,
             "sanitize_report": sanitize_info,
             "file_tree": file_tree,
+            "dependency_graph": dependency_graph_data,  # 包含 nodes 和 edges 的网状图谱数据
         },
     }
 
