@@ -4,14 +4,15 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
 
-def setup_exception_handler(app: FastAPI):
-    """全局异常与输出格式化
+def setup_exception_handler(app: FastAPI) -> None:
+    """向输入的 FastAPI 应用注册全局异常中间件，无返回值。
 
     目标：避免后端报错直接抛给前端，确保返回结构对前端透明、最小化信息量。
     """
 
     @app.middleware("http")
     async def global_exception_middleware(request: Request, call_next):
+        """输入请求和下游调用器，输出正常响应或脱敏后的统一 500 JSON。"""
         try:
             response = await call_next(request)
             return response

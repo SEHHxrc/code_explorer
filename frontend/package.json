@@ -6,12 +6,18 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test:unit": "node --test tests/*.test.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
+    "@sigma/edge-curve": "^3.1.0",
     "axios": "^1.18.1",
     "element-plus": "^2.14.3",
+    "graphology": "^0.26.0",
+    "graphology-layout-forceatlas2": "^0.10.1",
+    "graphology-layout-noverlap": "^0.4.2",
+    "sigma": "^3.0.3",
     "vue": "^3.5.39"
   },
   "devDependencies": {
