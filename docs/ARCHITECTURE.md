@@ -1,14 +1,16 @@
 # Code Explorer 架构与代码接口说明
 
-本文描述当前代码，而不是未来设想。GitNexus 仅是依赖图设计的参考项目，不属于本仓库，也不是运行时依赖。
+本文描述当前代码，而不是未来设想。
 
 ## 1. 系统边界
 
 ```text
 Vue 3 / Vite
-  ├─ ProjectInsight：项目导入、分析结果与概览
-  ├─ DependencyGraph：Sigma.js 图展示与布局
-  └─ AgentWorkspace：指令、事件流、工具步骤和结果
+  ├─ ProjectInsight：固定项目壳、工作区导航与项目生命周期
+  ├─ ProjectExploreWorkspace：文件、符号与 Sigma.js 依赖图
+  ├─ AgentWorkspace：指令、事件流、工具步骤和结果
+  ├─ ExperimentComparison：依赖图盲态配对实验
+  └─ ExecutionWorkspace：隔离命令、安全扫描和审计输出
             │ HTTP / SSE
             ▼
 FastAPI
@@ -16,13 +18,13 @@ FastAPI
   │                                  ├► ProjectManifestBuilder
   │                                  ├► RepoMapBuilder
   │                                  └► Artifact Store / SQLite
-  └─ agent API ─► AgentRunManager ─► ModelProvider
+  └─ agent API ─► SQLite Agent Queue ─► AgentQueueWorker ─► AgentRunManager ─► ModelProvider
                                       ├► ContextBuilder
                                       ├► Path/secret policy
                                       └► read-only ToolRegistry
 ```
 
-后端是单个 FastAPI 进程。智能体任务当前由该进程内的 `asyncio.Task` 执行，运行和事件持久化在 SQLite 中；这意味着服务重启后可读取历史事件，但不会自动恢复尚未完成的任务。
+智能体 API 只创建持久化运行与队列项。默认原型在 FastAPI 生命周期中嵌入 `AgentQueueWorker`，也可关闭后改用独立进程。排队任务可在重启后继续领取；运行任务使用租约，租约过期后安全失败而不自动重复模型调用。
 
 ## 2. 目录职责
 
@@ -55,22 +57,24 @@ manifest 和 repo map 是模型的事实底座。模型用于解释和归纳，�
 
 ## 4. 智能体数据流
 
-1. `POST /api/projects/{id}/agent/runs` 校验指令并创建运行记录。
-2. `ProjectContextBuilder.build` 读取 manifest/repo map，按字符预算形成系统上下文。
-3. `ToolRegistry` 只暴露固定的只读工具，`AgentRunRequest.max_steps` 将模型—工具循环限制在 1 至 6 步。
-4. `AgentRunManager` 调用支持工具调用的 `ModelProvider`。
-5. 模型请求、工具开始、工具结果、最终答案或错误都写为递增序号的事件。
-6. 前端通过 SSE 获取增量事件；断线后用 `after=<sequence>` 继续。
-7. 取消请求设置状态并取消进程内任务；终态为 `completed`、`failed` 或 `cancelled`。
+1. `POST /api/agent/projects/{id}/runs` 校验指令，并在一个事务中创建运行记录与队列项。
+2. `AgentQueueWorker` 原子领取最早任务、续租并读取受控项目与分析产物。
+3. `ProjectContextBuilder.build` 读取 manifest/repo map，按字符预算形成系统上下文。
+4. `ToolRegistry` 只暴露固定的只读工具，`AgentRunRequest.max_steps` 将模型—工具循环限制在 1 至 6 步。
+5. `AgentRunManager` 调用支持工具调用的 `ModelProvider`。
+6. 模型请求、工具开始、工具结果、最终答案或错误都写为递增序号的事件。
+7. 前端通过 SSE 获取增量事件；断线后用 `after=<sequence>` 继续。
+8. 取消请求写入队列；排队任务立即取消，运行任务由持有租约的 Worker 终止。终态仍为 `completed`、`failed` 或 `cancelled`。
 
-目前工具只读取已分析项目。Docker 部署、安全扫描、Shell/脚本执行尚未实现，也不应直接放进 Web 进程；建议后续拆为队列驱动的执行控制面和无特权容器工作节点。
+智能体工具仍只读取已分析项目。Docker 命令和安全扫描已拆入 execution 控制面：Web 进程只入队，独立 Worker 使用白名单镜像和受限容器执行。原型采用同机 SQLite 队列，详细边界见 EXECUTION.md。
 
 ## 5. 数据与契约类
 
 ### 数据库模型
 
 - `ProjectModel`：一个已导入项目。输入字段包括项目 ID、用户、仓库/本地地址和文件树；查询输出为项目元数据。
-- `AgentRunModel`：一次智能体运行。输入为项目 ID、指令、策略和模型配置；输出包含状态、最终答案、错误及时间戳。
+- `AgentRunModel`：一次智能体运行的公开结果。输入为项目 ID、指令和模型开关；输出包含状态、最终答案、错误及时间戳。
+- `AgentJobModel`：运行对应的内部队列项；保存策略、Worker 租约、取消标志和尝试次数。
 - `AgentEventModel`：一条有序事件。输入为运行 ID、序号、事件类型和 JSON 载荷；输出供轮询和 SSE 回放。
 
 ### 项目清单
@@ -147,8 +151,9 @@ manifest 和 repo map 是模型的事实底座。模型用于解释和归纳，�
 - `OverviewGenerator`：输入项目清单、仓库地图及可选模型配置，输出项目架构与功能概览。
 - `ProjectContextBuilder`：输入项目 ID、问题和分析产物，输出经过筛选的上下文包。
 - `policy.py`：提供项目路径边界校验、读取上限和敏感文本遮盖规则。
-- `AgentRunStore`：输入运行/事件写操作或查询条件，输出持久化运行视图和事件页。
-- `AgentRunManager`：输入运行请求，输出后台执行任务，并持续产生可恢复事件。
+- `AgentRunStore`：创建运行与队列项，并提供原子认领、租约、取消、过期恢复和并发安全事件游标。
+- `AgentQueueWorker`：领取持久化任务、续租、观察取消标志并选择正式/实验策略。
+- `AgentRunManager`：执行单次模型—工具循环，并持续产生可恢复事件。
 - `ManifestTool`、`EntrypointsTool`、`SearchSymbolsTool`、`ReadFileTool`、`DependencyNeighborsTool`、`SearchProjectTextTool`：六个只读工具，分别输出清单、入口、符号、源码片段、图邻居和文本命中。
 
 ## 8. 关键函数与前端接口
@@ -166,9 +171,9 @@ manifest 和 repo map 是模型的事实底座。模型用于解释和归纳，�
 
 前端组件：
 
-- `ProjectInsight.vue`：页面协调器；输入用户项目来源、文件选择和模型配置，输出分析请求、项目状态与子视图属性。
-- `DependencyGraph.vue`：输入 `graphData` 与 `projectId`，输出可筛选、选择、布局的 Sigma 图和节点/边事件。
-- `AgentWorkspace.vue`：输入项目 ID，输出智能体运行创建/取消请求，并消费 SSE 形成步骤和答案。
+- ProjectInsight.vue：固定项目壳；导入后输出紧凑项目头、分组导航和单一活动工作区。
+- DependencyGraph.vue：输入图数据，输出可筛选、选择和布局的 Sigma 图；缓存停用时暂停布局。
+- AgentWorkspace.vue：输入项目 ID，创建或取消智能体运行，并消费 SSE 形成步骤和答案。
 - `agentApi.js`：输入项目/运行 ID 与请求体，输出运行、事件订阅和取消调用。
 - `graphStyle.js`：输入节点、边和图统计，输出统一节点大小、颜色、标签及边样式。
 
@@ -182,4 +187,4 @@ manifest 和 repo map 是模型的事实底座。模型用于解释和归纳，�
 - SSE 事件带单调序号，支持断线续传和审计。
 - 在线模型会把选定上下文发送到配置的 API；离线 Ollama 可避免离开本机，但仍需信任模型服务主机。
 
-增加 Docker 和命令执行时，应新增独立 `execution` 模块：API 只提交声明式任务，队列调度短生命周期无特权容器；镜像白名单、只读挂载、CPU/内存/PID/时间限制、默认禁网、seccomp/AppArmor、输出限额和完整审计应作为不可绕过的执行层约束。
+Docker 和命令执行现已位于独立 execution 模块：API 只提交声明式任务，队列由短生命周期受限容器消费；镜像白名单、只读挂载、CPU/内存/PID/时间限制、默认禁网、输出限额和完整审计均由执行层强制。生产环境仍应在 Docker daemon 层配置 seccomp/AppArmor，并隔离 Worker 主机。

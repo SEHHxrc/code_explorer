@@ -7,6 +7,7 @@ export const buildSymbolTree = (symbols = []) => {
   const makeNode = (symbol) => ({
     name: symbol?.name || '(anonymous)',
     type: symbol?.kind || 'unknown',
+    fqn: String(symbol?.fully_qualified_name || symbol?.name || ''),
     line: Number(symbol?.extent_utf16?.start?.line_number || symbol?.line) || null,
     children: [],
   })

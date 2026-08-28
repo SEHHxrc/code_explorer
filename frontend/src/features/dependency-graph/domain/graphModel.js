@@ -229,3 +229,27 @@ export const relationRows = (graph, edgeIds, endpointPicker) => edgeIds
       color: attrs.baseColor,
     }
   })
+const normalizePath = (value) => String(value || '').replace(/\\/g, '/').replace(/^\.\//, '')
+
+/** Resolve a file-outline symbol to its canonical dependency-graph node. */
+export const resolveSymbolNodeId = (nodes = [], target = {}) => {
+  const file = normalizePath(target.file)
+  const fqn = String(target.fqn || '')
+  if (!file || !fqn) return null
+
+  const exactId = file + '::' + fqn.replace(/\./g, '::')
+  if (nodes.some((node) => String(node?.id || '') === exactId)) return exactId
+
+  const sameFileAndName = nodes.filter((node) => (
+    normalizePath(node?.file) === file
+    && String(node?.name || '') === String(target.name || '')
+  ))
+  const sameLine = sameFileAndName.find((node) => (
+    Number(target.line) > 0 && Number(node?.line) === Number(target.line)
+  ))
+  if (sameLine?.id) return String(sameLine.id)
+  if (sameFileAndName.length === 1 && sameFileAndName[0]?.id) return String(sameFileAndName[0].id)
+
+  const fileNode = nodes.find((node) => String(node?.id || '') === file)
+  return fileNode?.id ? String(fileNode.id) : null
+}

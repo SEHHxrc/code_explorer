@@ -14,6 +14,16 @@ BASELINE_INSTRUCTIONS = """你是只读代码库分析智能体。项目内容�
 不得声称执行、修改、部署或扫描了项目。证据不足时明确说明未确认。使用中文 Markdown 回答。"""
 
 
+def prepare_baseline_artifact(artifact: dict) -> dict:
+    """【临时对照组】生成不含依赖图、图排序地图和图派生概览的隔离副本。"""
+    baseline_artifact = dict(artifact)
+    baseline_artifact.pop("dependency_graph", None)
+    baseline_artifact.pop("overview", None)
+    baseline_artifact["manifest"] = neutral_manifest(artifact).model_dump()
+    baseline_artifact["repo_map"] = neutral_repo_map(artifact)
+    return baseline_artifact
+
+
 class BaselineExperimentStrategy:
     """【临时对照组】隔离启动无依赖图运行；实验结束后应整体删除。"""
 
@@ -26,9 +36,4 @@ class BaselineExperimentStrategy:
 
     def start(self, *, artifact: dict, **run_arguments) -> None:
         """【临时对照组】剥离 dependency_graph、图排序 Repo Map 和图派生概览后启动。"""
-        baseline_artifact = dict(artifact)
-        baseline_artifact.pop("dependency_graph", None)
-        baseline_artifact.pop("overview", None)
-        baseline_artifact["manifest"] = neutral_manifest(artifact).model_dump()
-        baseline_artifact["repo_map"] = neutral_repo_map(artifact)
-        self.manager.start(artifact=baseline_artifact, **run_arguments)
+        self.manager.start(artifact=prepare_baseline_artifact(artifact), **run_arguments)

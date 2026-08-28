@@ -82,11 +82,12 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import GraphControls from './components/GraphControls.vue'
 import GraphInspector from './components/GraphInspector.vue'
 import { useGraphLayout } from './composables/useGraphLayout.js'
 import { useGraphModel, VIEW_PRESETS } from './composables/useGraphModel.js'
+import { resolveSymbolNodeId } from './domain/graphModel.js'
 import { useSigmaRenderer } from './composables/useSigmaRenderer.js'
 import { EDGE_RELATIONS, NODE_LEVELS } from './graphStyle.js'
 
@@ -269,6 +270,27 @@ const onSearchInput = (value) => {
 const focusSearch = () => { if (searchMatches.value.length) selectNode(searchMatches.value[0]) }
 const resetCamera = () => sigma.resetCamera(summary.visibleNodeCount)
 
+const revealSymbol = async (target) => {
+  const id = resolveSymbolNodeId(props.graphData?.nodes || [], target)
+  if (!id || !graph.value?.hasNode(id)) return false
+
+  layout.stop()
+  focusMode.value = false
+  searchText.value = ''
+  searchMatches.value = []
+  renderState.matches = new Set()
+  resetRenderSelection()
+  model.restoreHidden()
+  model.configurePreset('all')
+  applyVisibility()
+  sigma.setGraph()
+  await nextTick()
+  selectNode(id)
+  return true
+}
+
+defineExpose({ revealSymbol })
+
 const destroyAll = () => {
   layout.destroy()
   sigma.destroy()
@@ -297,7 +319,20 @@ const rebuild = async () => {
 
 const onResize = () => sigma.refresh()
 watch(() => props.graphData, rebuild)
+let resumeLayoutOnActivate = false
 onMounted(() => { rebuild(); window.addEventListener('resize', onResize) })
+onDeactivated(() => {
+  resumeLayoutOnActivate = layout.running.value
+  layout.destroy()
+})
+onActivated(async () => {
+  await nextTick()
+  sigma.refresh()
+  if (resumeLayoutOnActivate) {
+    resumeLayoutOnActivate = false
+    layout.start()
+  }
+})
 onUnmounted(() => {
   window.removeEventListener('resize', onResize)
   clearTimeout(searchTimer)
@@ -306,9 +341,10 @@ onUnmounted(() => {
 </script>
 
 <style scoped>
-.graph-shell { display:flex; flex-direction:column; height:640px; background:#fff; }
-.canvas-wrap { position:relative; flex:1; min-height:0; }
-.sigma-canvas { position:absolute; inset:0; cursor:grab; background:radial-gradient(circle at 50% 42%,#fff 0%,#f8fafc 62%,#f2f5f9 100%); }
+.graph-shell { display:flex; flex-direction:column; width:100%; height:100%; min-width:0; min-height:0; overflow:hidden; background:#fff; }
+.canvas-wrap { position:relative; flex:1; min-width:0; min-height:0; overflow:hidden; }
+.sigma-canvas { position:absolute; inset:0; overflow:hidden; overscroll-behavior:none; touch-action:none; cursor:grab; background:radial-gradient(circle at 50% 42%,#fff 0%,#f8fafc 62%,#f2f5f9 100%); }
+.sigma-canvas :deep(canvas) { display:block; }
 .sigma-canvas:active { cursor:grabbing; }
 .overlay-tip { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#909399; font-size:13px; pointer-events:none; }
 .layout-badge { position:absolute; top:12px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:8px; padding:5px 12px; font-size:12px; color:#606266; background:rgba(255,255,255,.94); border:1px solid #e4e7ed; border-radius:999px; box-shadow:0 2px 8px rgba(31,45,61,.06); }

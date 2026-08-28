@@ -28,7 +28,7 @@ class ProjectLifecycleService:
             raise ProjectLifecycleError("Project not found or unauthorized.", 404)
         if self.projects.has_active_runs(project_id, user_id):
             raise ProjectLifecycleError(
-                "Project has an active agent run; cancel it before deleting the project.",
+                "Project has an active agent or execution task; cancel it before deleting the project.",
                 409,
             )
         try:

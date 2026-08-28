@@ -12,6 +12,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
+from backend.app.agents.worker import agent_queue_worker
 from backend.app.core.deps import get_current_user
 from backend.app.experiments import BlindReviewRequest, ComparisonRequest, ExperimentComparisonService, ExperimentError
 
@@ -30,6 +31,7 @@ def _safe_call(callback):
 async def create_comparison(project_id: str, request: ComparisonRequest, current_user: dict = Depends(get_current_user)):
     """创建问题、模型、预算一致且展示顺序盲化的有图/无图配对运行。"""
     view = _safe_call(lambda: comparison_service.create(project_id, current_user["user_id"], request))
+    agent_queue_worker.notify()
     return {"code": 202, "message": "Experiment comparison accepted.", "data": view}
 
 

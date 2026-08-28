@@ -1,21 +1,77 @@
 import { createApp } from 'vue'
-import App from './App.vue'
-
-// 1. 引入 Element Plus 核心样式
-import ElementPlus from 'element-plus'
+import {
+  ElAlert,
+  ElButton,
+  ElButtonGroup,
+  ElCard,
+  ElCheckbox,
+  ElDescriptions,
+  ElDescriptionsItem,
+  ElDivider,
+  ElEmpty,
+  ElForm,
+  ElFormItem,
+  ElIcon,
+  ElInput,
+  ElLink,
+  ElOption,
+  ElPopconfirm,
+  ElPopover,
+  ElRadioButton,
+  ElRadioGroup,
+  ElRate,
+  ElSelect,
+  ElSlider,
+  ElTabPane,
+  ElTable,
+  ElTableColumn,
+  ElTabs,
+  ElTag,
+  ElTimeline,
+  ElTimelineItem,
+  ElTooltip,
+  ElTree,
+  ElUpload,
+} from 'element-plus'
 import 'element-plus/dist/index.css'
 
-// 2. 引入 Element Plus 所有图标
-import * as ElementPlusIconsVue from '@element-plus/icons-vue'
+import App from './App.vue'
 
 const app = createApp(App)
+const elementComponents = [
+  ElAlert,
+  ElButton,
+  ElButtonGroup,
+  ElCard,
+  ElCheckbox,
+  ElDescriptions,
+  ElDescriptionsItem,
+  ElDivider,
+  ElEmpty,
+  ElForm,
+  ElFormItem,
+  ElIcon,
+  ElInput,
+  ElLink,
+  ElOption,
+  ElPopconfirm,
+  ElPopover,
+  ElRadioButton,
+  ElRadioGroup,
+  ElRate,
+  ElSelect,
+  ElSlider,
+  ElTabPane,
+  ElTable,
+  ElTableColumn,
+  ElTabs,
+  ElTag,
+  ElTimeline,
+  ElTimelineItem,
+  ElTooltip,
+  ElTree,
+  ElUpload,
+]
 
-// 3. 全局注册所有图标
-for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
-  app.component(key, component)
-}
-
-// 4. 注册 Element Plus
-app.use(ElementPlus)
-
+elementComponents.forEach((component) => app.component(component.name, component))
 app.mount('#app')

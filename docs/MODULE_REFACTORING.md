@@ -11,9 +11,12 @@
 | 已完成 P1 | 受控项目工作区 | 暂存导入、安全策略、补偿事务、Journal 和 Janitor 已建立 |
 | 已完成 P1 | 项目生命周期 | 活动任务保护、文件/Artifact/数据库顺序删除已建立 |
 | 已完成 P1 | ProjectInsight | 页面、组件、composable、API 和纯领域函数已分离 |
+| 已完成 UX | 项目工作区导航 | 固定项目壳、分组侧栏、五个缓存工作区和内部滚动已建立 |
 | 已完成 P1 | 智能体工具 | 按发现/源码/图拆分，并加入共享证据索引和搜索预算 |
 | P2 | Manifest 检测器 | 框架和入口规则明显增长后再按检测器拆分 |
-| P2 | 隔离执行域 | Docker、命令、安全扫描必须通过任务队列和独立工作节点接入 |
+| 已完成 P2 第一阶段 | 隔离执行域 | 声明式协议、SQLite 队列、独立 Docker Worker、配额、取消、SSE 和审计已建立 |
+| 已完成 P2 第二阶段 | Agent 持久化队列 | 原子领取、Worker 租约、重启接管、跨进程取消和过期恢复已建立 |
+| 已完成 UX/构建 | 前端按需注册 | 移除 Element Plus 与全部图标的全量注册，主 JS 包降至 500 kB 以下 |
 
 ## 1. 前端依赖图
 
@@ -131,7 +134,7 @@ frontend/src/services/
 └── agentApi.js
 ```
 
-功能页容器约 110 行，旧 `components/ProjectInsight.vue` 保留为 7 行兼容入口。请求状态集中为 `idle/importing/ready/generating_overview/deleting/error`；成功响应一次性替换项目状态，删除失败保留当前视图。所有 HTTP 地址和错误提取集中在服务层，不引入 Pinia。
+ProjectInsight 现在是固定高度项目壳：导入成功后隐藏大块导入表单，以紧凑头部和左侧导航切换概览、代码图谱、智能体、实验、执行五个缓存工作区。桌面端避免文档级纵向滚动，窄屏回退为横向导航和页面滚动。旧 components/ProjectInsight.vue 继续作为兼容入口。
 
 ## 6. 智能体只读工具
 
@@ -148,11 +151,10 @@ backend/app/agents/tools/
 
 工具名称和严格 JSON Schema 保持兼容。`ProjectEvidenceIndex` 每次运行只构建一次符号列表和入/出邻接表；依赖邻居查询不再扫描整张图。文本搜索增加文件数、总字节和耗时预算。注册表拒绝重复工具名，未知内部错误不再原样写入前端事件。
 
-Docker、Shell、安全扫描或部署能力不能加入这一只读工具目录。下一阶段应创建独立 `execution` 功能域，通过持久化任务队列连接隔离工作节点。
+Docker、Shell 和安全扫描没有加入只读智能体工具目录。现已建立独立 execution 功能域，由持久化队列连接单独的受限 Docker Worker；具体安全边界和启动方式见 EXECUTION.md。
 
 ## 后续建议
 
-1. P2 优先建设执行任务协议、队列、Docker Worker、资源配额和审计事件。
-2. 将进程内 AgentRunManager 迁移到可恢复任务队列后，再支持多 Worker 和服务重启续跑。
-3. Manifest 规则明显增长时拆分为 framework、entrypoint、package manager 和 command 检测器。
-4. 为生产环境配置明确的 `GIT_ALLOWED_HOSTS`，并由网络层限制 Worker 对内网元数据地址的访问。
+1. 多 Worker 或多机部署前，将原型 SQLite 队列迁移到 PostgreSQL 或专用消息队列。
+2. Manifest 规则明显增长时拆分为 framework、entrypoint、package manager 和 command 检测器。
+3. 为生产环境配置明确的 `GIT_ALLOWED_HOSTS`，并由网络层限制 Worker 对内网元数据地址的访问。

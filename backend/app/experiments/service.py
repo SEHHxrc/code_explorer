@@ -7,9 +7,7 @@ import uuid
 
 from backend.app.agents.contracts import AgentRunRequest
 from backend.app.agents.run_store import AgentRunStore
-from backend.app.experiments.baseline import BaselineExperimentStrategy
 from backend.app.experiments.contracts import BlindReviewRequest, ComparisonRequest, ExperimentError
-from backend.app.experiments.graph_strategy import GraphAugmentedExperimentStrategy
 from backend.app.experiments.metrics import collect_run_metrics
 from backend.app.experiments.repository import ComparisonRecord, ExperimentRepository
 from backend.app.llm.registry import get_model_configuration
@@ -22,13 +20,10 @@ TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 class ExperimentComparisonService:
     """保持问题、模型和步骤预算一致，只改变依赖图输入与图工具。"""
 
-    def __init__(self, *, repository=None, projects=None, run_store=None, graph_strategy=None, baseline_strategy=None):
+    def __init__(self, *, repository=None, projects=None, run_store=None):
         self.repository = repository or ExperimentRepository()
         self.projects = projects or ProjectRepository()
         self.run_store = run_store or AgentRunStore()
-        self.graph_strategy = graph_strategy or GraphAugmentedExperimentStrategy()
-        # TEMPORARY CONTROL GROUP: 图增强胜出后删除此依赖和对应启动分支。
-        self.baseline_strategy = baseline_strategy or BaselineExperimentStrategy()
 
     def create(self, project_id: str, user_id: str, request: ComparisonRequest) -> dict:
         config = get_model_configuration()
@@ -44,9 +39,16 @@ class ExperimentComparisonService:
         # TEMPORARY CONTROL GROUP / 临时对照组：baseline run 仅服务于本配对实验。
         run_ids = {"baseline": uuid.uuid4().hex, "graph": uuid.uuid4().hex}
         agent_request = AgentRunRequest(question=request.question, use_model=True, max_steps=request.max_steps)
-        # TEMPORARY CONTROL GROUP / 临时对照组：确认图增强胜出后删除此运行创建。
-        self.run_store.create(run_id=run_ids["baseline"], project_id=project_id, user_id=user_id, request=agent_request)
-        self.run_store.create(run_id=run_ids["graph"], project_id=project_id, user_id=user_id, request=agent_request)
+        # TEMPORARY CONTROL GROUP / 临时对照组：
+        # baseline 策略随队列项持久化；图增强胜出后删除此运行创建和 strategy="baseline"。
+        self.run_store.create(
+            run_id=run_ids["baseline"], project_id=project_id, user_id=user_id,
+            request=agent_request, strategy="baseline",
+        )
+        self.run_store.create(
+            run_id=run_ids["graph"], project_id=project_id, user_id=user_id,
+            request=agent_request, strategy="graph",
+        )
         strategies = ["baseline", "graph"]
         random.shuffle(strategies)
         lanes = ["left", "right"]
@@ -64,19 +66,6 @@ class ExperimentComparisonService:
             execution_order=strategies,
         )
         self.repository.create(record)
-        common = {
-            "project_id": project_id,
-            "user_id": user_id,
-            "project_root": project.local_path,
-            "request": agent_request,
-        }
-        for strategy in strategies:
-            arguments = {**common, "run_id": run_ids[strategy], "artifact": artifact}
-            if strategy == "graph":
-                self.graph_strategy.start(**arguments)
-            else:
-                # TEMPORARY CONTROL GROUP: only comparison creation may call the no-graph strategy.
-                self.baseline_strategy.start(**arguments)
         return self.get(comparison_id, user_id)
 
     def get(self, comparison_id: str, user_id: str) -> dict:

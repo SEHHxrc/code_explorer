@@ -1,5 +1,5 @@
 import { ref, shallowRef } from 'vue'
-import FA2Layout from 'graphology-layout-forceatlas2/worker'
+import FA2Layout from 'graphology-layout-forceatlas2/worker.js'
 import forceAtlas2 from 'graphology-layout-forceatlas2'
 import noverlap from 'graphology-layout-noverlap'
 import { collectParents, seedPositions } from '../domain/graphModel.js'
@@ -65,6 +65,19 @@ export const useGraphLayout = ({ fullGraph, displayGraph, renderer, renderState,
     renderer.value?.refresh()
   }
 
+  /**
+   * Tear down background layout work without touching Sigma.
+   * During component unmount the container can already have zero width, so the normal stop/sync
+   * path is unsafe here and would make Sigma throw before the project UI finishes resetting.
+   */
+  const destroy = () => {
+    generation += 1
+    if (stopTimer) { clearTimeout(stopTimer); stopTimer = null }
+    if (worker.value) { worker.value.kill(); worker.value = null }
+    running.value = false
+    renderState.layoutActive = false
+  }
+
   const start = () => {
     const target = displayGraph.value
     if (!target || target.order < 2) return
@@ -99,7 +112,6 @@ export const useGraphLayout = ({ fullGraph, displayGraph, renderer, renderState,
   const toggle = () => {
     if (running.value) { stop(); settle() } else start()
   }
-  const destroy = () => stop()
 
   return { running, start, stop, restart, toggle, settle, sync, destroy }
 }

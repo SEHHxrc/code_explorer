@@ -21,6 +21,12 @@ export const useSigmaRenderer = ({
   let dragMoved = false
   let suppressClick = false
 
+  const hasRenderableContainer = () => (
+    Boolean(containerRef.value)
+    && containerRef.value.clientWidth > 0
+    && containerRef.value.clientHeight > 0
+  )
+
   const nodeReducer = (id, data) => {
     if (data.hidden) return { ...data, hidden: true }
     const result = { ...data }
@@ -160,7 +166,10 @@ export const useSigmaRenderer = ({
   const setGraph = () => {
     if (renderer.value && displayGraph.value) renderer.value.setGraph(displayGraph.value)
   }
-  const refresh = () => renderer.value?.refresh()
+  /** Skip rendering while Vue is removing or hiding the graph container. */
+  const refresh = () => {
+    if (renderer.value && hasRenderableContainer()) renderer.value.refresh()
+  }
   const zoom = (factor) => {
     const camera = renderer.value?.getCamera()
     if (camera) camera.animate({ ratio: camera.ratio * factor }, { duration: 200 })

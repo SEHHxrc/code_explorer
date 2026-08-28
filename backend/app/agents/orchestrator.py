@@ -90,6 +90,7 @@ class AgentRunManager:
         project_root: str,
         artifact: dict[str, Any],
         request: AgentRunRequest,
+        claimed: bool = False,
     ) -> None:
         """执行模型—工具循环并写入全部生命周期事件。
 
@@ -97,7 +98,8 @@ class AgentRunManager:
         则转换为 ``failed`` 状态，取消则转换为 ``cancelled`` 状态。
         """
         try:
-            self.store.update(run_id, status="running")
+            if not claimed:
+                self.store.update(run_id, status="running")
             self._emit(run_id, "run.started", {"project_id": project_id})
             packet = self.context_builder.build(
                 project_id=project_id,

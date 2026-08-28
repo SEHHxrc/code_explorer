@@ -13,6 +13,18 @@ class AgentRunRequest(BaseModel):
     max_steps: int = Field(default=4, ge=1, le=6)
 
 
+class AgentClaim(BaseModel):
+    """Worker 原子认领后获得的内部运行快照。"""
+
+    run_id: str
+    project_id: str
+    user_id: str
+    question: str
+    use_model: bool
+    max_steps: int
+    strategy: Literal["default", "graph", "baseline"] = "default"
+
+
 class AgentEvidence(BaseModel):
     """智能体结论引用的项目证据；输入路径及可选行号、符号和说明。"""
     path: str

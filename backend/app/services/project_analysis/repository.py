@@ -7,9 +7,12 @@ from sqlalchemy.orm import Session
 
 from backend.app.models import (
     AgentEventModel,
+    AgentJobModel,
     AgentRunModel,
     ExperimentComparisonModel,
     ExperimentReviewModel,
+    ExecutionEventModel,
+    ExecutionTaskModel,
     ProjectModel,
     SessionLocal,
 )
@@ -72,11 +75,17 @@ class ProjectRepository:
         """项目存在排队或运行中的智能体任务时输出 True。"""
         session = self._session_factory()
         try:
-            return session.query(AgentRunModel.id).filter(
+            agent_active = session.query(AgentRunModel.id).filter(
                 AgentRunModel.project_id == project_id,
                 AgentRunModel.user_id == user_id,
                 AgentRunModel.status.in_(("queued", "running")),
             ).first() is not None
+            execution_active = session.query(ExecutionTaskModel.id).filter(
+                ExecutionTaskModel.project_id == project_id,
+                ExecutionTaskModel.user_id == user_id,
+                ExecutionTaskModel.status.in_(("queued", "running", "cancel_requested")),
+            ).first() is not None
+            return agent_active or execution_active
         finally:
             session.close()
 
@@ -102,6 +111,17 @@ class ProjectRepository:
                 session.query(ExperimentComparisonModel).filter(
                     ExperimentComparisonModel.id.in_(comparison_ids)
                 ).delete(synchronize_session=False)
+            execution_ids = [row[0] for row in session.query(ExecutionTaskModel.id).filter(
+                ExecutionTaskModel.project_id == project_id,
+                ExecutionTaskModel.user_id == user_id,
+            ).all()]
+            if execution_ids:
+                session.query(ExecutionEventModel).filter(
+                    ExecutionEventModel.task_id.in_(execution_ids)
+                ).delete(synchronize_session=False)
+                session.query(ExecutionTaskModel).filter(
+                    ExecutionTaskModel.id.in_(execution_ids)
+                ).delete(synchronize_session=False)
             run_ids = [row[0] for row in session.query(AgentRunModel.id).filter(
                 AgentRunModel.project_id == project_id,
                 AgentRunModel.user_id == user_id,
@@ -109,6 +129,9 @@ class ProjectRepository:
             if run_ids:
                 session.query(AgentEventModel).filter(
                     AgentEventModel.run_id.in_(run_ids)
+                ).delete(synchronize_session=False)
+                session.query(AgentJobModel).filter(
+                    AgentJobModel.run_id.in_(run_ids)
                 ).delete(synchronize_session=False)
                 session.query(AgentRunModel).filter(
                     AgentRunModel.id.in_(run_ids)

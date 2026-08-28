@@ -28,11 +28,11 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
 
-defineProps({ importing: Boolean, deleting: Boolean, hasProject: Boolean })
+const props = defineProps({ importing: Boolean, deleting: Boolean, hasProject: Boolean })
 const emit = defineEmits(['analyze-git', 'analyze-zip', 'reset'])
 const repoUrl = ref('')
 const uploadRef = ref()
@@ -49,6 +49,13 @@ const selectFile = (uploadFile) => {
   if (!file.name.toLowerCase().endsWith('.zip')) return ElMessage.warning('请选择 ZIP 项目压缩包')
   emit('analyze-zip', file)
 }
+
+/** Reset native upload state after project removal so another ZIP can be selected immediately. */
+watch(() => props.hasProject, (hasProject) => {
+  if (hasProject) return
+  repoUrl.value = ''
+  uploadRef.value?.clearFiles()
+})
 </script>
 
 <style scoped>

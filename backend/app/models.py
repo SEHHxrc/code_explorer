@@ -57,6 +57,20 @@ class AgentRunModel(Base):
     )
 
 
+class AgentJobModel(Base):
+    """智能体持久化队列元数据；运行结果仍由 AgentRunModel 作为唯一公开状态。"""
+
+    __tablename__ = "agent_jobs"
+
+    run_id = Column(String, primary_key=True, index=True)
+    strategy = Column(String, nullable=False, default="default", index=True)
+    worker_id = Column(String, nullable=True, index=True)
+    cancel_requested = Column(Boolean, nullable=False, default=False)
+    attempts = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+
 class AgentEventModel(Base):
     """持久化智能体运行中的一条有序事件。
 
@@ -101,6 +115,46 @@ class ExperimentReviewModel(Base):
     scores = Column(JSON, nullable=False, default=dict)
     notes = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class ExecutionTaskModel(Base):
+    """持久化由独立 Worker 认领的隔离容器任务。"""
+
+    __tablename__ = "execution_tasks"
+
+    id = Column(String, primary_key=True, index=True)
+    project_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    kind = Column(String, nullable=False)
+    image = Column(String, nullable=False)
+    argv = Column(JSON, nullable=False)
+    scan_profile = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="queued", index=True)
+    timeout_seconds = Column(Integer, nullable=False)
+    cpu_limit = Column(String, nullable=False)
+    memory_mb = Column(Integer, nullable=False)
+    pids_limit = Column(Integer, nullable=False)
+    worker_id = Column(String, nullable=True)
+    exit_code = Column(Integer, nullable=True)
+    error = Column(Text, nullable=True)
+    output_truncated = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+
+
+class ExecutionEventModel(Base):
+    """保存执行任务状态转换、策略决定和有界输出日志。"""
+
+    __tablename__ = "execution_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    task_id = Column(String, nullable=False, index=True)
+    sequence = Column(Integer, nullable=False)
+    event_type = Column(String, nullable=False, index=True)
+    payload = Column(JSON, nullable=False, default=dict)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
 
 def init_db() -> None:
     """创建尚不存在的数据库表；无输入且无返回值。"""

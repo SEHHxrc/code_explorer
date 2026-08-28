@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 
 from backend.app.agents.contracts import AgentRunRequest
 from backend.app.agents.orchestrator import TERMINAL_STATUSES, agent_run_manager
+from backend.app.agents.worker import agent_queue_worker
 from backend.app.core.deps import get_current_user
 from backend.app.models import ProjectModel, SessionLocal
 from backend.app.services.artifact_store import load_analysis_artifact
@@ -50,14 +51,8 @@ async def create_agent_run(
         user_id=current_user["user_id"],
         request=request,
     )
-    agent_run_manager.start(
-        run_id=run_id,
-        project_id=project_id,
-        user_id=current_user["user_id"],
-        project_root=project.local_path,
-        artifact=artifact,
-        request=request,
-    )
+    agent_queue_worker.notify()
+
     return {
         "code": 202,
         "message": "Agent run accepted.",
@@ -114,12 +109,18 @@ async def stream_agent_events(
 
 @router.post("/runs/{run_id}/cancel")
 async def cancel_agent_run(run_id: str, current_user: dict = Depends(get_current_user)):
-    """请求取消本进程中的运行；输出当前终态或 202 接收结果。"""
+    """持久化取消请求；排队任务立即取消，运行任务由持有租约的 Worker 终止。"""
     view = agent_run_manager.store.get(run_id, current_user["user_id"])
     if not view:
         raise HTTPException(status_code=404, detail="Agent run not found.")
     if view.status in TERMINAL_STATUSES:
         return {"code": 200, "data": view.model_dump()}
-    if not agent_run_manager.cancel(run_id):
-        raise HTTPException(status_code=409, detail="Agent run is not active on this worker.")
-    return {"code": 202, "message": "Cancellation requested.", "data": {"run_id": run_id}}
+    updated = agent_run_manager.store.request_cancel(run_id, current_user["user_id"])
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Agent run not found.")
+    agent_queue_worker.notify()
+    return {
+        "code": 200 if updated.status == "cancelled" else 202,
+        "message": "Agent run cancelled." if updated.status == "cancelled" else "Cancellation requested.",
+        "data": updated.model_dump(),
+    }

@@ -14,7 +14,7 @@
       @node-click="$emit('select', $event)"
     >
       <template #default="{ node, data }">
-        <span class="tree-node">
+        <span class="tree-node" :title="data.path || node.label">
           <el-icon :color="data.is_dir ? '#409EFF' : '#67C23A'"><component :is="data.is_dir ? Folder : Document" /></el-icon>
           <span :class="data.is_dir ? 'dir-text' : 'file-text'">{{ node.label }}</span>
         </span>
@@ -37,10 +37,21 @@ const filterNode = (value, data) => !value || String(data?.name || '').toLowerCa
 </script>
 
 <style scoped>
-.tree-card { width: 350px; min-height: 600px; }
+.tree-card { width: 100%; height: 100%; min-height: 0; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .filter-input { margin-bottom: 15px; }
-.tree-node { display: inline-flex; gap: 6px; align-items: center; }
+.tree-node {
+  display: inline-flex;
+  flex: 1;
+  min-width: 0;
+  gap: 6px;
+  align-items: center;
+  padding-right: 8px;
+  overflow: hidden;
+}
+.tree-node .el-icon { flex: none; }
+.file-text, .dir-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .file-text { color: #606266; }
 .dir-text { color: #303133; font-weight: 600; }
+:deep(.el-tree-node__content) { overflow: hidden; }
 </style>
