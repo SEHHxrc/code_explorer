@@ -41,7 +41,8 @@ class UnifiedCodeAnalyzer(
                  include_externals: bool = True,
                  include_fields: bool = True,
                  include_type_refs: bool = True,
-                 include_virtual_dispatch: bool = True):
+                 include_virtual_dispatch: bool = True) -> None:
+        """输入项目根目录、并发上限和图节点选项，初始化分析流水线。"""
         self.project_root = os.path.abspath(project_root)
         self.max_workers = max(1, int(max_workers or 1))
         self.max_file_bytes = max_file_bytes

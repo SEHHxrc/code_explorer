@@ -17,6 +17,7 @@
 | 已完成 P2 第一阶段 | 隔离执行域 | 声明式协议、SQLite 队列、独立 Docker Worker、配额、取消、SSE 和审计已建立 |
 | 已完成 P2 第二阶段 | Agent 持久化队列 | 原子领取、Worker 租约、重启接管、跨进程取消和过期恢复已建立 |
 | 已完成 UX/构建 | 前端按需注册 | 移除 Element Plus 与全部图标的全量注册，主 JS 包降至 500 kB 以下 |
+| 已完成 效率优化 | 共享事件流与查询短路 | 前后端 SSE 重复实现收敛，活动任务查询可短路，业务源码净减少 61 行 |
 
 ## 1. 前端依赖图
 
@@ -131,7 +132,10 @@ frontend/src/features/project-insight/
 frontend/src/services/
 ├── httpClient.js
 ├── projectApi.js
-└── agentApi.js
+├── agentApi.js
+├── executionApi.js
+├── experimentApi.js
+└── sseClient.js
 ```
 
 ProjectInsight 现在是固定高度项目壳：导入成功后隐藏大块导入表单，以紧凑头部和左侧导航切换概览、代码图谱、智能体、实验、执行五个缓存工作区。桌面端避免文档级纵向滚动，窄屏回退为横向导航和页面滚动。旧 components/ProjectInsight.vue 继续作为兼容入口。
@@ -152,6 +156,36 @@ backend/app/agents/tools/
 工具名称和严格 JSON Schema 保持兼容。`ProjectEvidenceIndex` 每次运行只构建一次符号列表和入/出邻接表；依赖邻居查询不再扫描整张图。文本搜索增加文件数、总字节和耗时预算。注册表拒绝重复工具名，未知内部错误不再原样写入前端事件。
 
 Docker、Shell 和安全扫描没有加入只读智能体工具目录。现已建立独立 execution 功能域，由持久化队列连接单独的受限 Docker Worker；具体安全边界和启动方式见 EXECUTION.md。
+
+## 7. 等价效率优化与稳定性边界
+
+本轮以 11,358 行业务源码为基线，在新增共享模块后降至 11,297 行，净减少 61 行：
+
+- `backend/app/api/sse.py` 统一智能体与隔离执行的持久化事件轮询、心跳、终态排空和响应头；实验快照流复用同一响应封装。
+- `frontend/src/services/sseClient.js` 统一三类 JSON SSE 的分片解码；原有公开服务函数和错误文案保持不变。
+- Agent API 通过 `ProjectRepository` 复用项目所有权查询，删除未使用的运行存储兼容方法。
+- 项目活动任务检查在发现活动智能体后直接返回，避免额外查询执行任务表。
+
+以下代码有意保留，不以行数为目标继续压缩：
+
+- 仓储的显式 `commit`、`rollback` 和 `close`，它们对应队列领取、补偿删除与审计事件的不同事务时点。
+- dependency analyzer 的语言处理器和阶段边界，避免影响图语义及跨语言分析结果。
+- 前端 feature-local 兼容导出与公开 API 函数名，避免破坏旧调用方和异步工作区加载。
+- `TEMPORARY CONTROL GROUP / 临时对照组` 标记及隔离实现；实验结论确认后按协议整体移除，不与生产路径混合优化。
+
+验证基线为后端 57 项测试、前端 6 项测试、Python 编译检查、Vite 生产构建和 `git diff --check` 全部通过。
+
+## 8. 后端文档与类型契约
+
+`backend/app` 当前共 102 个 Python 文件、135 个类和 454 个函数/方法，统一遵守以下维护约束：
+
+- 每个类、函数和方法必须以三引号文档字符串说明职责；处理安全边界、事务或解析规则时还需说明关键不变量。
+- 除 `self`、`cls` 外，每个位置参数、关键字参数、`*args` 和 `**kwargs` 都必须标注类型。
+- 每个同步函数、异步函数和方法都必须标注返回类型；无返回值显式使用 `None`，SSE/生命周期生成器使用异步迭代器类型。
+- HTTP、中间件、仓储、工作区和 Tree-sitter 处理器优先使用具体领域类型；只有 JSON 异构值、SQLAlchemy 动态更新字段和跨策略关键字参数保留 `Any`。
+- `test/test_backend_annotations.py` 通过 AST 持续检查上述约束，新代码违反时测试会给出文件、行号和缺失项。
+
+本轮只修改文档字符串、函数注解、类型 import 和签名排版；对原先无功能改动的 61 个文件执行了剥离文档、注解和 import 后的 AST 对比，函数体逻辑完全一致。
 
 ## 后续建议
 

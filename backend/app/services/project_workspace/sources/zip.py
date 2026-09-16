@@ -6,6 +6,7 @@ import os
 import stat
 import zipfile
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO
 
 from ..exceptions import AcquisitionError, SourceValidationError, WorkspacePolicyError
 from ..policy import WorkspacePolicy
@@ -14,10 +15,12 @@ from ..policy import WorkspacePolicy
 class ZipProjectSource:
     """先保存部分上传文件，再将安全条目解压到暂存工作区。"""
 
-    def __init__(self, policy: WorkspacePolicy):
+    def __init__(self, policy: WorkspacePolicy) -> None:
+        """输入工作区策略，初始化受限 ZIP 上传来源。"""
         self.policy = policy
 
-    def acquire(self, file_obj, filename: str | None, operation_root: Path, destination: Path) -> str:
+    def acquire(self, file_obj: BinaryIO, filename: str | None, operation_root: Path, destination: Path) -> str:
+        """把项目来源获取到指定暂存工作区。"""
         archive = operation_root / "upload.part"
         try:
             self._write_upload(file_obj, archive)
@@ -32,7 +35,8 @@ class ZipProjectSource:
         safe_name = os.path.basename(filename or "project.zip").replace("\x00", "")
         return f"local_upload://{safe_name or 'project.zip'}"
 
-    def _write_upload(self, file_obj, archive: Path) -> None:
+    def _write_upload(self, file_obj: BinaryIO, archive: Path) -> None:
+        """把上传流按字节上限写入暂存文件。"""
         written = 0
         with archive.open("wb") as output:
             while chunk := file_obj.read(1024 * 1024):
@@ -42,6 +46,7 @@ class ZipProjectSource:
                 output.write(chunk)
 
     def _extract(self, archive: Path, destination: Path) -> None:
+        """校验并解压 ZIP 归档到受控目录。"""
         actual_total = 0
         with zipfile.ZipFile(archive, "r") as bundle:
             entries = bundle.infolist()
@@ -64,6 +69,7 @@ class ZipProjectSource:
                         output.write(chunk)
 
     def _validate_entry(self, entry: zipfile.ZipInfo) -> PurePosixPath:
+        """校验 ZIP 条目的路径、类型、大小和压缩比。"""
         normalized = entry.filename.replace("\\", "/")
         relative = PurePosixPath(normalized)
         unix_mode = entry.external_attr >> 16

@@ -15,6 +15,7 @@ class OperationJournal:
     filename = "operation.json"
 
     def create(self, operation: WorkspaceOperation) -> None:
+        """创建并持久化新的领域记录。"""
         self._write(operation.operation_root, {
             "schema_version": "1.0",
             "operation_id": operation.operation_id,
@@ -26,6 +27,7 @@ class OperationJournal:
         })
 
     def transition(self, operation: WorkspaceOperation, state: str) -> None:
+        """更新当前工作区操作的持久化阶段。"""
         payload = self.read(operation.operation_root) or {}
         payload.update({
             "schema_version": "1.0",
@@ -39,6 +41,7 @@ class OperationJournal:
         self._write(operation.operation_root, payload)
 
     def read(self, operation_root: Path) -> dict | None:
+        """读取并反序列化工作区操作日志。"""
         path = operation_root / self.filename
         try:
             value = json.loads(path.read_text(encoding="utf-8"))
@@ -47,6 +50,7 @@ class OperationJournal:
             return None
 
     def _write(self, operation_root: Path, payload: dict) -> None:
+        """通过临时文件替换原子写入操作日志。"""
         operation_root.mkdir(parents=True, exist_ok=True)
         target = operation_root / self.filename
         temporary = operation_root / f"{self.filename}.tmp"
@@ -55,5 +59,6 @@ class OperationJournal:
 
     @staticmethod
     def _now() -> str:
+        """返回 UTC ISO 8601 时间字符串。"""
         return datetime.now(timezone.utc).isoformat()
 

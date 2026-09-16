@@ -19,7 +19,7 @@ from ..models import Definition, ImportRec, Reference
 class TypeResolutionPhase:
     """类型阶段：解析继承、成员、返回类型、包作用域和方法解析顺序。"""
 
-    def _resolve_inheritance(self):
+    def _resolve_inheritance(self) -> None:
         """解析类的基类和接口字面量，输出继承映射与子类反向索引。"""
         for fqn, definition in self.definitions.items():
             if definition.kind not in CLASS_LIKE:
@@ -79,6 +79,7 @@ class TypeResolutionPhase:
                 self.alias_map[fqn] = impl
 
     def _find_c_implementation(self, declaration: Definition) -> str:
+        """查找 C/C++ 声明对应的实现定义。"""
         candidates = [fqn for fqn in self.simple_index.get(declaration.name, [])
                       if fqn != declaration.fqn
                       and self.definitions[fqn].lang in ("c", "cpp")
@@ -95,6 +96,7 @@ class TypeResolutionPhase:
         return candidates[0]
 
     def _canonical(self, fqn: str) -> str:
+        """返回声明或定义的规范符号标识。"""
         seen = 0
         while fqn in self.alias_map and seen < 8:
             fqn = self.alias_map[fqn]
@@ -110,6 +112,7 @@ class TypeResolutionPhase:
         return self._canonical(fqn)
 
     def _mro(self, class_fqn: str) -> list[str]:
+        """按继承顺序返回类型及其祖先。"""
         cached = self._mro_cache.get(class_fqn)
         if cached is not None:
             return cached
@@ -126,6 +129,7 @@ class TypeResolutionPhase:
         return order
 
     def _lookup_member(self, class_fqn: str, name: str) -> str:
+        """沿类型继承顺序查找成员定义。"""
         for candidate in self._mro(class_fqn):
             hit = self.class_members.get(candidate, {}).get(name)
             if hit:
@@ -133,6 +137,7 @@ class TypeResolutionPhase:
         return ""
 
     def _lookup_attr_type(self, class_fqn: str, attr: str) -> str:
+        """解析对象字段或属性的声明类型。"""
         for candidate in self._mro(class_fqn):
             hit = self.attr_types.get(candidate, {}).get(attr)
             if hit:
@@ -153,6 +158,7 @@ class TypeResolutionPhase:
         return result
 
     def _compute_type(self, from_file: str, literal: str, lang: str) -> str:
+        """递归计算定义或表达式关联的类型。"""
         literal = _norm_type(literal)
         if not literal:
             return ""
@@ -317,6 +323,7 @@ class TypeResolutionPhase:
         return ""
 
     def _go_package_dir(self, from_file: str, alias: str) -> str:
+        """返回 Go 源码文件所在的包目录。"""
         cache_key = (from_file, alias)
         if cache_key in self._go_dir_cache:
             return self._go_dir_cache[cache_key]
@@ -324,6 +331,7 @@ class TypeResolutionPhase:
         return result
 
     def _compute_go_package_dir(self, from_file: str, alias: str) -> str:
+        """计算 Go 包名对应的规范目录。"""
         binding = self.bindings.get(from_file, {}).get(alias)
         module = binding[1] if binding and binding[0] in ("external_module", "stdlib_module", "module") else alias
         if binding and binding[0] == "module" and module in self.file_lang:
@@ -346,6 +354,7 @@ class TypeResolutionPhase:
         return ""
 
     def _go_package_symbol(self, directory: str, name: str) -> str:
+        """在 Go 包作用域内查找符号。"""
         for path in self.go_dir_files.get(directory, ()):
             hit = self.module_scope.get(path, {}).get(name)
             if hit:

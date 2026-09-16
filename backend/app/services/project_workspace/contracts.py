@@ -18,10 +18,12 @@ class WorkspaceSource:
 
     @classmethod
     def git(cls, repo_url: str) -> "WorkspaceSource":
+        """创建 Git 仓库类型的项目来源描述。"""
         return cls(kind="git", repo_url=repo_url)
 
     @classmethod
     def zip(cls, file_obj: BinaryIO, filename: str | None) -> "WorkspaceSource":
+        """创建 ZIP 上传类型的项目来源描述。"""
         return cls(kind="zip", file_obj=file_obj, filename=filename)
 
 
@@ -50,6 +52,7 @@ class SanitizeReport:
     removed_noise_directories: int = 0
 
     def to_dict(self) -> dict[str, int]:
+        """把清洗统计转换为可序列化字典。"""
         return asdict(self)
 
 

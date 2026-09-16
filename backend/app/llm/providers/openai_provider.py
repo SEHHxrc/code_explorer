@@ -16,7 +16,7 @@ class OpenAIResponsesProvider(ModelProvider):
     """
     name = "openai"
 
-    def __init__(self, *, api_key: str, model: str, base_url: str = "https://api.openai.com/v1"):
+    def __init__(self, *, api_key: str, model: str, base_url: str = "https://api.openai.com/v1") -> None:
         """保存连接配置，不在构造阶段发起网络请求。"""
         self.api_key = api_key
         self.model = model

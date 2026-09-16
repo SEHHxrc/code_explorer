@@ -18,20 +18,21 @@ class BaseHandler:
     # 无接收者的裸调用是否可能命中当前类的方法（Python/Java/C++/JS 可以，Go/Rust 不行）
     bare_call_hits_class = True
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """初始化节点类型到处理函数的分发表并注册语言规则。"""
         self.handlers = {}
         self.register()
 
-    def register(self):
+    def register(self) -> None:
         """由子类绑定节点类型与回调；无输入和返回值。"""
         raise NotImplementedError
 
-    def bind(self, mapping: dict):
+    def bind(self, mapping: dict) -> None:
         """输入节点类型到回调的映射并合并到分发表。"""
         self.handlers.update(mapping)
 
     # -- 供各语言复用的调用目标拆解 --------------------------------------
-    def split_callee(self, ctx: FileContext, func_node) -> tuple[str, str]:
+    def split_callee(self, ctx: FileContext, func_node: tree_sitter.Node | None) -> tuple[str, str]:
         """返回 (被调用名, 接收者原文)。默认实现覆盖绝大多数语言的成员访问节点。"""
         if func_node is None:
             return "", ""

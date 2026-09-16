@@ -28,11 +28,13 @@ _REPARSE_POINT = 0x400
 class ProjectSanitizer:
     """删除不应进入分析和执行环境的内容；无法删除时拒绝项目。"""
 
-    def __init__(self, policy: WorkspacePolicy, filesystem: WorkspaceFilesystem):
+    def __init__(self, policy: WorkspacePolicy, filesystem: WorkspaceFilesystem) -> None:
+        """输入工作区安全策略，初始化失败关闭的项目清洗器。"""
         self.policy = policy
         self.filesystem = filesystem
 
     def clean(self, root: Path) -> SanitizeReport:
+        """按安全策略清洗项目树并返回删除统计。"""
         counters = {
             "scanned_files": 0,
             "filtered_out_files": 0,
@@ -96,6 +98,7 @@ class ProjectSanitizer:
 
     @staticmethod
     def _is_link_or_reparse(path: Path) -> bool:
+        """返回路径是否为符号链接或 Windows 重解析点。"""
         try:
             metadata = path.lstat()
         except OSError as exc:

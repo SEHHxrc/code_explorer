@@ -7,7 +7,7 @@ import uuid
 
 from backend.app.services.project_analysis.repository import ProjectRepository
 
-from .contracts import ExecutionError, ExecutionTaskRequest
+from .contracts import ExecutionError, ExecutionTaskRequest, ExecutionTaskView
 from .policy import ExecutionPolicy, ExecutionSettings
 from .repository import ExecutionRepository
 
@@ -15,7 +15,14 @@ from .repository import ExecutionRepository
 class ExecutionService:
     """校验所有权与策略后入队；不在 Web 进程中启动 Docker。"""
 
-    def __init__(self, *, repository=None, projects=None, policy=None):
+    def __init__(
+        self,
+        *,
+        repository: ExecutionRepository | None = None,
+        projects: ProjectRepository | None = None,
+        policy: ExecutionPolicy | None = None,
+    ) -> None:
+        """注入执行仓储、项目仓储与服务端执行策略。"""
         self.repository = repository or ExecutionRepository()
         self.projects = projects or ProjectRepository()
         self.policy = policy or ExecutionPolicy()
@@ -56,20 +63,20 @@ class ExecutionService:
         )
         return {**view.model_dump(), "events_url": f"/api/executions/tasks/{task_id}/events"}
 
-    def get(self, task_id: str, user_id: str):
+    def get(self, task_id: str, user_id: str) -> ExecutionTaskView:
         """读取用户拥有的任务，否则输出 404 领域错误。"""
         view = self.repository.get(task_id, user_id)
         if view is None:
             raise ExecutionError("Execution task not found.", 404)
         return view
 
-    def list_for_project(self, project_id: str, user_id: str, limit: int = 20):
+    def list_for_project(self, project_id: str, user_id: str, limit: int = 20) -> list[ExecutionTaskView]:
         """列出用户项目的近期任务。"""
         if self.projects.get_owned(project_id, user_id) is None:
             raise ExecutionError("Project not found or unauthorized.", 404)
         return self.repository.list_for_project(project_id, user_id, limit)
 
-    def cancel(self, task_id: str, user_id: str):
+    def cancel(self, task_id: str, user_id: str) -> ExecutionTaskView:
         """请求取消任务；终态任务原样返回。"""
         if self.repository.get(task_id, user_id) is None:
             raise ExecutionError("Execution task not found.", 404)

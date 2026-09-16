@@ -19,7 +19,7 @@ from ..models import Definition, ImportRec, Reference
 class IndexingPhase:
     """索引阶段：建立语言无关和语言特定的全局符号索引。"""
 
-    def _build_indexes(self):
+    def _build_indexes(self) -> None:
         """输入阶段一合并结果，构建模块、类、简单名和类型等跨文件解析索引。"""
         for path, lang in self.file_lang.items():
             self._index_file_module(path, lang)
@@ -71,7 +71,8 @@ class IndexingPhase:
                 continue
             self.c_files_by_name[os.path.basename(path)].append(path)
 
-    def _index_file_module(self, path: str, lang: str):
+    def _index_file_module(self, path: str, lang: str) -> None:
+        """为单个源码文件建立模块级索引。"""
         if lang == "python":
             stem = path[:-3] if path.endswith(".py") else path
             if stem.endswith("/__init__"):

@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """项目导入、概览和清理的 HTTP 路由。"""
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from backend.app.core.deps import get_current_user
@@ -29,8 +31,8 @@ project_repository = ProjectRepository()
 async def analyze_project(
     repo_url: str | None = Form(default=None),
     file: UploadFile | None = File(default=None),
-    current_user: dict = Depends(get_current_user),
-):
+    current_user: dict[str, str] = Depends(get_current_user),
+) -> dict[str, Any]:
     """校验 HTTP 输入并委托应用服务完成一次完整项目分析。"""
     if bool(repo_url) == bool(file):
         raise HTTPException(
@@ -68,7 +70,7 @@ async def analyze_project(
 
 
 @router.get("/model/status")
-async def get_model_status(current_user: dict = Depends(get_current_user)):
+async def get_model_status(current_user: dict[str, str] = Depends(get_current_user)) -> dict[str, Any]:
     """输出不含密钥的模型配置状态、供应商和模型名。"""
     config = get_model_configuration()
     return {
@@ -85,8 +87,8 @@ async def get_model_status(current_user: dict = Depends(get_current_user)):
 async def create_project_overview(
     project_id: str,
     request: ProjectOverviewRequest,
-    current_user: dict = Depends(get_current_user),
-):
+    current_user: dict[str, str] = Depends(get_current_user),
+) -> dict[str, Any]:
     """输出有静态证据的概览；模型失败时返回静态结果。"""
     project = project_repository.get_owned(project_id, current_user["user_id"])
 
@@ -115,7 +117,7 @@ async def create_project_overview(
 
 
 @router.delete("/clear/{project_id}")
-async def clear_project(project_id: str, current_user: dict = Depends(get_current_user)):
+async def clear_project(project_id: str, current_user: dict[str, str] = Depends(get_current_user)) -> dict[str, Any]:
     """删除当前用户的项目数据、工作目录和分析产物。"""
     try:
         result = await project_lifecycle_service.delete(project_id, current_user["user_id"])

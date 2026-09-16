@@ -13,13 +13,13 @@ from tree_sitter_language_pack import get_parser
 from ..ast_utils import *
 from ..constants import *
 from ..context import FileContext
-from ..handlers import get_handler
+from ..handlers import BaseHandler, get_handler
 from ..models import Definition, ImportRec, Reference
 
 class GraphResolutionPhase:
     """图阶段：生成节点并解析定义、重写、调用和外部依赖边。"""
 
-    def _build_graph_nodes(self):
+    def _build_graph_nodes(self) -> None:
         """将全部确定性定义转换为 NetworkX 图节点。"""
         graph = self.global_graph
         for path, lang in self.file_lang.items():
@@ -35,7 +35,8 @@ class GraphResolutionPhase:
                            kind=definition.kind, lang=definition.lang, file=definition.file,
                            line=definition.line, declaration=definition.is_declaration)
 
-    def _link_definitions(self):
+    def _link_definitions(self) -> None:
+        """连接模块、类型和成员之间的结构关系。"""
         graph = self.global_graph
         for fqn, definition in self.definitions.items():
             canonical = self._canonical(fqn)
@@ -70,7 +71,7 @@ class GraphResolutionPhase:
                 graph.add_edge(source, target, relation=relation)
                 self.stats[f"edges_{relation}"] += 1
 
-    def _resolve_overrides(self):
+    def _resolve_overrides(self) -> None:
         """比较类层级成员并向图中追加方法重写关系。"""
         graph = self.global_graph
         for class_fqn in list(self.class_bases):
@@ -89,7 +90,7 @@ class GraphResolutionPhase:
                         self.stats["edges_overrides"] += 1
                     break
 
-    def _resolve_references(self):
+    def _resolve_references(self) -> None:
         """结合导入、作用域和类型索引解析引用并追加调用、实例化和类型关系。"""
         graph = self.global_graph
         for ref in self.references:
@@ -130,7 +131,7 @@ class GraphResolutionPhase:
             if self.include_virtual_dispatch and relation == "calls":
                 self._expand_virtual(graph, source, target)
 
-    def _expand_virtual(self, graph, source: str, target: str):
+    def _expand_virtual(self, graph: nx.MultiDiGraph, source: str, target: str) -> None:
         """多态：调用点连向基类方法时，同时连向各子类的覆写实现。"""
         definition = self.definitions.get(target)
         if definition is None or definition.kind not in ("method", "constructor"):
@@ -155,7 +156,7 @@ class GraphResolutionPhase:
                 self.stats["virtual_truncated"] += 1
                 break
 
-    def _resolve_reference(self, ref: Reference):
+    def _resolve_reference(self, ref: Reference) -> tuple[str | None, str]:
         """返回 (目标节点 id 或 None, 派发方式)。目标可能是内置/外部虚拟节点。"""
         lang = ref.lang
         handler = get_handler(lang)
@@ -310,7 +311,7 @@ class GraphResolutionPhase:
                 return self._canonical(hit)
         return ""
 
-    def _fallback_symbol(self, ref: Reference, handler, prefer_type: bool = False):
+    def _fallback_symbol(self, ref: Reference, handler: BaseHandler | None, prefer_type: bool = False) -> tuple[str | None, str]:
         """全项目简名唯一匹配（弱推断），否则归入内置/外部/未解析。"""
         pool = self.class_simple_index if prefer_type else self.simple_index
         candidates = [fqn for fqn in pool.get(ref.name, [])
@@ -328,7 +329,7 @@ class GraphResolutionPhase:
                     return self._canonical(fqn), "heuristic"
         return None, "unresolved"
 
-    def _fallback_member(self, ref: Reference, handler):
+    def _fallback_member(self, ref: Reference, handler: BaseHandler | None) -> tuple[str | None, str]:
         """带接收者但接收者类型未知：先判内置类型方法，再退化为“项目里唯一同名方法”。"""
         if handler and ref.name in handler.type_methods:
             return self._builtin_node(ref.lang, ref.name), "builtin"
@@ -341,6 +342,7 @@ class GraphResolutionPhase:
         return None, "unresolved"
 
     def _builtin_node(self, lang: str, name: str) -> str | None:
+        """构造语言内置符号对应的图节点标识。"""
         if not self.include_builtins:
             return None
         node_id = f"{self.BUILTIN_PREFIX}::{lang}::{name}"
@@ -351,6 +353,7 @@ class GraphResolutionPhase:
         return node_id
 
     def _external_node(self, module: str, name: str, *, is_stdlib: bool = False) -> str | None:
+        """构造第三方外部符号对应的图节点标识。"""
         if not self.include_externals:
             return None
         module = module or "unknown"

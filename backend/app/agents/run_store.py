@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
@@ -16,7 +16,8 @@ ACTIVE_STATUSES = ("queued", "running")
 class AgentRunStore:
     """智能体运行、持久化队列租约与有序事件仓储。"""
 
-    def __init__(self, session_factory: Callable[[], Session] | None = None):
+    def __init__(self, session_factory: Callable[[], Session] | None = None) -> None:
+        """使用可替换的 SQLAlchemy 会话工厂初始化运行、队列与事件仓储。"""
         self.session_factory = session_factory or SessionLocal
 
     def create(
@@ -84,28 +85,6 @@ class AgentRunStore:
                 AgentRunModel.user_id == user_id,
             ).first()
             return self._view(row) if row else None
-        finally:
-            db.close()
-
-    def get_row_data(self, run_id: str, user_id: str) -> dict | None:
-        """输出兼容旧调用方的最小运行字段。"""
-        db = self.session_factory()
-        try:
-            row = db.query(AgentRunModel).filter(
-                AgentRunModel.id == run_id,
-                AgentRunModel.user_id == user_id,
-            ).first()
-            if not row:
-                return None
-            return {
-                "id": row.id,
-                "project_id": row.project_id,
-                "user_id": row.user_id,
-                "question": row.question,
-                "use_model": row.use_model,
-                "max_steps": row.max_steps,
-                "status": row.status,
-            }
         finally:
             db.close()
 
@@ -270,7 +249,7 @@ class AgentRunStore:
         self.update(run_id, status="failed", error=public_error)
         self.add_event(run_id, "run.failed", {"error": public_error})
 
-    def update(self, run_id: str, **values) -> None:
+    def update(self, run_id: str, **values: Any) -> None:
         """更新指定运行字段和更新时间。"""
         db = self.session_factory()
         try:
@@ -321,6 +300,7 @@ class AgentRunStore:
 
     @staticmethod
     def _view(row: AgentRunModel) -> AgentRunView:
+        """将数据库记录转换为脱离会话的公开视图。"""
         return AgentRunView(
             id=row.id,
             project_id=row.project_id,

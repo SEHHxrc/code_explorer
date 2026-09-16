@@ -19,7 +19,7 @@ class GoHandler(BaseHandler):
     stdlib_modules = GO_STDLIB
     bare_call_hits_class = False
 
-    def register(self):
+    def register(self) -> None:
         """注册 Go Tree-sitter 节点回调；无返回值。"""
         self.bind({
             "package_clause": self.h_package,
@@ -39,12 +39,14 @@ class GoHandler(BaseHandler):
             "composite_literal": self.h_composite,
         })
 
-    def h_package(self, node, ctx):
+    def h_package(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析包声明语法节点并把结果写入文件上下文。"""
         ident = _first_of(node, {"package_identifier"})
         ctx.package = ctx.text(ident)
         return SKIP_CHILDREN
 
-    def h_import(self, node, ctx):
+    def h_import(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析导入声明语法节点并把结果写入文件上下文。"""
         line = node.start_point[0] + 1
         specs = []
         for child in node.named_children:
@@ -60,7 +62,8 @@ class GoHandler(BaseHandler):
             ctx.add_import(module, alias=alias, kind="module", line=line)
         return SKIP_CHILDREN
 
-    def h_type_spec(self, node, ctx):
+    def h_type_spec(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析类型定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
         type_node = _field(node, "type")
@@ -80,7 +83,8 @@ class GoHandler(BaseHandler):
         ctx.push(definition.fqn, "class", name, definition)
         return 0
 
-    def h_field(self, node, ctx):
+    def h_field(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析字段定义语法节点并把结果写入文件上下文。"""
         frame = ctx.top
         if frame.kind != "class" or frame.definition is None:
             return 0
@@ -97,13 +101,14 @@ class GoHandler(BaseHandler):
             ctx.add_def(node, ctx.text(name_node), "field", name_node=name_node, type_literal=type_literal)
         return SKIP_CHILDREN
 
-    def h_method_elem(self, node, ctx):
+    def h_method_elem(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
         """接口里的方法声明。"""
         name_node = _field(node, "name")
         ctx.add_def(node, ctx.text(name_node), "method", name_node=name_node, is_declaration=True)
         return SKIP_CHILDREN
 
-    def h_method(self, node, ctx):
+    def h_method(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析方法定义语法节点并把结果写入文件上下文。"""
         receiver = _field(node, "receiver")
         recv_var, recv_type = "", ""
         if receiver is not None:
@@ -125,7 +130,8 @@ class GoHandler(BaseHandler):
             ctx.bind_frame_var(frame, recv_var, recv_type)
         return 0
 
-    def h_function(self, node, ctx):
+    def h_function(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析函数定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         definition = ctx.add_def(node, ctx.text(name_node), "function", name_node=name_node,
                                  return_type=ctx.text(_field(node, "result")))
@@ -134,11 +140,13 @@ class GoHandler(BaseHandler):
         ctx.push(definition.fqn, "function", definition.name, definition)
         return 0
 
-    def h_func_literal(self, node, ctx):
+    def h_func_literal(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析函数字面量语法节点并把结果写入文件上下文。"""
         ctx.push(ctx.top.fqn, "function", "")
         return 0
 
-    def h_var_spec(self, node, ctx):
+    def h_var_spec(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析变量声明语法节点并把结果写入文件上下文。"""
         kind = "constant" if node.type == "const_spec" else "variable"
         type_node = _field(node, "type")
         type_literal = ctx.text(type_node) if type_node is not None else self._infer_type(ctx, _field(node, "value"))
@@ -150,7 +158,8 @@ class GoHandler(BaseHandler):
                 ctx.add_def(node, name, kind, name_node=name_node, type_literal=type_literal)
         return 0
 
-    def h_short_var(self, node, ctx):
+    def h_short_var(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析短变量声明语法节点并把结果写入文件上下文。"""
         left = _field(node, "left")
         right = _field(node, "right")
         if left is None or right is None:
@@ -162,13 +171,15 @@ class GoHandler(BaseHandler):
             ctx.set_var_type(ctx.text(name_node), self._infer_type(ctx, value))
         return 0
 
-    def h_param(self, node, ctx):
+    def h_param(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析参数类型语法节点并把结果写入文件上下文。"""
         type_literal = ctx.text(_field(node, "type"))
         for name_node in _fields(node, "name"):
             ctx.set_var_type(ctx.text(name_node), type_literal)
         return 0
 
-    def _infer_type(self, ctx, value) -> str:
+    def _infer_type(self, ctx: FileContext, value: tree_sitter.Node | None) -> str:
+        """根据表达式和值绑定推断类型字面量。"""
         if value is None:
             return ""
         if value.type == "expression_list":
@@ -192,13 +203,15 @@ class GoHandler(BaseHandler):
             return CALL_TYPE_PREFIX + ctx.text(func)
         return ""
 
-    def h_call(self, node, ctx):
+    def h_call(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析函数调用语法节点并把结果写入文件上下文。"""
         name, receiver = self.split_callee(ctx, _field(node, "function"))
         if name:
             ctx.add_ref(node, "call", name, receiver)
         return 0
 
-    def h_composite(self, node, ctx):
+    def h_composite(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析复合字面量语法节点并把结果写入文件上下文。"""
         type_node = _field(node, "type")
         if type_node is not None and type_node.type in ("type_identifier", "qualified_type"):
             literal = ctx.text(type_node)

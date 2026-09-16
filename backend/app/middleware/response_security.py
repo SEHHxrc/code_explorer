@@ -9,6 +9,8 @@ import uuid
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
 
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _DEFAULT_MAX_REQUEST_BYTES = 220 * 1024 * 1024
@@ -22,7 +24,7 @@ def setup_response_security(app: FastAPI) -> None:
         configured_limit = _DEFAULT_MAX_REQUEST_BYTES
 
     @app.middleware("http")
-    async def response_security_middleware(request: Request, call_next):
+    async def response_security_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
         """验证通用请求元数据并为所有响应附加安全头；保持 SSE/JSON 正文原样。"""
         started_at = time.perf_counter()
         supplied_request_id = request.headers.get("x-request-id", "")
@@ -54,7 +56,7 @@ def setup_response_security(app: FastAPI) -> None:
         return _secure(response, request_id, started_at, request.url.path)
 
 
-def _secure(response, request_id: str, started_at: float, path: str):
+def _secure(response: Response, request_id: str, started_at: float, path: str) -> Response:
     """只追加通用响应头，不读取或重建响应体。"""
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"

@@ -4,6 +4,8 @@
 正式智能体不得依赖本模块。图增强实验胜出后删除本文件及整个 baseline 目录。
 """
 
+from typing import Any
+
 from backend.app.agents.orchestrator import AgentRunManager
 from backend.app.experiments.baseline.context_builder import BaselineContextBuilder
 from backend.app.experiments.baseline.tool_registry import create_baseline_tool_registry
@@ -27,13 +29,14 @@ def prepare_baseline_artifact(artifact: dict) -> dict:
 class BaselineExperimentStrategy:
     """【临时对照组】隔离启动无依赖图运行；实验结束后应整体删除。"""
 
-    def __init__(self, manager: AgentRunManager | None = None):
+    def __init__(self, manager: AgentRunManager | None = None) -> None:
+        """输入可选运行管理器，初始化隔离的无图对照组上下文与工具。"""
         self.manager = manager or AgentRunManager(
             context_builder=BaselineContextBuilder(),
             tools=create_baseline_tool_registry(),
             instructions=BASELINE_INSTRUCTIONS,
         )
 
-    def start(self, *, artifact: dict, **run_arguments) -> None:
+    def start(self, *, artifact: dict[str, Any], **run_arguments: Any) -> None:
         """【临时对照组】剥离 dependency_graph、图排序 Repo Map 和图派生概览后启动。"""
         self.manager.start(artifact=prepare_baseline_artifact(artifact), **run_arguments)

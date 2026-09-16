@@ -9,11 +9,13 @@ import tree_sitter
 from .constants import NOISE_NAMES
 
 def _text(node: tree_sitter.Node | None, src: bytes) -> str:
+    """容错读取 Tree-sitter 节点对应的 UTF-8 源码。"""
     if node is None:
         return ""
     return src[node.start_byte:node.end_byte].decode("utf-8", errors="ignore")
 
 def _field(node: tree_sitter.Node | None, name: str) -> tree_sitter.Node | None:
+    """安全读取 Tree-sitter 节点的命名字段。"""
     if node is None:
         return None
     try:
@@ -22,6 +24,7 @@ def _field(node: tree_sitter.Node | None, name: str) -> tree_sitter.Node | None:
         return None
 
 def _fields(node: tree_sitter.Node | None, name: str) -> list:
+    """安全读取 Tree-sitter 节点的同名字段列表。"""
     if node is None:
         return []
     try:
@@ -29,7 +32,7 @@ def _fields(node: tree_sitter.Node | None, name: str) -> list:
     except Exception:
         return []
 
-def _first_of(node: tree_sitter.Node | None, types) -> tree_sitter.Node | None:
+def _first_of(node: tree_sitter.Node | None, types: set[str]) -> tree_sitter.Node | None:
     """在直接子节点中找第一个指定类型的节点（不递归）。"""
     if node is None:
         return None
@@ -38,7 +41,7 @@ def _first_of(node: tree_sitter.Node | None, types) -> tree_sitter.Node | None:
             return child
     return None
 
-def _descend_for(node: tree_sitter.Node | None, types, max_depth: int = 6):
+def _descend_for(node: tree_sitter.Node | None, types: set[str], max_depth: int = 6) -> None | object:
     """在有限深度内向下找第一个指定类型的节点（用于拆解声明符等小子树）。"""
     if node is None:
         return None

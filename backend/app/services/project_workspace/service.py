@@ -17,6 +17,7 @@ from .sources import GitProjectSource, ZipProjectSource
 
 
 def _default_policy() -> WorkspacePolicy:
+    """从环境变量构造工作区安全限制。"""
     configured_hosts = {
         item.strip().casefold()
         for item in os.getenv("GIT_ALLOWED_HOSTS", "").split(",")
@@ -35,7 +36,8 @@ class ProjectWorkspaceService:
         paths: ProjectWorkspacePaths | None = None,
         filesystem: WorkspaceFilesystem | None = None,
         journal: OperationJournal | None = None,
-    ):
+    ) -> None:
+        """注入策略、路径、文件系统和操作日志，初始化工作区编排服务。"""
         self.policy = policy or _default_policy()
         self.paths = paths or ProjectWorkspacePaths()
         self.filesystem = filesystem or WorkspaceFilesystem(self.paths)
@@ -45,6 +47,7 @@ class ProjectWorkspaceService:
         self.zip_source = ZipProjectSource(self.policy)
 
     def begin(self, user_id: str) -> WorkspaceOperation:
+        """创建项目工作区操作并开始补偿跟踪。"""
         operation_id = uuid.uuid4().hex
         project_id = uuid.uuid4().hex
         operation_root, source_root = self.filesystem.create_operation(user_id, operation_id)
@@ -64,6 +67,7 @@ class ProjectWorkspaceService:
         return operation
 
     def prepare(self, operation: WorkspaceOperation, source: WorkspaceSource) -> PreparedWorkspace:
+        """获取项目源码并完成安全清洗。"""
         self.journal.transition(operation, "acquiring")
         if source.kind == "git" and source.repo_url and source.file_obj is None:
             source_tag = self.git_source.acquire(source.repo_url, operation.source_root)
@@ -81,6 +85,7 @@ class ProjectWorkspaceService:
         return PreparedWorkspace(operation=operation, source_tag=source_tag, sanitize_report=report)
 
     def publish(self, prepared: PreparedWorkspace) -> Path:
+        """把已清洗的暂存工作区原子发布为项目目录。"""
         operation = prepared.operation
         self.journal.transition(operation, "publishing")
         try:
@@ -93,12 +98,15 @@ class ProjectWorkspaceService:
             raise WorkspacePublishError() from exc
 
     def transition(self, operation: WorkspaceOperation, state: str) -> None:
+        """更新当前工作区操作的持久化阶段。"""
         self.journal.transition(operation, state)
 
     def finish(self, operation: WorkspaceOperation) -> None:
+        """删除已完成操作的暂存记录。"""
         self.journal.transition(operation, "completed")
         self.filesystem.remove_operation(operation.user_id, operation.operation_id)
 
     def mark_rollback_failed(self, operation: WorkspaceOperation) -> None:
+        """记录需要启动清理器继续补偿的失败操作。"""
         self.journal.transition(operation, "rollback_failed")
 

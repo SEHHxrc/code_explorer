@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Callable
 from pathlib import Path
+
+from sqlalchemy.orm import Session
 
 from backend.app.models import ProjectModel, SessionLocal
 from backend.app.services.artifact_store import remove_analysis_artifact
@@ -20,7 +23,16 @@ logger = logging.getLogger(__name__)
 class WorkspaceJanitor:
     """通过受控 ID 重算路径，回收超时且未提交的导入操作。"""
 
-    def __init__(self, *, paths=None, filesystem=None, journal=None, policy=None, session_factory=SessionLocal):
+    def __init__(
+        self,
+        *,
+        paths: ProjectWorkspacePaths | None = None,
+        filesystem: WorkspaceFilesystem | None = None,
+        journal: OperationJournal | None = None,
+        policy: WorkspacePolicy | None = None,
+        session_factory: Callable[[], Session] = SessionLocal,
+    ) -> None:
+        """注入路径、文件系统、日志、策略和会话工厂，初始化崩溃清理器。"""
         self.paths = paths or ProjectWorkspacePaths()
         self.filesystem = filesystem or WorkspaceFilesystem(self.paths)
         self.journal = journal or OperationJournal()
@@ -28,6 +40,7 @@ class WorkspaceJanitor:
         self.session_factory = session_factory
 
     def cleanup_stale(self) -> dict[str, int]:
+        """清理超过保留时间且未完成的工作区操作。"""
         result = {"scanned": 0, "cleaned": 0, "failed": 0}
         if not self.paths.root.exists():
             return result
@@ -62,6 +75,7 @@ class WorkspaceJanitor:
         return result
 
     def _project_exists(self, project_id: str, user_id: str) -> bool:
+        """返回操作关联的项目数据库记录是否存在。"""
         session = self.session_factory()
         try:
             return session.query(ProjectModel.id).filter(

@@ -14,6 +14,7 @@ class GraphAugmentedContextBuilder:
     """在中性 Repo Map 之上增加图摘要和有界依赖关系样本。"""
 
     def build(self, *, project_id: str, question: str, artifact: dict) -> ContextPacket:
+        """构建当前实验通道使用的有界模型上下文。"""
         manifest = ProjectManifest.model_validate(artifact.get("manifest") or {})
         repo_map = ProjectContextBuilder._select_repo_map(neutral_repo_map(artifact), question)
         graph_context = self._compact_graph(artifact.get("dependency_graph") or {})

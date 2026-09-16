@@ -28,7 +28,7 @@ class ExecutionTaskRequest(BaseModel):
     pids_limit: int = Field(default=128, ge=16, le=512)
 
     @model_validator(mode="after")
-    def validate_shape(self):
+    def validate_shape(self) -> "ExecutionTaskRequest":
         """按任务类型校验互斥字段，输出形状明确的请求。"""
         if self.kind == "command":
             if not self.image or not self.argv:
@@ -90,7 +90,8 @@ class ExecutionEventView(BaseModel):
 class ExecutionError(Exception):
     """可安全映射到 HTTP 的执行域错误。"""
 
-    def __init__(self, message: str, status_code: int):
+    def __init__(self, message: str, status_code: int) -> None:
+        """保存可安全公开的执行错误消息及对应 HTTP 状态码。"""
         super().__init__(message)
         self.public_message = message
         self.status_code = status_code

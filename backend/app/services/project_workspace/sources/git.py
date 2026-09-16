@@ -45,11 +45,13 @@ def validate_repo_url(repo_url: str, policy: WorkspacePolicy) -> None:
 class GitProjectSource:
     """在暂存工作区执行浅克隆，并移除不需要的 Git 元数据。"""
 
-    def __init__(self, policy: WorkspacePolicy, filesystem: WorkspaceFilesystem):
+    def __init__(self, policy: WorkspacePolicy, filesystem: WorkspaceFilesystem) -> None:
+        """输入工作区策略，初始化受限 Git 项目来源。"""
         self.policy = policy
         self.filesystem = filesystem
 
     def acquire(self, repo_url: str, destination: Path) -> str:
+        """把项目来源获取到指定暂存工作区。"""
         validate_repo_url(repo_url, self.policy)
         try:
             git.Repo.clone_from(

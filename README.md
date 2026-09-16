@@ -1,6 +1,6 @@
 # Code Explorer
 
-Code Explorer 是一个面向源代码仓库的本地分析平台。它从上传文件、本地目录或 Git 仓库构建文件树、符号与依赖图，生成可供人和大模型共同使用的项目清单（manifest）与压缩仓库地图（repo map），并通过受策略约束的智能体执行只读分析工具。
+Code Explorer 是一个面向源代码仓库的本地分析平台。它从 ZIP 上传或 Git 仓库构建文件树、符号与依赖图，生成可供人和大模型共同使用的项目清单（manifest）与压缩仓库地图（repo map），并通过受策略约束的智能体执行只读分析工具。
 
 ## 当前能力
 
@@ -14,6 +14,14 @@ Code Explorer 是一个面向源代码仓库的本地分析平台。它从上传
 
 完整的模块边界、数据流、类与关键函数说明见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 其他功能域的候选拆分与合并顺序见 [docs/MODULE_REFACTORING.md](docs/MODULE_REFACTORING.md)。
+
+主要维护入口：
+
+- [后端应用与功能域](backend/app/README.md)
+- [大模型接入](backend/app/llm/README.md)
+- [项目智能体与工具调用](backend/app/agents/README.md)
+- [多语言依赖分析器](backend/app/services/dependency_analyzer/README.md)
+- [前端源码与功能模块](frontend/src/README.md)
 
 ## 启动
 

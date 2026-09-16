@@ -15,7 +15,8 @@ from .contracts import ExecutionEventView, ExecutionPlan, ExecutionTaskView, TER
 class ExecutionRepository:
     """每个方法拥有独立会话；Worker 通过条件更新原子认领任务。"""
 
-    def __init__(self, session_factory: Callable[[], Session] = SessionLocal):
+    def __init__(self, session_factory: Callable[[], Session] = SessionLocal) -> None:
+        """使用可替换的会话工厂初始化任务队列与审计事件仓储。"""
         self.session_factory = session_factory
 
     def create(self, *, task_id: str, project_id: str, user_id: str, plan: ExecutionPlan) -> ExecutionTaskView:
@@ -288,6 +289,7 @@ class ExecutionRepository:
 
     @staticmethod
     def _view(row: ExecutionTaskModel) -> ExecutionTaskView:
+        """将数据库记录转换为脱离会话的公开视图。"""
         return ExecutionTaskView(
             id=row.id,
             project_id=row.project_id,

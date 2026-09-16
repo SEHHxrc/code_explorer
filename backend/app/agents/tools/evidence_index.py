@@ -9,6 +9,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class SymbolRow:
+    """保存一次符号索引命中的轻量不可变记录。"""
     path: str
     symbol: dict[str, Any]
 
@@ -16,7 +17,8 @@ class SymbolRow:
 class ProjectEvidenceIndex:
     """保留原始对象引用，避免每次工具调用重新扫描完整符号和依赖边。"""
 
-    def __init__(self, artifact: dict[str, Any]):
+    def __init__(self, artifact: dict[str, Any]) -> None:
+        """输入分析产物并预建符号、文件及依赖邻接索引。"""
         self.symbols: list[SymbolRow] = []
         for path, symbols in (artifact.get("file_symbols") or {}).items():
             for symbol in symbols or []:
@@ -42,6 +44,7 @@ class ProjectEvidenceIndex:
 
     @staticmethod
     def _endpoint(value: Any) -> str:
+        """从依赖边中选择当前符号之外的端点标识。"""
         if isinstance(value, dict):
             value = value.get("id")
         return "" if value is None else str(value)

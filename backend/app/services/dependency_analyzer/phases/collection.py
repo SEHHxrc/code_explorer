@@ -20,6 +20,7 @@ class CollectionPhase:
     """收集阶段：扫描文件、并发解析语法树并合并单文件上下文。"""
 
     def _collect_files(self) -> list[str]:
+        """收集符合大小、扩展名和忽略规则的源码文件。"""
         targets = []
         for root, dirs, files in os.walk(self.project_root):
             dirs[:] = [d for d in dirs if d not in IGNORED_DIRS and not d.startswith(".")]
@@ -60,7 +61,8 @@ class CollectionPhase:
             return "c"
         return "cpp" if any(marker in head for marker in CPP_MARKERS) else "c"
 
-    def _get_parser(self, lang: str):
+    def _get_parser(self, lang: str) -> tree_sitter.Parser:
+        """获取并缓存当前语言的 Tree-sitter 解析器。"""
         cache = getattr(self._tls, "parsers", None)
         if cache is None:
             cache = {}
@@ -72,6 +74,7 @@ class CollectionPhase:
         return parser
 
     def _analyze_file(self, full_path: str) -> FileContext | None:
+        """解析单个源码文件并返回独立文件上下文。"""
         rel_path = os.path.relpath(full_path, self.project_root).replace("\\", "/")
         lang = self._detect_lang(full_path)
         ctx = None
@@ -94,7 +97,7 @@ class CollectionPhase:
         return ctx
 
     @staticmethod
-    def _walk(ctx: FileContext, root):
+    def _walk(ctx: FileContext, root: tree_sitter.Node) -> None:
         """显式栈式单次遍历：每个节点只被访问一次，处理函数不重复递归子树。"""
         handlers = ctx.handler.handlers
         stack = [(root, False)]
@@ -126,7 +129,8 @@ class CollectionPhase:
                 for index in range(len(children) - 1, -1, -1):
                     stack.append((children[index], False))
 
-    def _merge_contexts(self, contexts: list[FileContext]):
+    def _merge_contexts(self, contexts: list[FileContext]) -> None:
+        """合并各文件上下文并生成分析阶段统计。"""
         for ctx in contexts:
             self.file_symbols_map[ctx.path] = ctx.symbols
             self.file_lang[ctx.path] = ctx.lang

@@ -27,7 +27,8 @@ class DockerExecutionResult:
 class DockerExecutor:
     """只用参数数组调用 Docker；绝不通过宿主 Shell 拼接命令。"""
 
-    def __init__(self, settings: ExecutionSettings):
+    def __init__(self, settings: ExecutionSettings) -> None:
+        """输入执行设置与 Docker 运行器，初始化受限容器执行器。"""
         self.settings = settings
 
     def build_command(self, plan: ExecutionPlan, project_root: Path, container_name: str) -> list[str]:
@@ -87,6 +88,7 @@ class DockerExecutor:
         chunks: queue.Queue[bytes | None] = queue.Queue()
 
         def read_output() -> None:
+            """持续读取容器输出并执行截断、审计与取消检查。"""
             stream = process.stdout
             if stream is not None:
                 while True:

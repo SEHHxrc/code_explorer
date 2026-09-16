@@ -13,6 +13,7 @@ class ComparisonRequest(BaseModel):
 
 
 class LaneScores(BaseModel):
+    """保存盲评中单条实验通道的各维度评分。"""
     correctness: int = Field(ge=1, le=5)
     completeness: int = Field(ge=1, le=5)
     evidence: int = Field(ge=1, le=5)
@@ -29,7 +30,9 @@ class BlindReviewRequest(BaseModel):
 
 
 class ExperimentError(Exception):
-    def __init__(self, message: str, status_code: int):
+    """携带安全公开信息和 HTTP 状态的实验领域错误。"""
+    def __init__(self, message: str, status_code: int) -> None:
+        """保存可安全公开的实验错误消息及对应 HTTP 状态码。"""
         super().__init__(message)
         self.public_message = message
         self.status_code = status_code

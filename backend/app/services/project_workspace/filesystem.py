@@ -5,6 +5,9 @@ from __future__ import annotations
 import os
 import shutil
 import stat
+from collections.abc import Callable
+from types import TracebackType
+from typing import Any
 from pathlib import Path
 
 from .paths import ProjectWorkspacePaths
@@ -13,10 +16,12 @@ from .paths import ProjectWorkspacePaths
 class WorkspaceFilesystem:
     """创建、发布和幂等删除工作区，并处理 Windows 只读文件。"""
 
-    def __init__(self, paths: ProjectWorkspacePaths):
+    def __init__(self, paths: ProjectWorkspacePaths) -> None:
+        """输入受控路径服务，初始化唯一的工作区文件变更边界。"""
         self.paths = paths
 
     def create_operation(self, user_id: str, operation_id: str) -> tuple[Path, Path]:
+        """创建用户隔离的暂存操作目录。"""
         operation_root = self.paths.operation_root(user_id, operation_id)
         self.paths.ensure_child(operation_root, self.paths.staging_root(user_id))
         operation_root.mkdir(parents=True, exist_ok=False)
@@ -25,6 +30,7 @@ class WorkspaceFilesystem:
         return operation_root, source_root
 
     def publish(self, user_id: str, project_id: str, source_root: Path) -> Path:
+        """把已清洗的暂存工作区原子发布为项目目录。"""
         operation_root = source_root.parent
         self.paths.ensure_child(operation_root, self.paths.staging_root(user_id))
         final_root = self.paths.project_root(user_id, project_id)
@@ -36,17 +42,21 @@ class WorkspaceFilesystem:
         return final_root
 
     def remove_operation(self, user_id: str, operation_id: str) -> None:
+        """删除受控的暂存操作目录。"""
         target = self.paths.operation_root(user_id, operation_id)
         self._remove(target, self.paths.staging_root(user_id))
 
     def remove_project(self, user_id: str, project_id: str) -> None:
+        """删除受控的项目工作目录。"""
         target = self.paths.project_root(user_id, project_id)
         self._remove(target, self.paths.user_root(user_id) / "projects")
 
     def remove_child(self, target: Path, root: Path) -> None:
+        """删除受控根目录下的指定子路径。"""
         self._remove(target, root)
 
     def _remove(self, target: Path, root: Path) -> None:
+        """校验路径边界后递归删除目标。"""
         controlled = self.paths.ensure_child(target, root)
         if controlled.is_symlink():
             controlled.unlink(missing_ok=True)
@@ -59,7 +69,12 @@ class WorkspaceFilesystem:
             controlled.unlink()
 
     @staticmethod
-    def _remove_readonly(function, path: str, _exc_info) -> None:
+    def _remove_readonly(
+        function: Callable[[str], Any],
+        path: str,
+        _exc_info: tuple[type[BaseException], BaseException, TracebackType],
+    ) -> None:
+        """清除只读标志并重试文件删除。"""
         os.chmod(path, stat.S_IWRITE)
         function(path)
 

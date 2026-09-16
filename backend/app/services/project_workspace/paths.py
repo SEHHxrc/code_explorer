@@ -13,25 +13,31 @@ _IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 class ProjectWorkspacePaths:
     """只根据受控 ID 计算路径，不接受日志或数据库提供的删除目标。"""
 
-    def __init__(self, root: Path | str = "backend/storage/users"):
+    def __init__(self, root: Path | str = "backend/storage/users") -> None:
+        """输入可选存储根目录，初始化用户、暂存和项目路径计算器。"""
         self.root = Path(root).resolve()
 
     def validate_identifier(self, value: str, label: str) -> str:
+        """校验用户、项目或操作标识可安全用于路径。"""
         if not _IDENTIFIER.fullmatch(value or ""):
             raise ValueError(f"Invalid {label}")
         return value
 
     def user_root(self, user_id: str) -> Path:
+        """返回指定用户的受控存储根目录。"""
         return self.root / self.validate_identifier(user_id, "user id")
 
     def staging_root(self, user_id: str) -> Path:
+        """返回指定用户的暂存区根目录。"""
         return self.user_root(user_id) / ".staging"
 
     def operation_root(self, user_id: str, operation_id: str) -> Path:
+        """返回指定暂存操作的受控目录。"""
         self.validate_identifier(operation_id, "operation id")
         return self.staging_root(user_id) / operation_id
 
     def project_root(self, user_id: str, project_id: str) -> Path:
+        """返回指定项目的受控工作目录。"""
         self.validate_identifier(project_id, "project id")
         return self.user_root(user_id) / "projects" / project_id
 

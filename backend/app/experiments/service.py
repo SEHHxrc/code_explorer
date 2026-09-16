@@ -20,12 +20,20 @@ TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 class ExperimentComparisonService:
     """保持问题、模型和步骤预算一致，只改变依赖图输入与图工具。"""
 
-    def __init__(self, *, repository=None, projects=None, run_store=None):
+    def __init__(
+        self,
+        *,
+        repository: ExperimentRepository | None = None,
+        projects: ProjectRepository | None = None,
+        run_store: AgentRunStore | None = None,
+    ) -> None:
+        """注入实验仓储、项目仓储与智能体运行仓储。"""
         self.repository = repository or ExperimentRepository()
         self.projects = projects or ProjectRepository()
         self.run_store = run_store or AgentRunStore()
 
     def create(self, project_id: str, user_id: str, request: ComparisonRequest) -> dict:
+        """创建并持久化新的领域记录。"""
         config = get_model_configuration()
         if not config.configured:
             raise ExperimentError("Configure an online or local model before starting an A/B comparison.", 409)
@@ -69,6 +77,7 @@ class ExperimentComparisonService:
         return self.get(comparison_id, user_id)
 
     def get(self, comparison_id: str, user_id: str) -> dict:
+        """按标识和用户读取其有权访问的领域记录。"""
         record = self._record(comparison_id, user_id)
         runs = {
             "baseline": self.run_store.get(record.baseline_run_id, user_id),
@@ -94,6 +103,7 @@ class ExperimentComparisonService:
         }
 
     def review(self, comparison_id: str, user_id: str, review: BlindReviewRequest) -> dict:
+        """校验并保存配对实验的盲评结果。"""
         view = self.get(comparison_id, user_id)
         if view["status"] != "completed":
             raise ExperimentError("Both experiment runs must finish before blind review.", 409)
@@ -101,12 +111,14 @@ class ExperimentComparisonService:
         return {"comparison_id": comparison_id, "reviewed": True, "reveal": self.reveal(comparison_id, user_id)}
 
     def reveal(self, comparison_id: str, user_id: str) -> dict:
+        """在盲评完成后返回左右通道的真实身份。"""
         record = self._record(comparison_id, user_id)
         if not self.repository.has_review(comparison_id, user_id):
             raise ExperimentError("Submit a blind review before revealing experiment groups.", 409)
         return {"left": record.blind_order["left"], "right": record.blind_order["right"]}
 
     def _record(self, comparison_id: str, user_id: str) -> ComparisonRecord:
+        """读取配对实验记录，不存在时抛出领域错误。"""
         record = self.repository.get(comparison_id, user_id)
         if record is None:
             raise ExperimentError("Experiment comparison not found.", 404)

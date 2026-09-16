@@ -14,15 +14,24 @@ from .contracts import ProjectDeletionResult, ProjectLifecycleError
 class ProjectLifecycleService:
     """在拒绝活动任务后删除文件资源，最后提交数据库删除。"""
 
-    def __init__(self, *, project_repository=None, artifact_repository=None, workspace_service=None):
+    def __init__(
+        self,
+        *,
+        project_repository: ProjectRepository | None = None,
+        artifact_repository: AnalysisArtifactRepository | None = None,
+        workspace_service: ProjectWorkspaceService | None = None,
+    ) -> None:
+        """注入项目、产物和工作区边界，初始化一致删除服务。"""
         self.projects = project_repository or ProjectRepository()
         self.artifacts = artifact_repository or AnalysisArtifactRepository()
         self.workspace = workspace_service or ProjectWorkspaceService()
 
     async def delete(self, project_id: str, user_id: str) -> ProjectDeletionResult:
+        """异步删除当前用户拥有的项目及其关联资源。"""
         return await asyncio.to_thread(self._delete_sync, project_id, user_id)
 
     def _delete_sync(self, project_id: str, user_id: str) -> ProjectDeletionResult:
+        """按活动任务、文件、产物和数据库顺序删除项目。"""
         project = self.projects.get_owned(project_id, user_id)
         if project is None:
             raise ProjectLifecycleError("Project not found or unauthorized.", 404)

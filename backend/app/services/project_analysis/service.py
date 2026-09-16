@@ -33,7 +33,16 @@ logger = logging.getLogger(__name__)
 class ProjectAnalysisService:
     """在可恢复补偿事务中编排工作区、分析产物和项目数据库记录。"""
 
-    def __init__(self, *, project_repository=None, artifact_repository=None, graph_normalizer=None, workspace_service=None, analyzer_factory: Callable[..., Any] = UnifiedCodeAnalyzer):
+    def __init__(
+        self,
+        *,
+        project_repository: ProjectRepository | None = None,
+        artifact_repository: AnalysisArtifactRepository | None = None,
+        graph_normalizer: GraphExchangeNormalizer | None = None,
+        workspace_service: ProjectWorkspaceService | None = None,
+        analyzer_factory: Callable[..., Any] = UnifiedCodeAnalyzer,
+    ) -> None:
+        """注入项目仓储、产物仓储、图规范化器、工作区和分析器工厂。"""
         self._projects = project_repository or ProjectRepository()
         self._artifacts = artifact_repository or AnalysisArtifactRepository()
         self._graph_normalizer = graph_normalizer or GraphExchangeNormalizer()
@@ -45,6 +54,7 @@ class ProjectAnalysisService:
         return await asyncio.to_thread(self._analyze_sync, command)
 
     def _analyze_sync(self, command: AnalyzeProjectCommand) -> ProjectAnalysisResult:
+        """在线程中执行同步项目导入与分析事务。"""
         transaction = ProjectAnalysisTransaction(self._workspace, self._artifacts)
         try:
             with transaction:
@@ -105,6 +115,7 @@ class ProjectAnalysisService:
             raise DependencyAnalysisError() from exc
 
     def _run_analysis(self, target_dir: str, max_workers: int) -> tuple[dict, dict]:
+        """运行依赖分析并返回原始图、文件树和统计。"""
         try:
             analyzer = self._analyzer_factory(target_dir, max_workers=max(1, min(max_workers, 16)))
             result = analyzer.run_full_analysis()

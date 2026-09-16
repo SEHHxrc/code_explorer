@@ -31,7 +31,8 @@ class ProjectRecord:
 class ProjectRepository:
     """在仓储内部创建和关闭会话，避免路由或服务泄漏事务所有权。"""
 
-    def __init__(self, session_factory: Callable[[], Session] = SessionLocal):
+    def __init__(self, session_factory: Callable[[], Session] = SessionLocal) -> None:
+        """使用可替换的会话工厂初始化项目元数据仓储。"""
         self._session_factory = session_factory
 
     def create(self, *, project_id: str, user_id: str, source: str, local_path: str, file_tree: list[dict]) -> None:
@@ -80,12 +81,13 @@ class ProjectRepository:
                 AgentRunModel.user_id == user_id,
                 AgentRunModel.status.in_(("queued", "running")),
             ).first() is not None
-            execution_active = session.query(ExecutionTaskModel.id).filter(
+            if agent_active:
+                return True
+            return session.query(ExecutionTaskModel.id).filter(
                 ExecutionTaskModel.project_id == project_id,
                 ExecutionTaskModel.user_id == user_id,
                 ExecutionTaskModel.status.in_(("queued", "running", "cancel_requested")),
             ).first() is not None
-            return agent_active or execution_active
         finally:
             session.close()
 

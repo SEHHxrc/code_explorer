@@ -15,7 +15,8 @@ class ProjectDeletionResult:
 class ProjectLifecycleError(Exception):
     """可安全映射到 HTTP 的项目生命周期错误。"""
 
-    def __init__(self, message: str, status_code: int):
+    def __init__(self, message: str, status_code: int) -> None:
+        """保存可安全公开的项目生命周期错误和 HTTP 状态码。"""
         super().__init__(message)
         self.public_message = message
         self.status_code = status_code

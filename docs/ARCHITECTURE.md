@@ -1,190 +1,139 @@
 # Code Explorer 架构与代码接口说明
 
-本文描述当前代码，而不是未来设想。
+本文描述当前代码边界与实际入口。各目录的文件、类和依赖关系见对应 `README.md`。
 
 ## 1. 系统边界
 
 ```text
-Vue 3 / Vite
-  ├─ ProjectInsight：固定项目壳、工作区导航与项目生命周期
-  ├─ ProjectExploreWorkspace：文件、符号与 Sigma.js 依赖图
-  ├─ AgentWorkspace：指令、事件流、工具步骤和结果
-  ├─ ExperimentComparison：依赖图盲态配对实验
-  └─ ExecutionWorkspace：隔离命令、安全扫描和审计输出
-            │ HTTP / SSE
-            ▼
+Vue 3 / Vite / Element Plus
+├─ 项目导入与概览
+├─ 文件树、符号栏与 Sigma.js 依赖图
+├─ 项目智能体与工具证据
+├─ 依赖图盲态配对实验
+└─ Docker 隔离执行与安全扫描
+              │ HTTP / 可续传 SSE
+              ▼
 FastAPI
-  ├─ project API ─► Loader/Sanitizer ─► UnifiedCodeAnalyzer
-  │                                  ├► ProjectManifestBuilder
-  │                                  ├► RepoMapBuilder
-  │                                  └► Artifact Store / SQLite
-  └─ agent API ─► SQLite Agent Queue ─► AgentQueueWorker ─► AgentRunManager ─► ModelProvider
-                                      ├► ContextBuilder
-                                      ├► Path/secret policy
-                                      └► read-only ToolRegistry
+├─ ProjectAnalysisService
+│  ├─ ProjectWorkspaceService（Git/ZIP、清洗、发布、回滚日志）
+│  ├─ UnifiedCodeAnalyzer（Tree-sitter + NetworkX）
+│  ├─ ProjectManifestBuilder / build_repo_map
+│  └─ ProjectRepository / AnalysisArtifactRepository
+├─ AgentQueueWorker → AgentRunManager
+│  ├─ ProjectContextBuilder
+│  ├─ ModelProvider（OpenAI Responses 或 OpenAI 兼容 API）
+│  └─ 只读 ToolRegistry
+├─ ExperimentComparisonService（有图 / 临时无图对照）
+└─ ExecutionService → ExecutionWorker → DockerExecutor
 ```
 
-智能体 API 只创建持久化运行与队列项。默认原型在 FastAPI 生命周期中嵌入 `AgentQueueWorker`，也可关闭后改用独立进程。排队任务可在重启后继续领取；运行任务使用租约，租约过期后安全失败而不自动重复模型调用。
+通用 Middleware 只处理异常脱敏、安全响应头和响应大小，不改写领域 DTO 或 SSE。依赖图交换格式由 `GraphExchangeNormalizer` 在服务边界显式生成。
 
-## 2. 目录职责
+## 2. 模块职责与文档入口
 
-| 路径 | 职责 | 主要输出 |
+| 模块 | 职责 | 详细说明 |
 | --- | --- | --- |
-| `backend/app/api` | HTTP/SSE 路由和请求边界 | JSON、SSE |
-| `backend/app/services` | 仓库加载、清理、静态分析、清单、仓库地图与概览 | 分析产物 |
-| `backend/app/agents` | 智能体上下文、策略、编排、事件存储和工具 | 运行事件、最终答案 |
-| `backend/app/llm` | 模型配置、统一供应商接口及在线/离线实现 | 模型结果与工具调用 |
-| `backend/app/schemas` | 跨模块传递的 Pydantic 数据契约 | manifest/overview DTO |
-| `backend/app/models.py` | SQLAlchemy 持久化模型 | project/run/event 表 |
-| `frontend/src/components` | 项目视图、依赖图、智能体界面 | Vue UI |
-| `frontend/src/services` | 浏览器端 API/SSE 客户端 | 类型化调用结果 |
-| `test` | 后端单元与集成测试 | 回归验证 |
+| 后端应用根 | FastAPI 装配、数据库初始化和 Worker 生命周期 | `backend/app/README.md` |
+| HTTP API | 请求、用户上下文、错误映射和 SSE | `backend/app/api/README.md` |
+| 项目分析 | 导入—清洗—分析—派生—持久化事务 | `backend/app/services/project_analysis/README.md` |
+| 安全工作区 | Git/ZIP 获取、路径策略、清洗、发布和恢复 | `backend/app/services/project_workspace/README.md` |
+| 依赖分析器 | 多语言语法提取与跨文件关系解析 | `backend/app/services/dependency_analyzer/README.md` |
+| 大模型接入 | 配置、Provider 抽象与 HTTP 协议 | `backend/app/llm/README.md` |
+| 项目智能体 | 上下文、模型—工具循环、队列与事件 | `backend/app/agents/README.md` |
+| 只读工具 | JSON Schema、参数校验、源码/图查询 | `backend/app/agents/tools/README.md` |
+| 对照实验 | 有图/无图盲态配对与指标 | `backend/app/experiments/README.md` |
+| 隔离执行 | 策略、队列、Docker Worker 和审计 | `backend/app/execution/README.md` |
+| 前端功能 | 项目、图、实验和执行页面 | `frontend/src/features/README.md` |
+| 前端通信 | Axios 与 SSE 客户端 | `frontend/src/services/README.md` |
 
-`backend/storage/artifacts/<project_id>.json` 汇总保存 manifest、repo map、概览、符号和依赖图；SQLite 保存项目元数据以及智能体运行和事件。
+分析产物写入 `backend/storage/artifacts/<project_id>.json`，其中保留 Manifest、Repo Map、原始依赖图和符号证据。SQLite 保存项目元数据、Agent 队列/事件、实验记录和执行队列/事件。
 
-## 3. 项目分析数据流
+## 3. 项目分析与事务回滚
 
-1. `add_project` 接收文件、本地路径或 Git 地址，并交给 Loader。
-2. Loader 校验来源、限制仓库大小与路径，将内容放入受控目录。
-3. `ProjectCleaner` 过滤隐藏目录、构建产物、二进制文件和超限文件。
-4. `UnifiedCodeAnalyzer.run_full_analysis` 并发解析源文件：第一阶段收集定义、引用和导入，第二阶段建立索引并解析跨文件关系。
-5. 分析器输出依赖图、文件符号和统计；`build_file_tree_with_symbols` 再组装前端文件树。
-6. `ProjectManifestBuilder.build` 从确定性分析结果推断框架、入口点和关键文件。
-7. `build_repo_map` 将清单和符号压缩成适合模型上下文的文本。
-8. Artifact Store 原子写入产物；API 将轻量结果返回前端。
+1. `POST /api/projects/analyze` 把 Git URL 或 ZIP 转换为 `AnalyzeProjectCommand`。
+2. `ProjectAnalysisTransaction.begin()` 创建受控暂存操作并登记补偿。
+3. `ProjectWorkspaceService.prepare()` 获取来源并由 `ProjectSanitizer` 清理链接、敏感文件、超大文件、禁止类型和噪声目录。
+4. `UnifiedCodeAnalyzer.run_full_analysis()` 按采集、索引、导入、类型和图构建五阶段产生原始依赖图。
+5. `build_file_tree_with_symbols()`、`ProjectManifestBuilder.build()` 和 `build_repo_map()` 产生前端与模型共同使用的确定性事实。
+6. 工作区发布后，项目记录和分析产物依次持久化。
+7. `GraphExchangeNormalizer.normalize()` 生成有版本、有限额、路径安全的公开图 DTO。
+8. 全部成功后提交事务；任何异常都会逆序删除已写入的产物、数据库记录和工作区。补偿失败会写入操作日志，供 `WorkspaceJanitor` 在后续启动时清理。
 
-manifest 和 repo map 是模型的事实底座。模型用于解释和归纳，不应替代静态分析器制造不存在的文件、符号或入口点。
+Manifest 与 Repo Map 是模型事实底座。模型只负责解释和归纳，不应替代静态分析器制造不存在的文件、符号或入口点。
 
-## 4. 智能体数据流
+## 4. 大模型与智能体调用链
 
-1. `POST /api/agent/projects/{id}/runs` 校验指令，并在一个事务中创建运行记录与队列项。
-2. `AgentQueueWorker` 原子领取最早任务、续租并读取受控项目与分析产物。
-3. `ProjectContextBuilder.build` 读取 manifest/repo map，按字符预算形成系统上下文。
-4. `ToolRegistry` 只暴露固定的只读工具，`AgentRunRequest.max_steps` 将模型—工具循环限制在 1 至 6 步。
-5. `AgentRunManager` 调用支持工具调用的 `ModelProvider`。
-6. 模型请求、工具开始、工具结果、最终答案或错误都写为递增序号的事件。
-7. 前端通过 SSE 获取增量事件；断线后用 `after=<sequence>` 继续。
-8. 取消请求写入队列；排队任务立即取消，运行任务由持有租约的 Worker 终止。终态仍为 `completed`、`failed` 或 `cancelled`。
+模型配置由 `get_model_configuration()` 读取以下环境变量：
 
-智能体工具仍只读取已分析项目。Docker 命令和安全扫描已拆入 execution 控制面：Web 进程只入队，独立 Worker 使用白名单镜像和受限容器执行。原型采用同机 SQLite 队列，详细边界见 EXECUTION.md。
+- `CODE_EXPLORER_LLM_PROVIDER`
+- `CODE_EXPLORER_LLM_MODEL`
+- `CODE_EXPLORER_LLM_API_KEY`
+- `CODE_EXPLORER_LLM_BASE_URL`
 
-## 5. 数据与契约类
+`create_model_provider()` 对 OpenAI 创建 `OpenAIResponsesProvider`，对 Ollama、vLLM 或自定义兼容服务创建 `OpenAICompatibleProvider`。普通文本入口是 `generate(instructions, prompt)`；工具入口是 `generate_with_tools(instructions, prompt, tools)`。
 
-### 数据库模型
+智能体流程：
 
-- `ProjectModel`：一个已导入项目。输入字段包括项目 ID、用户、仓库/本地地址和文件树；查询输出为项目元数据。
-- `AgentRunModel`：一次智能体运行的公开结果。输入为项目 ID、指令和模型开关；输出包含状态、最终答案、错误及时间戳。
-- `AgentJobModel`：运行对应的内部队列项；保存策略、Worker 租约、取消标志和尝试次数。
-- `AgentEventModel`：一条有序事件。输入为运行 ID、序号、事件类型和 JSON 载荷；输出供轮询和 SSE 回放。
+1. `POST /api/agent/projects/{project_id}/runs` 创建运行和持久化队列项。
+2. `AgentQueueWorker` 原子认领并续租；独立进程入口为 `python -m backend.app.agents.worker`。
+3. `ProjectContextBuilder.build()` 从 Manifest 和 Repo Map 生成有界上下文。
+4. `AgentRunManager` 将 `ToolRegistry.schemas()` 与上下文交给 `ModelProvider.generate_with_tools()`。
+5. 模型返回 `ToolCall(name, arguments)` 时，注册表先用 Pydantic 严格模型验证参数，再执行匹配的只读工具。
+6. 工具内容、证据和截断标记作为 `TOOL_OBSERVATIONS` 进入下一轮；达到 `max_steps` 后进行最终汇总。
+7. 请求、工具、证据、文本和终态都持久化为单调序号事件，前端可用 `after=<sequence>` 续传 SSE。
 
-### 项目清单
+工具包括项目 Manifest、入口点、符号搜索、有限源码读取、依赖邻居和有限全文搜索。模型不能调用未注册函数、Shell 或 Docker。
 
-- `Evidence`：推断结论的证据；输入路径、可选行号和说明，输出可序列化证据项。
-- `Entrypoint`：程序入口；输入类型、名称、路径、可选行号/命令/框架和置信度，输出入口点描述。
-- `ProjectManifest`：项目事实摘要；输入语言、框架、包管理器、入口、命令、模块、图统计和证据，输出 JSON 产物及模型上下文。
-- `ProjectOverviewRequest`：概览请求；输入模型使用开关和输出语言。
+## 5. 依赖分析器
 
-### 模型抽象
+`services/dependency_analyzer` 使用 Tree-sitter 解析 Python、JavaScript/TypeScript、Go、Java、C/C++ 和 Rust，再用 NetworkX 组装图。
 
-- `ModelConfiguration`：统一模型设置；输入来自环境变量或请求覆盖，输出供应商实例配置。
-- `ProviderCapabilities`：声明供应商是否支持工具调用等能力。
-- `ModelResult`：普通文本生成结果；输出文本及供应商/模型元数据。
-- `ToolCall`：规范化模型工具调用；输出调用 ID、名称和参数。
-- `ModelTurn`：一轮带工具调用的模型输出；输出文本、工具调用和原始助手消息。
-- `ModelProvider`：在线/离线模型统一抽象；输入消息和工具 schema，输出普通结果或工具轮次。
-- `OpenAICompatibleProvider`：调用 OpenAI 风格 `/chat/completions` API。
-- `OpenAIResponsesProvider`：调用 OpenAI Responses API。
-- Ollama 与 vLLM 通过各自的 OpenAI 兼容端点复用 `OpenAICompatibleProvider`。
+- `handlers/` 将单语言语法节点提取为 `Definition`、`Reference` 和 `ImportRec`。
+- `CollectionPhase` 并行解析文件并合并 `FileContext`。
+- `IndexingPhase` 建立文件、模块、限定名、短名和成员索引。
+- `ImportResolutionPhase` 解析本地模块、标准库和第三方模块。
+- `TypeResolutionPhase` 解析继承、类型、MRO、成员和可调用目标。
+- `GraphResolutionPhase` 生成节点以及 contains、declares、imports、calls、inherits、overrides 等关系。
+- `UnifiedCodeAnalyzer` 是唯一公共门面，提供 `run_full_analysis()` 和 `get_progress()`。
 
-### 智能体契约
+分析器不执行项目代码。语言内置、标准库和第三方依赖使用独立节点类别，前端可按层级筛选或临时隐藏。
 
-- `AgentRunRequest`：用户问题、模型使用开关与最大步骤数。
-- `AgentEvidence`：智能体引用的路径、行号、符号和说明。
-- `AgentRunView`：返回前端的运行状态。
-- `AgentEvent`：返回前端的事件序号、类型和载荷。
-- `ContextPacket`：系统提示文本、manifest、筛选后的 repo map 和初始证据。
-- `ToolResult`：工具返回内容、证据及截断状态。
-- `ToolContext`：工具执行所需的项目 ID、项目根目录与共享数据。
-- `AgentTool`：单个工具协议；输入 JSON 参数，输出 JSON 对象。
-- `ToolRegistry`：工具注册、schema 导出、参数验证和分派中心。
+## 6. 隔离执行与安全扫描
 
-## 6. 静态分析核心类
+执行请求由 `ExecutionTaskRequest` 描述为 `argv` 数组，不能提交宿主 Shell 字符串。`ExecutionPolicy` 先验证镜像白名单、扫描 Profile 和资源上限，`ExecutionService` 只负责入队。独立 `ExecutionWorker` 再按当前策略复核计划，最后调用 `DockerExecutor`。
 
-`services/dependency_analyzer/` 使用 Tree-sitter 做多语言解析，并用 NetworkX 组装最终图；
-它按语言拆分 `handlers/`，按流水线阶段拆分 `phases/`，由 `analyzer.py` 提供稳定门面。
+容器禁网、项目只读挂载、根文件系统只读、非 root、丢弃 capabilities，并限制 CPU、内存、PID、时间和输出。执行模块不作为 Agent 工具注册，因此模型不能自行启动容器。完整配置见 `docs/EXECUTION.md`。
 
-- `Definition`：文件内定义；输入名称、限定名、类型、位置和元数据，输出图节点候选。
-- `Reference`：符号引用；输入源定义、目标文本、引用种类和位置，输出待解析边。
-- `ImportRec`：导入记录；输入模块、导入名、别名、层级和位置，输出跨文件解析线索。
-- `Frame`：遍历栈的一层作用域；输入作用域种类、名称和对应定义，输出嵌套上下文。
-- `FileContext`：单文件解析状态；输入路径、源码和语言，累积定义、引用、导入及局部类型信息。
-- `BaseHandler`：语言处理器基类；输入语法节点和上下文，按节点类型分派回调并输出是否继续遍历。
-- `PythonHandler`：Python 定义、装饰器、导入、调用和继承提取。
-- `JavaScriptHandler`：JavaScript/JSX 的函数、类、变量、导入和调用提取。
-- `TypeScriptHandler`：在 JavaScript 规则上增加 TypeScript 类型和接口结构。
-- `GoHandler`：Go 包、函数、方法、类型、导入和调用提取。
-- `JavaHandler`：Java 包、类、接口、方法、构造器和调用提取。
-- `CHandler`：C 函数、结构体、预处理包含和调用提取。
-- `CppHandler`：在 C 规则上增加类、命名空间、继承和方法处理。
-- `RustHandler`：Rust 模块、结构体、trait、impl、函数、use 和调用提取。
-- `UnifiedCodeAnalyzer`：分析总控；输入项目根目录和并发数，输出依赖图、文件符号、语言统计与文件树。
+## 7. 前端架构
 
-各语言处理器的 `h_*` 方法都是 Tree-sitter 内部节点回调，统一输入为当前 `Node` 和可变 `FileContext`；输出 `False` 表示已处理子树、阻止默认递归，`None/True` 表示继续递归。它们通过修改上下文产生定义、引用和导入，不作为模块公共 API。
+`features/project-insight/ProjectInsight.vue` 是工作台总入口，使用异步组件和 `KeepAlive` 切换概览、代码与图、Agent、实验和执行页面。项目状态由 `useProjectAnalysis()` 管理，删除或重新导入时先中止在途请求并销毁旧图实例。
 
-分析器关键阶段：
+依赖图把后端 DTO 转换为 Graphology 图，只对可见子图运行 ForceAtlas2 Worker 和 NoOverlap；Sigma.js 负责相机、拖拽和选择。所有节点大小统一，类别通过颜色和标签表达。右侧符号栏调用 `revealSymbol(target)` 恢复完整图并聚焦对应节点。
 
-- `run_full_analysis()`：扫描构造时指定的根目录，输出完整分析字典。
-- `_build_indexes()`：输入第一阶段上下文，输出限定名、简单名、模块和类层级索引。
-- `_resolve_inheritance()`：输入类定义与导入索引，输出解析后的继承边。
-- `_build_graph_nodes()`：输入全部定义，输出 NetworkX 节点。
-- `_resolve_overrides()`：输入类层级和方法定义，输出方法重写边。
-- `_resolve_references()`：输入引用记录和索引，输出导入、调用和符号关系边。
-- `get_progress()`：输出当前分析进度、消息和完成状态快照。
+组件只通过 `src/services` 访问后端。Axios 处理普通 HTTP，`consumeSse()` 处理 JSON SSE 和取消信号。
 
-## 7. 其他后端类
+## 8. 持久化模型与契约
 
-- `SafeLoader` / `ProjectLoader`：限制来源、路径、大小和协议后加载本地目录、上传文件或 Git 仓库；输出受控项目目录。
-- `ProjectCleaner`：按忽略规则和大小限制筛选文件；输出可分析文件集合。
-- `SensitiveDataSanitizer`：识别文件类型并对环境变量、密钥等敏感内容脱敏；输出清理后的副本。
-- `FileType`：清理器使用的文件类别枚举。
-- `ProjectManifestBuilder`：输入依赖图，输出确定性的项目清单。
-- `OverviewGenerator`：输入项目清单、仓库地图及可选模型配置，输出项目架构与功能概览。
-- `ProjectContextBuilder`：输入项目 ID、问题和分析产物，输出经过筛选的上下文包。
-- `policy.py`：提供项目路径边界校验、读取上限和敏感文本遮盖规则。
-- `AgentRunStore`：创建运行与队列项，并提供原子认领、租约、取消、过期恢复和并发安全事件游标。
-- `AgentQueueWorker`：领取持久化任务、续租、观察取消标志并选择正式/实验策略。
-- `AgentRunManager`：执行单次模型—工具循环，并持续产生可恢复事件。
-- `ManifestTool`、`EntrypointsTool`、`SearchSymbolsTool`、`ReadFileTool`、`DependencyNeighborsTool`、`SearchProjectTextTool`：六个只读工具，分别输出清单、入口、符号、源码片段、图邻居和文本命中。
+主要数据库模型：
 
-## 8. 关键函数与前端接口
+- `ProjectModel`：已发布项目元数据和文件树。
+- `AgentRunModel`、`AgentJobModel`、`AgentEventModel`：Agent 结果、队列租约和事件。
+- `ExperimentComparisonModel`、`ExperimentReviewModel`：盲态比较与评审。
+- `ExecutionTaskModel`、`ExecutionEventModel`：容器任务、资源计划和审计事件。
 
-- `create_app()`：配置数据库、中间件和路由，输出 FastAPI 应用。
-- `add_project(...)`：输入项目来源与用户信息，输出项目 ID、文件树和分析结果。
-- `build_file_tree(root)`：输入根目录，输出前端可消费的层级字典。
-- `save_project_artifacts(...)`：输入 manifest/repo map，原子写文件并输出路径集合。
-- `load_project_manifest(id)` / `load_repo_map(id)`：输入项目 ID，输出已存储产物。
-- `build_repo_map(manifest, file_symbols)`：输入清单和符号表，输出有长度预算的文本地图。
-- `get_model_configuration(overrides)`：输入可选请求覆盖，输出合并环境变量后的配置。
-- `create_model_provider(config)`：输入统一配置，输出在线或离线供应商。
-- `post_json(url, payload, headers, timeout)`：输入 HTTP 参数，输出解码后的 JSON 对象。
-- `redact_sensitive_text(text)`：输入上下文文本，输出密钥与令牌被遮盖的文本。
+主要公开契约：
 
-前端组件：
-
-- ProjectInsight.vue：固定项目壳；导入后输出紧凑项目头、分组导航和单一活动工作区。
-- DependencyGraph.vue：输入图数据，输出可筛选、选择和布局的 Sigma 图；缓存停用时暂停布局。
-- AgentWorkspace.vue：输入项目 ID，创建或取消智能体运行，并消费 SSE 形成步骤和答案。
-- `agentApi.js`：输入项目/运行 ID 与请求体，输出运行、事件订阅和取消调用。
-- `graphStyle.js`：输入节点、边和图统计，输出统一节点大小、颜色、标签及边样式。
-
-依赖图布局先按社区与拓扑层生成种子位置，再在可见子图上运行 ForceAtlas2，最后做有限次数的节点碰撞消解。节点大小保持统一；层级、重要性和选择状态通过颜色、标签与透明度表达。
+- `ProjectManifest`、`Entrypoint`、`Evidence`：确定性项目事实。
+- `DependencyGraphDTO`：版本化依赖图交换格式。
+- `AgentRunRequest`、`ContextPacket`、`ToolResult`、`AgentRunView`：智能体边界。
+- `ModelResult`、`ModelTurn`、`ToolCall`、`ProviderCapabilities`：模型适配边界。
+- `ExecutionTaskRequest`、`ExecutionPlan`、`ExecutionTaskView`：隔离执行边界。
 
 ## 9. 安全与扩展边界
 
-- 路径必须位于项目根目录内，工具不能读取任意服务器文件。
-- 文件读取和搜索都有字符数、行数、命中数及扩展名限制。
-- 上下文发送模型前再次脱敏；模型只能调用策略白名单中的工具。
-- SSE 事件带单调序号，支持断线续传和审计。
-- 在线模型会把选定上下文发送到配置的 API；离线 Ollama 可避免离开本机，但仍需信任模型服务主机。
-
-Docker 和命令执行现已位于独立 execution 模块：API 只提交声明式任务，队列由短生命周期受限容器消费；镜像白名单、只读挂载、CPU/内存/PID/时间限制、默认禁网、输出限额和完整审计均由执行层强制。生产环境仍应在 Docker daemon 层配置 seccomp/AppArmor，并隔离 Worker 主机。
+- 外部项目先进入暂存目录，路径、链接、文件类型和大小都受策略约束。
+- 源码工具只能访问解析后的项目根目录；读取、搜索、耗时和输出均有限额并进行敏感信息脱敏。
+- 仓库内容、README、注释、模型输出和工具输出都不具备指令权限。
+- API Key 不写入公开状态；上游错误正文不直接返回客户端。
+- SSE 使用持久化递增游标；Agent 和执行任务支持跨进程取消。
+- Docker 仍不是虚拟机安全边界；生产环境应隔离 Worker 主机并配置守护进程级 seccomp/AppArmor。

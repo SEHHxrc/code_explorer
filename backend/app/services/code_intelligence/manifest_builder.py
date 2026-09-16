@@ -37,10 +37,12 @@ FRAMEWORK_RULES = (
 
 
 def _rel(path: Path, root: Path) -> str:
+    """把文件路径转换为相对项目根目录的规范路径。"""
     return path.relative_to(root).as_posix()
 
 
 def _read_text(path: Path, limit: int = 512 * 1024) -> str:
+    """按字符上限容错读取文本文件。"""
     try:
         if path.stat().st_size > limit:
             return ""
@@ -50,17 +52,20 @@ def _read_text(path: Path, limit: int = 512 * 1024) -> str:
 
 
 def _line_of(text: str, offset: int) -> int:
+    """返回指定文本首次出现时的单基行号。"""
     return text.count("\n", 0, offset) + 1
 
 
 def _dedupe(values: list[str]) -> list[str]:
+    """按稳定顺序去除字符串列表中的重复项。"""
     return list(dict.fromkeys(value for value in values if value))
 
 
 class ProjectManifestBuilder:
     """不依赖大模型、根据文件和依赖图构建带证据的项目事实清单。"""
 
-    def __init__(self, project_root: str):
+    def __init__(self, project_root: str) -> None:
+        """输入项目根目录、文件树与依赖图，初始化 Manifest 构建器。"""
         self.root = Path(project_root).resolve()
 
     def build(self, dependency_graph: dict[str, Any] | None = None) -> ProjectManifest:
@@ -145,6 +150,7 @@ class ProjectManifestBuilder:
         )
 
     def _collect_files(self) -> list[Path]:
+        """收集符合大小、扩展名和忽略规则的源码文件。"""
         files: list[Path] = []
         for current_root, dirs, names in os.walk(self.root):
             dirs[:] = sorted(d for d in dirs if d not in IGNORED_DIRS and not d.startswith("."))
@@ -159,6 +165,7 @@ class ProjectManifestBuilder:
         build_commands: list[str], run_commands: list[str], test_commands: list[str],
         evidence: list[Evidence],
     ) -> None:
+        """读取 package.json 并提取脚本与入口点信息。"""
         try:
             package = json.loads(text)
         except (TypeError, json.JSONDecodeError):
@@ -188,6 +195,7 @@ class ProjectManifestBuilder:
                 test_commands.append(npm_command)
 
     def _detect_code_entrypoints(self, relative: str, text: str, entrypoints: list[Entrypoint]) -> None:
+        """按框架和语言规则检测源码入口点。"""
         suffix = Path(relative).suffix.lower()
         patterns = (
             ("web_app", "FastAPI application", "FastAPI", {".py"}, re.compile(r"^(?P<name>\w+)\s*=\s*FastAPI\s*\(", re.M)),
@@ -218,6 +226,7 @@ class ProjectManifestBuilder:
         self, relative: str, name: str, text: str,
         entrypoints: list[Entrypoint], run_commands: list[str],
     ) -> None:
+        """从容器配置中提取启动入口。"""
         if name == "dockerfile" or name.startswith("dockerfile."):
             for match in re.finditer(r"^\s*(CMD|ENTRYPOINT)\s+(.+)$", text, re.M | re.I):
                 command = match.group(2).strip()
@@ -228,6 +237,7 @@ class ProjectManifestBuilder:
                 run_commands.append(f"docker build -t {self.root.name} .")
 
     def _build_modules(self, files: list[Path]) -> list[dict[str, Any]]:
+        """按目录和语言汇总项目模块信息。"""
         counts: Counter[str] = Counter()
         for path in files:
             relative = path.relative_to(self.root)
@@ -240,6 +250,7 @@ class ProjectManifestBuilder:
 
     @staticmethod
     def _summarize_graph(graph: dict[str, Any]) -> dict[str, Any]:
+        """汇总依赖图的节点、边和关系统计。"""
         nodes = graph.get("nodes", []) or []
         edges = graph.get("links", graph.get("edges", [])) or []
         relations = Counter(edge.get("relation", "unknown") for edge in edges)
@@ -263,6 +274,7 @@ class ProjectManifestBuilder:
 
     @staticmethod
     def _dedupe_entrypoints(entrypoints: list[Entrypoint]) -> list[Entrypoint]:
+        """按入口类型、路径和符号去重。"""
         seen: set[tuple[str, str, int | None, str | None]] = set()
         result: list[Entrypoint] = []
         for item in entrypoints:

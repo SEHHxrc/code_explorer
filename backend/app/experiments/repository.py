@@ -14,6 +14,7 @@ from backend.app.models import ExperimentComparisonModel, ExperimentReviewModel,
 
 @dataclass(frozen=True)
 class ComparisonRecord:
+    """保存配对实验、盲态顺序和运行引用的持久化快照。"""
     comparison_id: str
     project_id: str
     user_id: str
@@ -26,10 +27,13 @@ class ComparisonRecord:
 
 
 class ExperimentRepository:
-    def __init__(self, session_factory: Callable[[], Session] = SessionLocal):
+    """封装配对实验与盲评记录的数据库访问。"""
+    def __init__(self, session_factory: Callable[[], Session] = SessionLocal) -> None:
+        """使用可替换的会话工厂初始化配对实验与盲评仓储。"""
         self.session_factory = session_factory
 
     def create(self, record: ComparisonRecord) -> None:
+        """创建并持久化新的领域记录。"""
         session = self.session_factory()
         try:
             session.add(ExperimentComparisonModel(
@@ -50,6 +54,7 @@ class ExperimentRepository:
             session.close()
 
     def get(self, comparison_id: str, user_id: str) -> ComparisonRecord | None:
+        """按标识和用户读取其有权访问的领域记录。"""
         session = self.session_factory()
         try:
             row = session.query(ExperimentComparisonModel).filter(
@@ -72,6 +77,7 @@ class ExperimentRepository:
             session.close()
 
     def save_review(self, comparison_id: str, user_id: str, review: BlindReviewRequest) -> None:
+        """新增或更新当前用户提交的盲评结果。"""
         session = self.session_factory()
         try:
             existing = session.query(ExperimentReviewModel).filter(
@@ -100,6 +106,7 @@ class ExperimentRepository:
             session.close()
 
     def has_review(self, comparison_id: str, user_id: str) -> bool:
+        """返回当前用户是否已经提交盲评。"""
         session = self.session_factory()
         try:
             return session.query(ExperimentReviewModel.id).filter(

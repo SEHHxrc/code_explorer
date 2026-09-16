@@ -11,7 +11,7 @@ from backend.app.agents.context_builder import ProjectContextBuilder
 from backend.app.agents.contracts import AgentEvidence, AgentRunRequest
 from backend.app.agents.run_store import AgentRunStore
 from backend.app.agents.tools import create_project_tool_registry
-from backend.app.agents.tools.base import ToolContext
+from backend.app.agents.tools.base import ToolContext, ToolRegistry
 from backend.app.llm.registry import create_model_provider
 
 
@@ -36,10 +36,10 @@ class AgentRunManager:
         self,
         store: AgentRunStore | None = None,
         *,
-        context_builder=None,
-        tools=None,
+        context_builder: ProjectContextBuilder | None = None,
+        tools: ToolRegistry | None = None,
         instructions: str | None = None,
-    ):
+    ) -> None:
         """注入上下文、工具和指令策略；默认值始终是正式图增强路径。"""
         self.store = store or AgentRunStore()
         self.context_builder = context_builder or ProjectContextBuilder()

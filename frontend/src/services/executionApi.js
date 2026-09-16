@@ -1,4 +1,5 @@
-import { API_BASE, apiClient } from './httpClient.js'
+import { apiClient } from './httpClient.js'
+import { consumeSse } from './sseClient.js'
 
 const dataOf = (response) => response.data.data
 
@@ -23,28 +24,6 @@ export const cancelExecutionTask = async (taskId) => (
 )
 
 /** 消费执行任务审计 SSE；服务端在任务进入终态后主动结束。 */
-export const streamExecutionEvents = async (eventsUrl, onEvent, signal) => {
-  const response = await fetch(API_BASE + eventsUrl, {
-    headers: { Accept: 'text/event-stream' },
-    signal,
-  })
-  if (!response.ok || !response.body) throw new Error('执行事件流连接失败 (' + response.status + ')')
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  while (true) {
-    const { value, done } = await reader.read()
-    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
-    const frames = buffer.split(/\r?\n\r?\n/)
-    buffer = frames.pop() || ''
-    for (const frame of frames) {
-      if (!frame || frame.startsWith(':')) continue
-      const data = frame.split(/\r?\n/)
-        .filter((line) => line.startsWith('data:'))
-        .map((line) => line.slice(5).trimStart())
-        .join('\n')
-      if (data) onEvent(JSON.parse(data))
-    }
-    if (done) break
-  }
-}
+export const streamExecutionEvents = (eventsUrl, onEvent, signal) => (
+  consumeSse(eventsUrl, onEvent, signal, '执行事件流连接失败')
+)

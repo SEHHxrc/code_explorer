@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """FastAPI 应用入口。"""
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 import os
 
@@ -21,7 +22,7 @@ init_db()
 WorkspaceJanitor().cleanup_stale()
 
 @asynccontextmanager
-async def lifespan(_app: FastAPI):
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """按配置启动嵌入式 Agent Worker；外置部署可显式关闭。"""
     embedded_worker = os.getenv("AGENT_WORKER_EMBEDDED", "1").strip().lower() not in {"0", "false", "no"}
     if embedded_worker:
@@ -54,6 +55,6 @@ app.include_router(execution_router)
 
 
 @app.get("/")
-def read_root():
+def read_root() -> dict[str, str]:
     """健康检查入口；无输入，输出后端可用状态。"""
     return {"code": 200, "message": "Backend service is running securely."}

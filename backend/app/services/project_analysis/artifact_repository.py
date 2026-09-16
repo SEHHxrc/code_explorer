@@ -12,7 +12,9 @@ class AnalysisArtifactRepository:
     """封装当前 JSON 产物实现，供应用服务注入与失败补偿。"""
 
     def save(self, project_id: str, payload: dict[str, Any]) -> None:
+        """原子保存项目分析产物。"""
         save_analysis_artifact(project_id, payload)
 
     def remove(self, project_id: str) -> None:
+        """删除指定项目的分析产物。"""
         remove_analysis_artifact(project_id)

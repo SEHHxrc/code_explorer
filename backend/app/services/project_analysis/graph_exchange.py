@@ -17,7 +17,8 @@ from backend.app.schemas.dependency_graph import (
 class GraphExchangeNormalizer:
     """对白名单字段、路径、边端点、重复项和体量做统一规范化。"""
 
-    def __init__(self, max_nodes: int = 50_000, max_edges: int = 200_000):
+    def __init__(self, max_nodes: int = 50_000, max_edges: int = 200_000) -> None:
+        """输入交换图节点与边上限，初始化安全规范化器。"""
         self.max_nodes = max_nodes
         self.max_edges = max_edges
 
@@ -161,18 +162,21 @@ class GraphExchangeNormalizer:
 
     @staticmethod
     def _text(value: Any, limit: int) -> str:
+        """容错读取 Tree-sitter 节点对应的 UTF-8 源码。"""
         if value is None:
             return ""
         return str(value).replace("\x00", "").strip()[:limit]
 
     @classmethod
     def _endpoint(cls, value: Any) -> str:
+        """从依赖边中选择当前符号之外的端点标识。"""
         if isinstance(value, dict):
             value = value.get("id")
         return cls._text(value, 1000)
 
     @staticmethod
     def _positive_int(value: Any) -> int | None:
+        """把输入转换为正整数；无效或非正值返回 None。"""
         try:
             number = int(value)
         except (TypeError, ValueError):
@@ -181,6 +185,7 @@ class GraphExchangeNormalizer:
 
     @classmethod
     def _safe_relative_path(cls, value: Any) -> str | None:
+        """校验并规范化可返回前端的项目相对路径。"""
         text = cls._text(value, 1000).replace("\\", "/")
         if not text:
             return None
@@ -197,6 +202,7 @@ class GraphExchangeNormalizer:
 
     @staticmethod
     def _scope(node_id: str, level: str) -> str:
+        """把后端节点层级映射为交换协议作用域。"""
         lowered_id = node_id.lower()
         lowered_level = level.lower()
         if lowered_level == "builtin" or lowered_id.startswith("<builtin>"):

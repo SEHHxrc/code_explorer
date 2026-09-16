@@ -58,13 +58,15 @@ class ExecutionSettings:
 
     @property
     def configured(self) -> bool:
+        """返回隔离执行策略是否具备可用配置。"""
         return bool(self.allowed_images or self.scan_images)
 
 
 class ExecutionPolicy:
     """把用户请求解析成满足服务端上限的容器执行计划。"""
 
-    def __init__(self, settings: ExecutionSettings | None = None):
+    def __init__(self, settings: ExecutionSettings | None = None) -> None:
+        """输入执行配置，建立镜像、扫描器和资源限制策略。"""
         self.settings = settings or ExecutionSettings.from_env()
 
     def resolve(self, request: ExecutionTaskRequest) -> ExecutionPlan:

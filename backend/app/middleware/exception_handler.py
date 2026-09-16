@@ -2,6 +2,8 @@
 import traceback
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
 
 
 def setup_exception_handler(app: FastAPI) -> None:
@@ -11,7 +13,7 @@ def setup_exception_handler(app: FastAPI) -> None:
     """
 
     @app.middleware("http")
-    async def global_exception_middleware(request: Request, call_next):
+    async def global_exception_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
         """输入请求和下游调用器，输出正常响应或脱敏后的统一 500 JSON。"""
         try:
             response = await call_next(request)

@@ -6,11 +6,13 @@ from backend.app.agents.tools.base import AgentTool, ToolContext
 
 
 class DependencyNeighborsTool(AgentTool):
+    """封装 `DependencyNeighborsTool` 对应的领域状态与行为。"""
     name = "get_dependency_neighbors"
     description = "Return incoming and/or outgoing dependency-graph neighbors for an exact node id."
     arguments_model = DependencyArguments
 
     async def execute(self, context: ToolContext, arguments: DependencyArguments) -> ToolResult:
+        """执行工具请求并返回结构化结果和证据。"""
         index = context.evidence_index
         if arguments.node_id not in index.nodes:
             raise ValueError("Dependency node was not found; use search_symbols first")

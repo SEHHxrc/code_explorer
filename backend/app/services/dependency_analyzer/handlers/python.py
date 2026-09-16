@@ -20,7 +20,7 @@ class PythonHandler(BaseHandler):
     type_methods = PY_TYPE_METHODS
     stdlib_modules = PY_STDLIB
 
-    def register(self):
+    def register(self) -> None:
         """注册 Python Tree-sitter 节点回调；无返回值。"""
         self.bind({
             "import_statement": self.h_import,
@@ -35,7 +35,8 @@ class PythonHandler(BaseHandler):
         })
 
     # import a.b / import a.b as c
-    def h_import(self, node, ctx):
+    def h_import(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析导入声明语法节点并把结果写入文件上下文。"""
         for child in node.named_children:
             if child.type == "dotted_name":
                 module = ctx.text(child)
@@ -47,7 +48,8 @@ class PythonHandler(BaseHandler):
         return SKIP_CHILDREN
 
     # from x import a as b / from . import x / from x import *
-    def h_import_from(self, node, ctx):
+    def h_import_from(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析from 导入语法节点并把结果写入文件上下文。"""
         mod_node = _field(node, "module_name") or _field(node, "module")
         module = ctx.text(mod_node)
         line = node.start_point[0] + 1
@@ -68,7 +70,8 @@ class PythonHandler(BaseHandler):
             ctx.add_import(module, alias=module.split(".")[-1], kind="module", line=line)
         return SKIP_CHILDREN
 
-    def h_class(self, node, ctx):
+    def h_class(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析类定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
         bases = []
@@ -83,7 +86,8 @@ class PythonHandler(BaseHandler):
         ctx.push(definition.fqn, "class", name, definition)
         return 0
 
-    def h_function(self, node, ctx):
+    def h_function(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析函数定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
         in_class = ctx.top.kind == "class"
@@ -104,14 +108,16 @@ class PythonHandler(BaseHandler):
                     ctx.bind_frame_var(frame, first_name, class_frame.name)
         return 0
 
-    def h_typed_param(self, node, ctx):
+    def h_typed_param(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析带类型参数语法节点并把结果写入文件上下文。"""
         name_node = _descend_for(node, {"identifier"}, 2)
         type_node = _field(node, "type")
         if name_node is not None and type_node is not None:
             ctx.set_var_type(ctx.text(name_node), ctx.text(type_node))
         return 0
 
-    def h_assignment(self, node, ctx):
+    def h_assignment(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析赋值语法节点并把结果写入文件上下文。"""
         left = _field(node, "left")
         right = _field(node, "right")
         type_node = _field(node, "type")
@@ -139,7 +145,7 @@ class PythonHandler(BaseHandler):
                             type_literal=rhs_type, parent_override=class_frame.fqn)
         return 0
 
-    def _infer_type(self, ctx, node) -> str:
+    def _infer_type(self, ctx: FileContext, node: tree_sitter.Node | None) -> str:
         """从右值推断类型：``Base()`` / ``get_user()`` 统一记成待回填的调用类型。"""
         if node is None:
             return ""
@@ -149,7 +155,8 @@ class PythonHandler(BaseHandler):
                 return CALL_TYPE_PREFIX + ctx.text(func)
         return ""
 
-    def h_call(self, node, ctx):
+    def h_call(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析函数调用语法节点并把结果写入文件上下文。"""
         name, receiver = self.split_callee(ctx, _field(node, "function"))
         if receiver.endswith("()"):
             receiver = receiver[:-2]        # super().foo() -> 接收者视作 super

@@ -31,7 +31,8 @@ class AgentQueueWorker:
         projects: ProjectRepository | None = None,
         poll_seconds: float = 0.5,
         lease_seconds: int = 30,
-    ):
+    ) -> None:
+        """注入运行仓储、项目仓储、编排策略与 Worker 租约配置。"""
         self.worker_id = worker_id
         self.store = store or AgentRunStore()
         self.projects = projects or ProjectRepository()
@@ -128,6 +129,7 @@ class AgentQueueWorker:
                 pass
 
     def _manager_for(self, strategy: str, artifact: dict) -> tuple[AgentRunManager, dict]:
+        """按运行策略创建隔离的智能体编排器。"""
         if strategy == "graph":
             return AgentRunManager(
                 store=self.store,
@@ -160,6 +162,7 @@ class AgentQueueWorker:
 
 
 def default_worker_id() -> str:
+    """生成包含主机和进程信息的默认 Worker 标识。"""
     raw = os.getenv("AGENT_WORKER_ID", "").strip()
     if raw:
         return raw[:64]
@@ -170,7 +173,8 @@ def default_worker_id() -> str:
 agent_queue_worker = AgentQueueWorker(worker_id=default_worker_id())
 
 
-async def _main(arguments) -> None:
+async def _main(arguments: argparse.Namespace) -> None:
+    """解析命令行参数并启动异步 Worker 主循环。"""
     init_db()
     worker = AgentQueueWorker(
         worker_id=default_worker_id(),
@@ -185,6 +189,7 @@ async def _main(arguments) -> None:
 
 
 def main() -> None:
+    """启动当前模块对应的命令行 Worker 入口。"""
     parser = argparse.ArgumentParser(description="Code Explorer persistent agent worker")
     parser.add_argument("--once", action="store_true", help="Process at most one queued run")
     parser.add_argument("--poll-seconds", type=float, default=0.5)

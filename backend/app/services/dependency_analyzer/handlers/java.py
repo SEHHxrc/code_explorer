@@ -21,7 +21,7 @@ class JavaHandler(BaseHandler):
     type_methods = JAVA_TYPE_METHODS
     stdlib_modules = frozenset({"java", "javax", "sun", "jdk"})
 
-    def register(self):
+    def register(self) -> None:
         """注册 Java Tree-sitter 节点回调；无返回值。"""
         self.bind({
             "package_declaration": self.h_package,
@@ -43,11 +43,13 @@ class JavaHandler(BaseHandler):
             "lambda_expression": self.h_lambda,
         })
 
-    def h_package(self, node, ctx):
+    def h_package(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析包声明语法节点并把结果写入文件上下文。"""
         ctx.package = ctx.text(_first_of(node, {"scoped_identifier", "identifier"}))
         return SKIP_CHILDREN
 
-    def h_import(self, node, ctx):
+    def h_import(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析导入声明语法节点并把结果写入文件上下文。"""
         target = _first_of(node, {"scoped_identifier", "identifier"})
         literal = ctx.text(target)
         line = node.start_point[0] + 1
@@ -60,7 +62,8 @@ class JavaHandler(BaseHandler):
             ctx.add_import(module, alias=simple, symbol=simple, kind="symbol", line=line)
         return SKIP_CHILDREN
 
-    def h_class(self, node, ctx):
+    def h_class(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析类定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
         bases, impls = [], []
@@ -80,7 +83,8 @@ class JavaHandler(BaseHandler):
         ctx.push(definition.fqn, "class", name, definition)
         return 0
 
-    def h_field(self, node, ctx):
+    def h_field(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析字段定义语法节点并把结果写入文件上下文。"""
         type_literal = ctx.text(_field(node, "type"))
         in_class = ctx.top.kind == "class"
         for declarator in _fields(node, "declarator"):
@@ -92,12 +96,14 @@ class JavaHandler(BaseHandler):
                 ctx.set_var_type(name, type_literal)
         return 0
 
-    def h_enum_constant(self, node, ctx):
+    def h_enum_constant(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析枚举常量语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         ctx.add_def(node, ctx.text(name_node), "constant", name_node=name_node)
         return 0
 
-    def h_method(self, node, ctx):
+    def h_method(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析方法定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
         kind = "constructor" if node.type == "constructor_declaration" else "method"
@@ -112,11 +118,13 @@ class JavaHandler(BaseHandler):
             ctx.bind_frame_var(frame, "this", class_frame.name)
         return 0
 
-    def h_lambda(self, node, ctx):
+    def h_lambda(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析Lambda 表达式语法节点并把结果写入文件上下文。"""
         ctx.push(ctx.top.fqn, "function", "")
         return 0
 
-    def h_local_var(self, node, ctx):
+    def h_local_var(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析局部变量语法节点并把结果写入文件上下文。"""
         type_literal = ctx.text(_field(node, "type"))
         for declarator in _fields(node, "declarator"):
             name = ctx.text(_field(declarator, "name"))
@@ -126,12 +134,14 @@ class JavaHandler(BaseHandler):
             ctx.set_var_type(name, inferred)
         return 0
 
-    def h_param(self, node, ctx):
+    def h_param(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析参数类型语法节点并把结果写入文件上下文。"""
         ctx.set_var_type(ctx.text(_field(node, "name")), ctx.text(_field(node, "type")))
         return 0
 
     @staticmethod
-    def _infer_type(ctx, value) -> str:
+    def _infer_type(ctx: FileContext, value: tree_sitter.Node | None) -> str:
+        """根据表达式和值绑定推断类型字面量。"""
         if value is None:
             return ""
         if value.type == "object_creation_expression":
@@ -143,7 +153,8 @@ class JavaHandler(BaseHandler):
             return CALL_TYPE_PREFIX + prefix + name
         return ""
 
-    def h_call(self, node, ctx):
+    def h_call(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析函数调用语法节点并把结果写入文件上下文。"""
         name = ctx.text(_field(node, "name"))
         obj = _field(node, "object")
         receiver = ctx.text(obj).strip() if obj is not None else ""
@@ -151,7 +162,8 @@ class JavaHandler(BaseHandler):
             ctx.add_ref(node, "call", name, receiver)
         return 0
 
-    def h_new(self, node, ctx):
+    def h_new(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+        """解析对象实例化语法节点并把结果写入文件上下文。"""
         type_node = _field(node, "type")
         if type_node is not None:
             parts = _split_qualified(ctx.text(type_node))

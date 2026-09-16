@@ -28,7 +28,8 @@ class ExecutionWorker:
         repository: ExecutionRepository | None = None,
         settings: ExecutionSettings | None = None,
         workspace_paths: ProjectWorkspacePaths | None = None,
-    ):
+    ) -> None:
+        """注入执行仓储、Docker 执行器及 Worker 租约配置。"""
         self.worker_id = worker_id
         self.repository = repository or ExecutionRepository()
         self.settings = settings or ExecutionSettings.from_env()
@@ -114,6 +115,7 @@ def default_worker_id() -> str:
 
 
 def main() -> None:
+    """启动当前模块对应的命令行 Worker 入口。"""
     parser = argparse.ArgumentParser(description="Code Explorer isolated execution worker")
     parser.add_argument("--once", action="store_true", help="Process at most one queued task")
     parser.add_argument("--poll-seconds", type=float, default=1.0)

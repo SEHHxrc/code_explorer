@@ -19,7 +19,7 @@ from ..models import Definition, ImportRec, Reference
 class ImportResolutionPhase:
     """导入阶段：解析各语言模块、包和头文件绑定。"""
 
-    def _resolve_imports(self):
+    def _resolve_imports(self) -> None:
         """把每个文件的导入语句解析成本地名 -> 目标（模块文件 / 具体符号 / 外部包）的绑定。"""
         for path, records in self.file_imports.items():
             lang = self.file_lang.get(path, "")
@@ -53,6 +53,7 @@ class ImportResolutionPhase:
                         self.stats["imports_external"] += 1
 
     def _resolve_module(self, from_file: str, lang: str, rec: ImportRec) -> str:
+        """按语言规则解析导入目标模块。"""
         module = rec.module
         if not module:
             return ""
@@ -73,6 +74,7 @@ class ImportResolutionPhase:
         return ""
 
     def _resolve_python_module(self, from_file: str, module: str, rec: ImportRec) -> str:
+        """解析 Python 绝对或相对模块路径。"""
         if module.startswith("."):
             level = len(module) - len(module.lstrip("."))
             remainder = module[level:]
@@ -102,6 +104,7 @@ class ImportResolutionPhase:
         return self._best_module_match(candidates, from_file)
 
     def _resolve_rust_module(self, from_file: str, module: str, rec: ImportRec) -> str:
+        """解析 Rust 模块声明对应的源码文件。"""
         cleaned = module.replace("crate::", "").replace("self::", "").replace("super::", "")
         cleaned = cleaned.strip(": ")
         if not cleaned:
@@ -112,6 +115,7 @@ class ImportResolutionPhase:
         return self._best_module_match(candidates, from_file)
 
     def _resolve_js_module(self, from_file: str, module: str) -> str:
+        """解析 JavaScript 或 TypeScript 相对模块。"""
         if not module.startswith("."):
             return ""
         base = os.path.dirname(from_file)
@@ -128,6 +132,7 @@ class ImportResolutionPhase:
         return ""
 
     def _resolve_java_module(self, module: str, rec: ImportRec) -> str:
+        """解析 Java 包名对应的源码模块。"""
         fqcn = f"{module}.{rec.symbol}" if rec.symbol and rec.kind == "symbol" else module
         target = self.java_fqcn.get(fqcn)
         if target:
@@ -147,6 +152,7 @@ class ImportResolutionPhase:
         return result
 
     def _compute_include(self, from_file: str, include_path: str) -> str:
+        """解析 C/C++ include 对应的项目头文件。"""
         include_path = include_path.replace("\\", "/")
         base = os.path.dirname(from_file)
         candidate = os.path.normpath(os.path.join(base, include_path)).replace("\\", "/")
@@ -162,6 +168,7 @@ class ImportResolutionPhase:
 
     @staticmethod
     def _best_module_match(candidates: list[str], from_file: str) -> str:
+        """从候选模块中选择最匹配的目标。"""
         if not candidates:
             return ""
         if len(candidates) == 1:
@@ -181,6 +188,7 @@ class ImportResolutionPhase:
         return max(candidates, key=score)
 
     def _lookup_in_module(self, target_file: str, symbol: str, lang: str) -> str:
+        """在指定模块作用域内查找符号定义。"""
         if not target_file:
             return ""
         hit = self.module_scope.get(target_file, {}).get(symbol)

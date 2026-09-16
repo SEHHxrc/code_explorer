@@ -15,7 +15,7 @@ class OpenAICompatibleProvider(ModelProvider):
     输出统一模型结果。可用于 Ollama、vLLM 及其他兼容服务。
     """
 
-    def __init__(self, *, provider_name: str, base_url: str, model: str, api_key: str = ""):
+    def __init__(self, *, provider_name: str, base_url: str, model: str, api_key: str = "") -> None:
         """保存连接配置，不在构造阶段发起网络请求。"""
         self.name = provider_name
         self.base_url = base_url.rstrip("/")

@@ -17,11 +17,13 @@ MAX_SEARCH_SECONDS = 3.0
 
 
 class ReadFileTool(AgentTool):
+    """封装 `ReadFileTool` 对应的领域状态与行为。"""
     name = "read_file_range"
     description = "Read a bounded line range from a text file inside the project. Secrets are redacted."
     arguments_model = ReadFileArguments
 
     async def execute(self, context: ToolContext, arguments: ReadFileArguments) -> ToolResult:
+        """执行工具请求并返回结构化结果和证据。"""
         target = resolve_project_path(context.project_root, arguments.path)
         if not target.is_file():
             raise ValueError("Requested project file does not exist")
@@ -50,15 +52,18 @@ class ReadFileTool(AgentTool):
 
 
 class SearchProjectTextTool(AgentTool):
+    """封装 `SearchProjectTextTool` 对应的领域状态与行为。"""
     name = "search_project_text"
     description = "Search bounded UTF-8 project text files for a literal string and return matching lines."
     arguments_model = SearchArguments
 
     async def execute(self, context: ToolContext, arguments: SearchArguments) -> ToolResult:
+        """执行工具请求并返回结构化结果和证据。"""
         return await asyncio.to_thread(self._search, context, arguments)
 
     @staticmethod
     def _search(context: ToolContext, arguments: SearchArguments) -> ToolResult:
+        """在受控预算内搜索项目文本并返回命中证据。"""
         query = arguments.query.casefold()
         hits = []
         evidence = []

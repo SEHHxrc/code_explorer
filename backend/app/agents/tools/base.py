@@ -23,17 +23,20 @@ class ToolContext:
     artifact: dict[str, Any]
     evidence_index: ProjectEvidenceIndex | None = None
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
+        """校验数据类实例在初始化后的约束。"""
         if self.evidence_index is None:
             object.__setattr__(self, "evidence_index", ProjectEvidenceIndex(self.artifact))
 
 
 class AgentTool(ABC):
+    """智能体只读工具的抽象接口。"""
     name: str
     description: str
     arguments_model: Type[BaseModel]
 
     def schema(self) -> dict[str, Any]:
+        """返回工具名称、说明和严格 JSON 参数模式。"""
         parameters = self.arguments_model.model_json_schema()
         properties = parameters.get("properties", {})
         parameters["required"] = list(properties)
@@ -49,6 +52,7 @@ class AgentTool(ABC):
         }
 
     def validate(self, arguments: dict[str, Any]) -> BaseModel:
+        """校验原始工具参数并返回类型化参数对象。"""
         try:
             return self.arguments_model.model_validate(arguments)
         except ValidationError as exc:
@@ -56,22 +60,26 @@ class AgentTool(ABC):
 
     @abstractmethod
     async def execute(self, context: ToolContext, arguments: BaseModel) -> ToolResult:
+        """执行工具请求并返回结构化结果和证据。"""
         raise NotImplementedError
 
 
 class ToolRegistry:
     """仅分派显式注册的工具，并拒绝重复名称造成的静默覆盖。"""
 
-    def __init__(self, tools: list[AgentTool]):
+    def __init__(self, tools: list[AgentTool]) -> None:
+        """输入只读工具列表，校验名称唯一后建立按名称访问的注册表。"""
         names = [tool.name for tool in tools]
         if len(names) != len(set(names)):
             raise ValueError("Duplicate agent tool names are not allowed")
         self._tools = {tool.name: tool for tool in tools}
 
     def schemas(self) -> list[dict[str, Any]]:
+        """返回注册表中全部工具的模型调用模式。"""
         return [tool.schema() for tool in self._tools.values()]
 
     async def execute(self, name: str, context: ToolContext, arguments: dict[str, Any]) -> ToolResult:
+        """执行工具请求并返回结构化结果和证据。"""
         tool = self._tools.get(name)
         if tool is None:
             raise ValueError("Requested tool is not registered")
