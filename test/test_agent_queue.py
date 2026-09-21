@@ -68,6 +68,22 @@ class AgentQueueTests(unittest.TestCase):
         self.assertEqual(restarted_store.get("run1", "user1").status, "running")
         self.assertIsNone(restarted_store.claim_next("competing-worker"))
 
+    def test_selected_model_survives_persistent_queue_claim(self):
+        """前端选择的模型应随运行记录持久化并交给独立 Worker。"""
+        self.store.create(
+            run_id="selected",
+            project_id="project1",
+            user_id="user1",
+            request=AgentRunRequest(
+                question="项目入口在哪里？",
+                use_model=True,
+                model="gpt-selected",
+            ),
+        )
+        claim = AgentRunStore(self.sessions).claim_next("worker-after-restart")
+        self.assertEqual(claim.model, "gpt-selected")
+        self.assertEqual(self.store.get("selected", "user1").model, "gpt-selected")
+
     def test_cancel_is_persistent_for_queued_and_running_runs(self):
         self.create_run("queued")
         cancelled = self.store.request_cancel("queued", "user1")

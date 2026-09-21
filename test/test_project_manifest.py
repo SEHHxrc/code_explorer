@@ -35,14 +35,41 @@ class ProjectManifestBuilderTests(unittest.TestCase):
             self.assertIn("FastAPI", manifest.frameworks)
             self.assertIn("Vue", manifest.frameworks)
             self.assertNotIn("Spring Boot", manifest.frameworks)
-            self.assertIn("uvicorn backend.main:app --reload", manifest.run_commands)
-            self.assertIn("npm run dev", manifest.run_commands)
-            self.assertIn("npm run build", manifest.build_commands)
-            self.assertIn("npm run test", manifest.test_commands)
+            self.assertNotIn("uvicorn backend.main:app --reload", manifest.run_commands)
+            self.assertIn("uvicorn backend.main:app --reload", manifest.suggested_commands)
+            self.assertIn("npm run dev", manifest.suggested_commands)
+            self.assertIn("vite", manifest.run_commands)
+            self.assertIn("vite build", manifest.build_commands)
+            self.assertIn("vitest", manifest.test_commands)
             self.assertEqual(manifest.graph_summary["edge_count"], 1)
             fastapi_entry = next(item for item in manifest.entrypoints if item.framework == "FastAPI")
             self.assertEqual(fastapi_entry.path, "backend/main.py")
             self.assertEqual(fastapi_entry.line, 2)
+            self.assertIsNone(fastapi_entry.command)
+            self.assertEqual("uvicorn backend.main:app --reload", fastapi_entry.suggested_command)
+            generated = [item for item in manifest.commands if item.origin == "generated"]
+            observed = [item for item in manifest.commands if item.origin == "observed"]
+            self.assertTrue(any(item.launcher == "uvicorn" for item in generated))
+            self.assertTrue(any(item.command == "vite" for item in observed))
+
+    def test_observed_gunicorn_command_is_a_deployment_fact_not_a_generated_suggestion(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "app.py").write_text(
+                "from fastapi import FastAPI\napp = FastAPI()\n", encoding="utf-8",
+            )
+            (root / "Procfile").write_text(
+                "web: gunicorn app:app --workers 4\n", encoding="utf-8",
+            )
+
+            manifest = ProjectManifestBuilder(str(root)).build()
+
+        gunicorn = next(item for item in manifest.commands if item.launcher == "gunicorn")
+        self.assertEqual("observed", gunicorn.origin)
+        self.assertEqual("procfile", gunicorn.source_kind)
+        self.assertEqual("service_manager", gunicorn.authority)
+        self.assertIn("gunicorn app:app --workers 4", manifest.run_commands)
+        self.assertFalse(any("gunicorn" in command for command in manifest.suggested_commands))
 
     def test_repo_map_is_bounded_and_uses_analyzer_symbols(self):
         manifest = ProjectManifest(project_name="demo", languages=["Python"])
@@ -72,4 +99,3 @@ class ProjectManifestBuilderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

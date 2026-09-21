@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import json
 
-from backend.app.agents.context_builder import MAX_CONTEXT_CHARS, ProjectContextBuilder
+from backend.app.agents.context_builder import ProjectContextBuilder
 from backend.app.agents.contracts import AgentEvidence, ContextPacket
+from backend.app.llm.registry import get_model_limits
 from backend.app.schemas.manifest import ProjectManifest
 from backend.app.experiments.context import neutral_repo_map
 
@@ -31,7 +32,7 @@ class GraphAugmentedContextBuilder:
             + repo_map
             + "\n\nDEPENDENCY_GRAPH_CONTEXT\n"
             + json.dumps(graph_context, ensure_ascii=False)
-        )[:MAX_CONTEXT_CHARS]
+        )[:get_model_limits().max_context_chars]
         return ContextPacket(
             project_id=project_id,
             project_name=manifest.project_name,

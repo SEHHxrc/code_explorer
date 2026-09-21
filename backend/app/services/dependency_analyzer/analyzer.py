@@ -52,7 +52,9 @@ class UnifiedCodeAnalyzer(
         self.include_type_refs = include_type_refs
         self.include_virtual_dispatch = include_virtual_dispatch
 
-        self.global_graph = nx.DiGraph()
+        # 同一节点对可能在不同调用点、以不同关系相连；内部分析图必须无损保存。
+        # 前端展示所需的聚合由 GraphExchangeNormalizer 单独负责。
+        self.global_graph = nx.MultiDiGraph()
         self.file_symbols_map: dict[str, list] = {}
 
         # 阶段一产出
@@ -94,18 +96,29 @@ class UnifiedCodeAnalyzer(
         self.parsed_files_count = 0
         self.total_files_count = 0
         self._progress_lock = threading.Lock()
+        self._diagnostics_lock = threading.Lock()
         self._tls = threading.local()
 
         self.stats = defaultdict(int)
         self.global_index = {"imports": {}, "unresolved": []}
+        self.diagnostics = {
+            "unresolved_references": self.global_index["unresolved"],
+            "parse_failures": [],
+            "skipped_files": [],
+            "truncations": [],
+        }
 
     def run_full_analysis(self) -> dict:
         """扫描项目并执行收集、索引和关系解析，输出符号表、依赖图与统计。"""
         target_files = self._collect_files()
         self.total_files_count = len(target_files)
         if not target_files:
-            return {"file_symbols": {}, "dependency_graph": nx.node_link_data(self.global_graph),
-                    "stats": dict(self.stats)}
+            return {
+                "file_symbols": {},
+                "dependency_graph": nx.node_link_data(self.global_graph),
+                "stats": dict(self.stats),
+                "diagnostics": self._diagnostics_snapshot(),
+            }
 
         contexts = []
         if self.max_workers > 1 and len(target_files) > 1:
@@ -140,6 +153,27 @@ class UnifiedCodeAnalyzer(
             "file_symbols": self.file_symbols_map,
             "dependency_graph": nx.node_link_data(self.global_graph),
             "stats": dict(self.stats),
+            "diagnostics": self._diagnostics_snapshot(),
+        }
+
+    def _diagnostics_snapshot(self) -> dict:
+        """返回可持久化的诊断快照，并补充完整计数与截断状态。"""
+        unresolved = list(self.diagnostics["unresolved_references"])
+        return {
+            "unresolved_references": unresolved,
+            "parse_failures": list(self.diagnostics["parse_failures"]),
+            "skipped_files": list(self.diagnostics["skipped_files"]),
+            "truncations": list(self.diagnostics["truncations"]),
+            "coverage": {
+                "total_files": self.total_files_count,
+                "attempted_files": self.parsed_files_count,
+                "parsed_files": int(self.stats.get("files_parsed", 0)),
+                "failed_files": int(self.stats.get("parse_failures", 0)),
+                "partial_failure_count": int(self.stats.get("partial_parse_failures", 0)),
+                "unresolved_total": int(self.stats.get("unresolved", 0)),
+                "unresolved_stored": len(unresolved),
+                "unresolved_truncated": False,
+            },
         }
 
     def get_progress(self) -> dict:

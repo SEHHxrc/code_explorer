@@ -21,7 +21,12 @@ def render_deterministic_overview(manifest: ProjectManifest) -> str:
     if manifest.entrypoints:
         for entry in manifest.entrypoints:
             location = f"{entry.path}:{entry.line}" if entry.line else entry.path
-            command = f"；命令：`{entry.command}`" if entry.command else ""
+            if entry.command:
+                command = f"；观察到的命令：`{entry.command}`"
+            elif entry.suggested_command:
+                command = f"；系统运行建议（非项目事实）：`{entry.suggested_command}`"
+            else:
+                command = ""
             lines.append(f"- `{entry.name}`（{entry.kind}），位置 `{location}`{command}")
     else:
         lines.append("- 暂未发现高置信度程序入口，需要进一步检查项目文档或构建配置。")
@@ -47,6 +52,15 @@ def render_deterministic_overview(manifest: ProjectManifest) -> str:
         lines.extend(["", "### 运行命令", ""] + [f"- `{cmd}`" for cmd in manifest.run_commands])
     if manifest.test_commands:
         lines.extend(["", "### 测试命令", ""] + [f"- `{cmd}`" for cmd in manifest.test_commands])
+    if manifest.suggested_commands:
+        lines.extend([
+            "",
+            "### 系统生成的命令建议",
+            "",
+            "> 以下命令由分析器生成，仅用于辅助运行，不代表项目实际部署配置，也不应直接作为安全结论。",
+            "",
+            *[f"- `{cmd}`" for cmd in manifest.suggested_commands],
+        ])
     lines.extend([
         "",
         "> 本概览由确定性静态分析生成；模型增强版本会在此基础上解释模块职责和调用关系。",

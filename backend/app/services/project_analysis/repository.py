@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy.orm import Session
 
@@ -26,6 +27,8 @@ class ProjectRecord:
     user_id: str
     source: str
     local_path: str
+    file_tree: list[dict]
+    created_at: datetime
 
 
 class ProjectRepository:
@@ -68,7 +71,30 @@ class ProjectRepository:
                 user_id=project.user_id,
                 source=project.repo_url,
                 local_path=project.local_path,
+                file_tree=project.file_tree or [],
+                created_at=project.created_at,
             )
+        finally:
+            session.close()
+
+    def list_owned(self, user_id: str) -> list[ProjectRecord]:
+        """按创建时间倒序返回当前用户的全部项目快照。"""
+        session = self._session_factory()
+        try:
+            projects = session.query(ProjectModel).filter(
+                ProjectModel.user_id == user_id,
+            ).order_by(ProjectModel.created_at.desc()).all()
+            return [
+                ProjectRecord(
+                    project_id=project.id,
+                    user_id=project.user_id,
+                    source=project.repo_url,
+                    local_path=project.local_path,
+                    file_tree=project.file_tree or [],
+                    created_at=project.created_at,
+                )
+                for project in projects
+            ]
         finally:
             session.close()
 

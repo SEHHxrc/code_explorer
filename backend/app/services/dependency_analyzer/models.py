@@ -31,8 +31,25 @@ class Reference:
     name: str
     receiver: str = ""   # 接收者原文：'' / self / 局部变量 / 模块别名 / 类名
     line: int = 0
+    column: int = 0
+    end_line: int = 0
+    end_column: int = 0
     class_fqn: str = ""  # 引用发生处所在的 class-like 作用域
     lang: str = ""
+
+
+@dataclass(frozen=True)
+class ReferenceResolution:
+    """一条引用解析结果；显式区分派发、目标范围、解析方法和不确定性。"""
+
+    target: str | None
+    dispatch: str
+    target_scope: str
+    resolution_method: str
+    target_certainty: str
+    confidence: str
+    unresolved_reason: str | None = None
+    truncated: bool = False
 
 @dataclass
 class ImportRec:

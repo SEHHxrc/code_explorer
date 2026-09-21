@@ -13,6 +13,7 @@
     </div>
     <div class="actions">
       <el-tag size="small" type="success" effect="plain">分析已完成</el-tag>
+      <el-button plain size="small" @click="$emit('manage-data')">数据管理</el-button>
       <el-popconfirm
         title="确定删除当前项目及其分析、实验和执行记录吗？"
         width="260"
@@ -38,7 +39,7 @@ const props = defineProps({
   graph: { type: Object, default: () => ({ nodes: [], edges: [] }) },
   deleting: Boolean,
 })
-defineEmits(['delete'])
+defineEmits(['delete', 'manage-data'])
 
 const languages = computed(() => props.manifest?.languages?.slice(0, 4).join(' · ') || '语言未识别')
 const graphCount = computed(() => (

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +13,30 @@ class Evidence(BaseModel):
     detail: str = ""
 
 
+CommandOrigin = Literal["observed", "inferred", "generated", "documented"]
+CommandPurpose = Literal["serve", "run", "build", "test", "worker", "unknown"]
+
+
+class CommandFact(BaseModel):
+    """一条带来源和执行边界的命令事实；命令存在本身不代表安全问题。"""
+
+    command: str = Field(min_length=1, max_length=8000)
+    purpose: CommandPurpose = "unknown"
+    launcher: str | None = Field(default=None, max_length=200)
+    argv: list[str] = Field(default_factory=list)
+    origin: CommandOrigin
+    source_kind: str = Field(max_length=100)
+    path: str | None = Field(default=None, max_length=1000)
+    line: int | None = Field(default=None, ge=1)
+    execution_profile: Literal["development", "test", "production", "unknown"] = "unknown"
+    authority: Literal[
+        "trusted_operator", "service_manager", "ci_pipeline",
+        "administrative_user", "remote_user_influenced", "unknown",
+    ] = "unknown"
+    shell_interpreted: bool = False
+    confidence: Literal["high", "medium", "low"] = "high"
+
+
 class Entrypoint(BaseModel):
     """描述一个可运行或框架入口；输入入口类型、名称、位置及可选启动命令。"""
     kind: str
@@ -20,6 +44,8 @@ class Entrypoint(BaseModel):
     path: str
     line: int | None = None
     command: str | None = None
+    command_origin: CommandOrigin | None = None
+    suggested_command: str | None = None
     framework: str | None = None
     confidence: float = Field(default=1.0, ge=0, le=1)
 
@@ -30,7 +56,7 @@ class ProjectManifest(BaseModel):
     输入来自静态分析的语言、框架、入口、模块、命令和证据；输出为可持久化 JSON，
     同时作为项目概览及智能体上下文的事实底座。
     """
-    schema_version: str = "1.0"
+    schema_version: str = "2.0"
     project_name: str
     languages: list[str] = Field(default_factory=list)
     frameworks: list[str] = Field(default_factory=list)
@@ -39,6 +65,8 @@ class ProjectManifest(BaseModel):
     build_commands: list[str] = Field(default_factory=list)
     run_commands: list[str] = Field(default_factory=list)
     test_commands: list[str] = Field(default_factory=list)
+    commands: list[CommandFact] = Field(default_factory=list)
+    suggested_commands: list[str] = Field(default_factory=list)
     modules: list[dict[str, Any]] = Field(default_factory=list)
     graph_summary: dict[str, Any] = Field(default_factory=dict)
     evidence: list[Evidence] = Field(default_factory=list)

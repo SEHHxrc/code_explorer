@@ -62,6 +62,11 @@ class SuccessfulAnalyzer:
                 ],
                 "links": [{"source": "main.py", "target": "main.py::app", "relation": "declares"}],
             },
+            "stats": {"files_parsed": 1, "unresolved": 0},
+            "diagnostics": {
+                "unresolved_references": [],
+                "coverage": {"total_files": 1, "parsed_files": 1},
+            },
         }
 
 
@@ -104,6 +109,9 @@ class ProjectAnalysisServiceTests(unittest.TestCase):
 
             self.assertEqual(1, result.dependency_graph.summary.edge_count)
             self.assertIn("links", artifacts.saved[1]["dependency_graph"])
+            self.assertEqual(1, artifacts.saved[1]["analysis_statistics"]["files_parsed"])
+            self.assertEqual(1, artifacts.saved[1]["analysis_diagnostics"]["coverage"]["parsed_files"])
+            self.assertEqual("2.0", artifacts.saved[1]["analysis_metadata"]["schema_version"])
             self.assertEqual("local_upload://sample.zip", projects.created["source"])
             self.assertTrue(Path(projects.created["local_path"]).exists())
             self.assertFalse(any((Path(temp) / "users" / "user-1" / ".staging").glob("*")))

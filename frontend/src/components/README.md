@@ -4,7 +4,7 @@
 
 | 文件 | 作用 | 维护说明 |
 | --- | --- | --- |
-| `AgentWorkspace.vue` | 智能体问答、取消、SSE 步骤时间线和证据列表。 | 当前正式实现；调用 `services/agentApi.js`。 |
+| `AgentWorkspace.vue` | 智能体问答、历史运行恢复、请求级模型切换、连接测试、模型目录、取消、SSE 步骤时间线和证据列表。 | 按项目发现普通 Agent 历史并回放安全快照，A/B 运行不混入列表。 |
 | `ProjectInsight.vue` | 转发到 `features/project-insight/ProjectInsight.vue`。 | 仅兼容 `App.vue` 等旧路径，不在此复制业务。 |
 | `DependencyGraph.vue` | 转发图数据与选择事件到功能组件。 | 正式实现位于 `features/dependency-graph/`。 |
 | `graphStyle.js` | 依赖图节点类别、统一尺寸、颜色、边关系和布局权重。 | 被功能目录中的同名转发文件重新导出。 |

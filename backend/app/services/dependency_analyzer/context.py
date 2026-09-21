@@ -19,7 +19,7 @@ class FileContext:
 
     __slots__ = ("path", "abs_path", "lang", "src", "defs", "refs", "imports",
                  "symbols", "symbol_index", "def_index", "frames", "package",
-                 "handler", "var_type_table", "pending_typedef")
+                 "handler", "var_type_table", "pending_typedef", "diagnostics")
 
     def __init__(self, path: str, abs_path: str, lang: str, src: bytes, handler: BaseHandler) -> None:
         """输入文件路径、语言、源码字节和处理器，初始化单文件分析状态。"""
@@ -36,6 +36,7 @@ class FileContext:
         self.def_index: dict = {}
         self.package: str = ""
         self.pending_typedef: str = ""
+        self.diagnostics: list[dict] = []
         # (文件, 所属函数 fqn) -> {变量名: 类型字面量}，阶段三解析 obj.method() 时查表
         self.var_type_table: dict = {}
         self.frames: list[Frame] = [Frame(fqn=path, kind="module", name=os.path.basename(path))]
@@ -173,7 +174,11 @@ class FileContext:
             return
         self.refs.append(Reference(
             file=self.path, from_fqn=self.enclosing_callable(), kind=kind, name=name,
-            receiver=receiver, line=node.start_point[0] + 1,
+            receiver=receiver,
+            line=node.start_point[0] + 1,
+            column=node.start_point[1] + 1,
+            end_line=node.end_point[0] + 1,
+            end_column=node.end_point[1] + 1,
             class_fqn=self.enclosing_class(), lang=self.lang,
         ))
 

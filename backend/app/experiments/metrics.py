@@ -8,7 +8,7 @@ from backend.app.models import AgentEventModel, AgentRunModel, SessionLocal
 
 
 def collect_run_metrics(run_id: str, user_id: str) -> dict:
-    """计算耗时、上下文估算 Token、工具调用、证据和答案长度。"""
+    """计算耗时、静态上下文/答案字符估算、工具调用和去重证据数量。"""
     session = SessionLocal()
     try:
         run = session.query(AgentRunModel).filter(

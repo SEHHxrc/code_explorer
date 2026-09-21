@@ -4,13 +4,33 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from backend.app.agents.contracts import AgentClaim, AgentEvent, AgentRunRequest, AgentRunView
+from backend.app.agents.contracts import (
+    AgentClaim,
+    AgentEvent,
+    AgentEvidence,
+    AgentRunHistoryItem,
+    AgentRunRequest,
+    AgentRunSnapshot,
+    AgentRunView,
+)
 from backend.app.models import AgentEventModel, AgentJobModel, AgentRunModel, SessionLocal
 
 
 ACTIVE_STATUSES = ("queued", "running")
+_HISTORY_EVENT_FIELDS = {
+    "run.started": {"project_id"},
+    "context.ready": {"project_name", "characters", "evidence"},
+    "model.started": {"step", "prompt_chars", "tool_count", "request_chars", "max_output_tokens"},
+    "tool.requested": {"step", "call_id", "name", "arguments"},
+    "tool.completed": {"step", "call_id", "name"},
+    "tool.failed": {"step", "call_id", "name", "error"},
+    "run.completed": {"provider", "model", "evidence"},
+    "run.failed": {"error", "error_type", "retryable", "status_code", "error_code", "retry_after", "request_id"},
+    "run.cancelled": set(),
+}
 
 
 class AgentRunStore:
@@ -41,6 +61,7 @@ class AgentRunStore:
                 question=request.question,
                 use_model=request.use_model,
                 max_steps=request.max_steps,
+                model=request.model,
                 status="queued",
             )
             db.add(row)
@@ -88,6 +109,72 @@ class AgentRunStore:
         finally:
             db.close()
 
+    def list_project_history(
+        self,
+        project_id: str,
+        user_id: str,
+        *,
+        limit: int = 30,
+    ) -> list[AgentRunHistoryItem]:
+        """按时间倒序返回普通 Agent 历史；实验 graph/baseline 运行保持隔离。"""
+        db = self.session_factory()
+        try:
+            rows = db.query(AgentRunModel, AgentJobModel).outerjoin(
+                AgentJobModel, AgentJobModel.run_id == AgentRunModel.id,
+            ).filter(
+                AgentRunModel.project_id == project_id,
+                AgentRunModel.user_id == user_id,
+                or_(AgentJobModel.run_id.is_(None), AgentJobModel.strategy == "default"),
+            ).order_by(AgentRunModel.created_at.desc()).limit(max(1, min(limit, 100))).all()
+            metrics = self._history_metrics(
+                db,
+                [run.id for run, _ in rows],
+            )
+            return [
+                AgentRunHistoryItem(
+                    id=run.id,
+                    status=run.status,
+                    question_preview=self._question_preview(run.question),
+                    provider=run.provider,
+                    model=run.model,
+                    strategy=job.strategy if job else "default",
+                    tool_calls=metrics.get(run.id, {}).get("tool_calls", 0),
+                    evidence_count=len(metrics.get(run.id, {}).get("evidence", [])),
+                    created_at=run.created_at,
+                    updated_at=run.updated_at,
+                )
+                for run, job in rows
+            ]
+        finally:
+            db.close()
+
+    def snapshot(self, run_id: str, user_id: str) -> AgentRunSnapshot | None:
+        """返回一次运行的可回放快照，并剥离前端不展示的工具结果正文。"""
+        db = self.session_factory()
+        try:
+            pair = db.query(AgentRunModel, AgentJobModel).outerjoin(
+                AgentJobModel, AgentJobModel.run_id == AgentRunModel.id,
+            ).filter(
+                AgentRunModel.id == run_id,
+                AgentRunModel.user_id == user_id,
+            ).first()
+            if pair is None:
+                return None
+            run, job = pair
+            rows = db.query(AgentEventModel).filter(
+                AgentEventModel.run_id == run_id,
+            ).order_by(AgentEventModel.sequence).all()
+            events = [event for row in rows if (event := self._history_event(row)) is not None]
+            evidence = self._collect_evidence(rows)
+            return AgentRunSnapshot(
+                run=self._view(run),
+                strategy=job.strategy if job else "default",
+                events=events,
+                evidence=evidence,
+            )
+        finally:
+            db.close()
+
     def claim_next(self, worker_id: str) -> AgentClaim | None:
         """以 queued 条件更新原子认领最早运行；竞争失败返回空。"""
         db = self.session_factory()
@@ -128,6 +215,7 @@ class AgentRunStore:
                 question=row.question,
                 use_model=bool(row.use_model),
                 max_steps=row.max_steps,
+                model=row.model,
                 strategy=job.strategy,
             )
         except Exception:
@@ -276,7 +364,13 @@ class AgentRunStore:
             db.flush()
             row.sequence = row.id
             db.commit()
-            return AgentEvent(sequence=row.sequence, type=row.event_type, payload=row.payload)
+            db.refresh(row)
+            return AgentEvent(
+                sequence=row.sequence,
+                type=row.event_type,
+                payload=row.payload,
+                created_at=row.created_at,
+            )
         except Exception:
             db.rollback()
             raise
@@ -292,11 +386,79 @@ class AgentRunStore:
                 AgentEventModel.sequence > sequence,
             ).order_by(AgentEventModel.sequence).all()
             return [
-                AgentEvent(sequence=row.sequence, type=row.event_type, payload=row.payload)
+                AgentEvent(
+                    sequence=row.sequence,
+                    type=row.event_type,
+                    payload=row.payload,
+                    created_at=row.created_at,
+                )
                 for row in rows
             ]
         finally:
             db.close()
+
+    @classmethod
+    def _history_metrics(cls, db: Session, run_ids: list[str]) -> dict[str, dict[str, Any]]:
+        """一次查询计算历史列表所需的工具调用数和去重证据。"""
+        metrics = {run_id: {"tool_calls": 0, "rows": []} for run_id in run_ids}
+        if not run_ids:
+            return metrics
+        rows = db.query(AgentEventModel).filter(
+            AgentEventModel.run_id.in_(run_ids),
+            AgentEventModel.event_type.in_((
+                "context.ready", "tool.requested", "tool.completed", "run.completed",
+            )),
+        ).order_by(AgentEventModel.sequence).all()
+        for row in rows:
+            item = metrics[row.run_id]
+            if row.event_type == "tool.requested":
+                item["tool_calls"] += 1
+            item["rows"].append(row)
+        for item in metrics.values():
+            item["evidence"] = cls._collect_evidence(item.pop("rows"))
+        return metrics
+
+    @staticmethod
+    def _question_preview(question: str, limit: int = 120) -> str:
+        """把问题压缩为单行历史标签并限制列表响应体积。"""
+        compact = " ".join((question or "").split())
+        return compact if len(compact) <= limit else compact[: limit - 1] + "…"
+
+    @staticmethod
+    def _collect_evidence(rows: list[AgentEventModel]) -> list[AgentEvidence]:
+        """从上下文、工具完成和最终事件中恢复并去重结构化证据。"""
+        evidence: list[AgentEvidence] = []
+        seen: set[tuple[str, int | None, str | None]] = set()
+        for row in rows:
+            payload = row.payload or {}
+            candidates = list(payload.get("evidence") or [])
+            result = payload.get("result")
+            if isinstance(result, dict):
+                candidates.extend(result.get("evidence") or [])
+            for candidate in candidates:
+                try:
+                    item = AgentEvidence.model_validate(candidate)
+                except (TypeError, ValueError):
+                    continue
+                key = (item.path, item.line, item.symbol)
+                if key not in seen:
+                    seen.add(key)
+                    evidence.append(item)
+        return evidence[:80]
+
+    @staticmethod
+    def _history_event(row: AgentEventModel) -> AgentEvent | None:
+        """把持久化事件裁剪为前端回放需要的安全字段。"""
+        allowed = _HISTORY_EVENT_FIELDS.get(row.event_type)
+        if allowed is None:
+            return None
+        payload = row.payload or {}
+        return AgentEvent(
+            sequence=row.sequence,
+            type=row.event_type,
+            payload={key: payload[key] for key in allowed if key in payload},
+            created_at=row.created_at,
+        )
 
     @staticmethod
     def _view(row: AgentRunModel) -> AgentRunView:
@@ -310,4 +472,6 @@ class AgentRunStore:
             model=row.model,
             answer=row.answer,
             error=row.error,
+            created_at=row.created_at,
+            updated_at=row.updated_at,
         )

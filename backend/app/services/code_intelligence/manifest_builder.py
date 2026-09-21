@@ -4,11 +4,12 @@ from __future__ import annotations
 import json
 import os
 import re
+import shlex
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from backend.app.schemas.manifest import Entrypoint, Evidence, ProjectManifest
+from backend.app.schemas.manifest import CommandFact, Entrypoint, Evidence, ProjectManifest
 
 
 LANGUAGE_BY_EXTENSION = {
@@ -78,9 +79,8 @@ class ProjectManifestBuilder:
         frameworks: list[str] = []
         package_managers: list[str] = []
         entrypoints: list[Entrypoint] = []
-        build_commands: list[str] = []
-        run_commands: list[str] = []
-        test_commands: list[str] = []
+        commands: list[CommandFact] = []
+        suggested_commands: list[str] = []
         evidence: list[Evidence] = []
 
         for path in files:
@@ -103,7 +103,7 @@ class ProjectManifestBuilder:
                 package_managers.append("npm")
                 self._inspect_package_json(
                     path, text, frameworks, entrypoints,
-                    build_commands, run_commands, test_commands, evidence,
+                    commands, suggested_commands, evidence,
                 )
             elif name in {"requirements.txt", "pyproject.toml", "setup.py", "setup.cfg"}:
                 package_managers.append("pip")
@@ -124,13 +124,27 @@ class ProjectManifestBuilder:
             elif name == "cargo.toml":
                 package_managers.append("Cargo")
 
-            self._detect_code_entrypoints(relative, text, entrypoints)
-            self._detect_container_entrypoints(relative, name, text, entrypoints, run_commands)
+            self._detect_code_entrypoints(
+                relative, text, entrypoints, commands, suggested_commands,
+            )
+            self._detect_deployment_commands(
+                relative, name, text, entrypoints, commands, suggested_commands,
+            )
 
-        run_commands.extend(
-            entry.command for entry in entrypoints
-            if entry.kind == "web_app" and entry.command
-        )
+        # 兼容旧的字符串字段，但其中只保留配置中直接观察到的命令。
+        # 系统生成的运行建议进入 suggested_commands，绝不伪装成项目事实。
+        run_commands = _dedupe([
+            item.command for item in commands
+            if item.origin == "observed" and item.purpose in {"serve", "run", "worker"}
+        ])
+        build_commands = _dedupe([
+            item.command for item in commands
+            if item.origin == "observed" and item.purpose == "build"
+        ])
+        test_commands = _dedupe([
+            item.command for item in commands
+            if item.origin == "observed" and item.purpose == "test"
+        ])
 
         modules = self._build_modules(files)
         graph_summary = self._summarize_graph(dependency_graph or {})
@@ -143,6 +157,8 @@ class ProjectManifestBuilder:
             build_commands=_dedupe(build_commands),
             run_commands=_dedupe(run_commands),
             test_commands=_dedupe(test_commands),
+            commands=self._dedupe_commands(commands),
+            suggested_commands=_dedupe(suggested_commands),
             modules=modules,
             graph_summary=graph_summary,
             evidence=evidence[:100],
@@ -162,7 +178,7 @@ class ProjectManifestBuilder:
 
     def _inspect_package_json(
         self, path: Path, text: str, frameworks: list[str], entrypoints: list[Entrypoint],
-        build_commands: list[str], run_commands: list[str], test_commands: list[str],
+        commands: list[CommandFact], suggested_commands: list[str],
         evidence: list[Evidence],
     ) -> None:
         """读取 package.json 并提取脚本与入口点信息。"""
@@ -182,19 +198,40 @@ class ProjectManifestBuilder:
                 evidence.append(Evidence(path=relative, detail=f"依赖 {dependency}"))
         scripts = package.get("scripts", {})
         for script_name, command in scripts.items():
+            if not isinstance(command, str) or not command.strip():
+                continue
             npm_command = f"npm run {script_name}"
             if script_name in {"dev", "start", "serve", "preview"}:
-                run_commands.append(npm_command)
+                purpose = "serve" if script_name in {"start", "serve"} else "run"
                 entrypoints.append(Entrypoint(
                     kind="package_script", name=script_name, path=relative,
-                    command=npm_command, confidence=1.0,
+                    command=command, command_origin="observed",
+                    suggested_command=npm_command, confidence=1.0,
                 ))
             elif script_name in {"build", "compile"}:
-                build_commands.append(npm_command)
+                purpose = "build"
             elif script_name.startswith("test"):
-                test_commands.append(npm_command)
+                purpose = "test"
+            else:
+                purpose = "unknown"
+            commands.append(self._command_fact(
+                command,
+                purpose=purpose,
+                origin="observed",
+                source_kind="package_script",
+                path=relative,
+                line=self._line_containing(text, f'"{script_name}"'),
+            ))
+            suggested_commands.append(npm_command)
 
-    def _detect_code_entrypoints(self, relative: str, text: str, entrypoints: list[Entrypoint]) -> None:
+    def _detect_code_entrypoints(
+        self,
+        relative: str,
+        text: str,
+        entrypoints: list[Entrypoint],
+        commands: list[CommandFact],
+        suggested_commands: list[str],
+    ) -> None:
         """按框架和语言规则检测源码入口点。"""
         suffix = Path(relative).suffix.lower()
         patterns = (
@@ -213,28 +250,191 @@ class ProjectManifestBuilder:
             if match:
                 name = match.groupdict().get("name") or default_name
                 command = None
+                suggested_command = None
                 if kind == "web_app" and framework == "FastAPI":
                     module = relative[:-3].replace("/", ".")
-                    command = f"uvicorn {module}:{name} --reload"
+                    suggested_command = f"uvicorn {module}:{name} --reload"
+                    suggested_commands.append(suggested_command)
+                    commands.append(self._command_fact(
+                        suggested_command,
+                        purpose="serve",
+                        origin="generated",
+                        source_kind="framework_suggestion",
+                        path=relative,
+                        line=_line_of(text, match.start()),
+                        execution_profile="development",
+                        confidence="medium",
+                    ))
                 entrypoints.append(Entrypoint(
                     kind=kind, name=name, path=relative,
                     line=_line_of(text, match.start()), command=command,
+                    suggested_command=suggested_command,
                     framework=framework, confidence=1.0,
                 ))
 
-    def _detect_container_entrypoints(
-        self, relative: str, name: str, text: str,
-        entrypoints: list[Entrypoint], run_commands: list[str],
+    def _detect_deployment_commands(
+        self,
+        relative: str,
+        name: str,
+        text: str,
+        entrypoints: list[Entrypoint],
+        commands: list[CommandFact],
+        suggested_commands: list[str],
     ) -> None:
-        """从容器配置中提取启动入口。"""
+        """从容器、进程管理器和部署配置中提取真实存在的启动命令。"""
         if name == "dockerfile" or name.startswith("dockerfile."):
             for match in re.finditer(r"^\s*(CMD|ENTRYPOINT)\s+(.+)$", text, re.M | re.I):
                 command = match.group(2).strip()
+                line = _line_of(text, match.start())
                 entrypoints.append(Entrypoint(
                     kind="container", name=match.group(1).upper(), path=relative,
-                    line=_line_of(text, match.start()), command=command, confidence=1.0,
+                    line=line, command=command, command_origin="observed", confidence=1.0,
                 ))
-                run_commands.append(f"docker build -t {self.root.name} .")
+                commands.append(self._command_fact(
+                    command,
+                    purpose="serve",
+                    origin="observed",
+                    source_kind="dockerfile_entrypoint",
+                    path=relative,
+                    line=line,
+                    shell_interpreted=not command.lstrip().startswith("["),
+                ))
+            if re.search(r"^\s*(CMD|ENTRYPOINT)\s+", text, re.M | re.I):
+                suggestion = f"docker build -t {self.root.name} ."
+                suggested_commands.append(suggestion)
+                commands.append(self._command_fact(
+                    suggestion,
+                    purpose="build",
+                    origin="generated",
+                    source_kind="container_build_suggestion",
+                    path=relative,
+                    confidence="medium",
+                ))
+
+        if name == "procfile":
+            for match in re.finditer(r"^\s*([A-Za-z0-9_-]+)\s*:\s*(.+)$", text, re.M):
+                process, command = match.group(1), match.group(2).strip()
+                purpose = "serve" if process.casefold() == "web" else "worker"
+                line = _line_of(text, match.start())
+                commands.append(self._command_fact(
+                    command,
+                    purpose=purpose,
+                    origin="observed",
+                    source_kind="procfile",
+                    path=relative,
+                    line=line,
+                    authority="service_manager",
+                    shell_interpreted=True,
+                ))
+                entrypoints.append(Entrypoint(
+                    kind="process", name=process, path=relative, line=line,
+                    command=command, command_origin="observed", confidence=1.0,
+                ))
+
+        if name.endswith(".service"):
+            for match in re.finditer(r"^\s*ExecStart\s*=\s*(.+)$", text, re.M | re.I):
+                command = match.group(1).strip()
+                line = _line_of(text, match.start())
+                commands.append(self._command_fact(
+                    command,
+                    purpose="serve",
+                    origin="observed",
+                    source_kind="systemd_unit",
+                    path=relative,
+                    line=line,
+                    authority="service_manager",
+                ))
+                entrypoints.append(Entrypoint(
+                    kind="service", name="ExecStart", path=relative, line=line,
+                    command=command, command_origin="observed", confidence=1.0,
+                ))
+
+        if name in {"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"}:
+            for match in re.finditer(r"^\s*(command|entrypoint)\s*:\s*([^\n#]+)", text, re.M | re.I):
+                command = match.group(2).strip().strip("'\"")
+                if not command:
+                    continue
+                line = _line_of(text, match.start())
+                commands.append(self._command_fact(
+                    command,
+                    purpose="serve",
+                    origin="observed",
+                    source_kind="compose_command",
+                    path=relative,
+                    line=line,
+                    authority="service_manager",
+                    shell_interpreted=isinstance(command, str) and not command.lstrip().startswith("["),
+                ))
+                entrypoints.append(Entrypoint(
+                    kind="container", name=match.group(1), path=relative, line=line,
+                    command=command, command_origin="observed", confidence=0.9,
+                ))
+
+    @staticmethod
+    def _line_containing(text: str, needle: str) -> int | None:
+        """返回文本片段所在行；找不到时返回 ``None``。"""
+        offset = text.find(needle)
+        return _line_of(text, offset) if offset >= 0 else None
+
+    @staticmethod
+    def _command_fact(
+        command: str,
+        *,
+        purpose: str,
+        origin: str,
+        source_kind: str,
+        path: str | None = None,
+        line: int | None = None,
+        authority: str = "unknown",
+        shell_interpreted: bool | None = None,
+        execution_profile: str = "unknown",
+        confidence: str = "high",
+    ) -> CommandFact:
+        """把命令转换为带来源的结构化事实；不在此处进行风险判定。"""
+        normalized = command.strip()
+        argv: list[str] = []
+        if normalized.startswith("["):
+            try:
+                parsed = json.loads(normalized)
+                if isinstance(parsed, list) and all(isinstance(item, str) for item in parsed):
+                    argv = parsed
+            except json.JSONDecodeError:
+                argv = []
+        if not argv:
+            try:
+                argv = shlex.split(normalized, posix=True)
+            except ValueError:
+                argv = []
+        launcher = Path(argv[0]).name if argv else None
+        if shell_interpreted is None:
+            shell_interpreted = bool(re.search(r"(?:&&|\|\||[|;`]|\$\(|\$\{)", normalized))
+        return CommandFact(
+            command=normalized,
+            purpose=purpose,
+            launcher=launcher,
+            argv=argv,
+            origin=origin,
+            source_kind=source_kind,
+            path=path,
+            line=line,
+            execution_profile=execution_profile,
+            authority=authority,
+            shell_interpreted=shell_interpreted,
+            confidence=confidence,
+        )
+
+    @staticmethod
+    def _dedupe_commands(commands: list[CommandFact]) -> list[CommandFact]:
+        """按命令、用途、来源和证据位置稳定去重。"""
+        result: list[CommandFact] = []
+        seen: set[tuple[str, str, str, str | None, int | None]] = set()
+        for item in commands:
+            key = (item.command, item.purpose, item.origin, item.path, item.line)
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(item)
+        return result
 
     def _build_modules(self, files: list[Path]) -> list[dict[str, Any]]:
         """按目录和语言汇总项目模块信息。"""

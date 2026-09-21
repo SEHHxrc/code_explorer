@@ -77,6 +77,13 @@ export const useProjectAnalysis = () => {
   const analyzeGit = (repoUrl) => analyze((signal) => analyzeGitProject(repoUrl, { signal }))
   const analyzeZip = (file) => analyze((signal) => analyzeZipProject(file, { signal }))
 
+  const restoreProjectSnapshot = (data) => {
+    const next = normalizeAnalysis(data)
+    replaceProject(next)
+    status.value = 'ready'
+    return next
+  }
+
   const loadModelStatus = async () => {
     try {
       modelStatus.value = await getModelStatus()
@@ -129,7 +136,7 @@ export const useProjectAnalysis = () => {
   return {
     status, currentProjectId, fileTree, dependencyGraph, projectManifest,
     projectOverview, sanitizeReport, modelStatus, hasProject, importing,
-    overviewLoading, deleting, analyzeGit, analyzeZip, loadModelStatus,
+    overviewLoading, deleting, analyzeGit, analyzeZip, restoreProjectSnapshot, loadModelStatus,
     refreshOverview, removeCurrentProject, clearLocal,
   }
 }

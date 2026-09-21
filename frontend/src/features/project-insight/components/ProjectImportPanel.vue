@@ -1,6 +1,11 @@
 <template>
   <el-card class="import-card">
-    <template #header><div class="card-header"><span>🚀 开源项目辅助理解工具 - 导入控制台</span></div></template>
+    <template #header>
+      <div class="card-header">
+        <span>🚀 开源项目辅助理解工具 - 导入控制台</span>
+        <el-button size="small" plain @click="$emit('manage-data')">后端数据管理</el-button>
+      </div>
+    </template>
     <el-form :inline="true">
       <el-form-item label="Git 仓库链接">
         <el-input v-model="repoUrl" :disabled="hasProject || importing" placeholder="https://github.com/xxx/xxx" style="width: 300px" clearable />
@@ -33,7 +38,7 @@ import { ElMessage } from 'element-plus'
 import { UploadFilled } from '@element-plus/icons-vue'
 
 const props = defineProps({ importing: Boolean, deleting: Boolean, hasProject: Boolean })
-const emit = defineEmits(['analyze-git', 'analyze-zip', 'reset'])
+const emit = defineEmits(['analyze-git', 'analyze-zip', 'reset', 'manage-data'])
 const repoUrl = ref('')
 const uploadRef = ref()
 

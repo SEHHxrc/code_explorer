@@ -34,6 +34,7 @@ class GraphEdgeDTO(BaseModel):
     relation: str = Field(default="calls", max_length=80)
     dispatch: str | None = Field(default=None, max_length=80)
     dynamic: bool = False
+    occurrence_count: int = Field(default=1, ge=1)
 
 
 class GraphSummaryDTO(BaseModel):

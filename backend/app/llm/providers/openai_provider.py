@@ -16,11 +16,19 @@ class OpenAIResponsesProvider(ModelProvider):
     """
     name = "openai"
 
-    def __init__(self, *, api_key: str, model: str, base_url: str = "https://api.openai.com/v1") -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        base_url: str = "https://api.openai.com/v1",
+        max_output_tokens: int = 2400,
+    ) -> None:
         """保存连接配置，不在构造阶段发起网络请求。"""
         self.api_key = api_key
         self.model = model
         self.base_url = base_url.rstrip("/")
+        self.max_output_tokens = max_output_tokens
 
     async def generate(self, *, instructions: str, prompt: str) -> ModelResult:
         """调用 Responses API 生成文本并输出规范化结果。"""
@@ -31,7 +39,7 @@ class OpenAIResponsesProvider(ModelProvider):
                 "instructions": instructions,
                 "input": prompt,
                 "store": False,
-                "max_output_tokens": 2400,
+                "max_output_tokens": self.max_output_tokens,
             },
             {"Authorization": f"Bearer {self.api_key}"},
             timeout=120.0,
@@ -57,7 +65,7 @@ class OpenAIResponsesProvider(ModelProvider):
                 "tool_choice": "auto",
                 "parallel_tool_calls": False,
                 "store": False,
-                "max_output_tokens": 2400,
+                "max_output_tokens": self.max_output_tokens,
             },
             {"Authorization": f"Bearer {self.api_key}"},
             timeout=120.0,

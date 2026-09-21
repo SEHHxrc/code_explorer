@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 import asyncio
 import tempfile
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -15,6 +16,7 @@ from backend.app.agents.orchestrator import AgentRunManager
 from backend.app.agents.run_store import AgentRunStore
 from backend.app.agents.tools import create_project_tool_registry
 from backend.app.agents.tools.base import ToolContext
+from backend.app.llm.http import ModelEndpointError
 from backend.app.llm.providers.compatible_provider import OpenAICompatibleProvider
 from backend.app.llm.providers.openai_provider import OpenAIResponsesProvider
 from backend.app.models import Base
@@ -82,6 +84,49 @@ class AgentFoundationTests(unittest.TestCase):
             self.assertEqual(store.get("r1", "u1").status, "completed")
             self.assertEqual([event.sequence for event in store.events_after("r1", 0)], [1, 2])
 
+    def test_project_history_restores_events_and_evidence_without_experiment_runs(self):
+        """历史列表仅展示普通运行，快照可安全重建时间线和去重证据。"""
+        engine = create_engine(
+            "sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool,
+        )
+        Base.metadata.create_all(engine)
+        sessions = sessionmaker(bind=engine)
+        store = AgentRunStore(sessions)
+        request = AgentRunRequest(question="检查项目安全问题", use_model=True)
+        store.create(run_id="normal", project_id="p1", user_id="u1", request=request)
+        store.create(
+            run_id="experiment", project_id="p1", user_id="u1",
+            request=request, strategy="graph",
+        )
+        evidence = {"path": "main.py", "line": 7, "symbol": "run", "detail": "source excerpt"}
+        store.add_event("normal", "run.started", {"project_id": "p1"})
+        store.add_event("normal", "model.delta", {"delta": "不应进入快照"})
+        store.add_event("normal", "tool.requested", {
+            "call_id": "c1", "name": "read_file_range", "arguments": {"path": "main.py"},
+        })
+        store.add_event("normal", "tool.completed", {
+            "call_id": "c1", "name": "read_file_range",
+            "result": {"content": "源码正文不应返回", "evidence": [evidence]},
+        })
+        store.add_event("normal", "run.completed", {
+            "answer": "完成", "provider": "compatible", "model": "demo", "evidence": [evidence],
+        })
+        store.update(
+            "normal", status="completed", answer="完成", provider="compatible", model="demo",
+        )
+
+        history = store.list_project_history("p1", "u1")
+        self.assertEqual([item.id for item in history], ["normal"])
+        self.assertEqual(history[0].tool_calls, 1)
+        self.assertEqual(history[0].evidence_count, 1)
+        snapshot = store.snapshot("normal", "u1")
+        self.assertEqual(snapshot.run.answer, "完成")
+        self.assertEqual(len(snapshot.evidence), 1)
+        self.assertNotIn("model.delta", [event.type for event in snapshot.events])
+        completed = next(event for event in snapshot.events if event.type == "tool.completed")
+        self.assertNotIn("result", completed.payload)
+        self.assertIsNotNone(snapshot.events[0].created_at)
+
     def test_context_is_bounded_and_includes_entrypoint_evidence(self):
         packet = ProjectContextBuilder().build(
             project_id="p1", question="FastAPI 入口在哪里", artifact=sample_artifact(),
@@ -144,6 +189,48 @@ class AgentFoundationTests(unittest.TestCase):
             self.assertIn("run.completed", event_types)
         asyncio.run(scenario())
 
+    def test_model_failure_emits_safe_actionable_diagnostics(self):
+        """模型额度错误应进入运行事件，但不得暴露上游原始正文。"""
+        async def scenario():
+            store = MemoryRunStore()
+            manager = AgentRunManager(store=store)
+            failure = ModelEndpointError(
+                status_code=429,
+                error_type="insufficient_quota",
+                error_code="credit_balance_exhausted",
+                request_id="req_test",
+            )
+            provider = SimpleNamespace(
+                name="openai",
+                model="gpt-test",
+                generate_with_tools=AsyncMock(side_effect=failure),
+            )
+            with tempfile.TemporaryDirectory() as directory, patch(
+                "backend.app.agents.orchestrator.create_model_provider",
+                return_value=provider,
+            ) as provider_factory:
+                await manager._run(
+                    run_id="r1", project_id="p1", user_id="u1", project_root=directory,
+                    artifact=sample_artifact(),
+                    request=AgentRunRequest(
+                        question="测试模型",
+                        use_model=True,
+                        model="gpt-selected",
+                    ),
+                )
+            provider_factory.assert_called_once_with("gpt-selected")
+            self.assertEqual(store.status, "failed")
+            failed = next(payload for event, payload in store.events if event == "run.failed")
+            started = next(payload for event, payload in store.events if event == "model.started")
+            self.assertEqual(failed["error_code"], "credit_balance_exhausted")
+            self.assertEqual(failed["request_id"], "req_test")
+            self.assertIn("余额不足", failed["error"])
+            self.assertGreater(started["request_chars"], 0)
+            self.assertGreater(started["tool_count"], 0)
+            self.assertNotIn("prompt", started)
+
+        asyncio.run(scenario())
+
     def test_openai_and_compatible_tool_call_parsing(self):
         async def scenario():
             with patch(
@@ -152,21 +239,24 @@ class AgentFoundationTests(unittest.TestCase):
                     "type": "function_call", "call_id": "c1", "name": "search_symbols",
                     "arguments": '{"query":"app"}',
                 }]}),
-            ):
+            ) as openai_request:
                 turn = await OpenAIResponsesProvider(
-                    api_key="key", model="model",
+                    api_key="key", model="model", max_output_tokens=321,
                 ).generate_with_tools(instructions="i", prompt="p", tools=[])
                 self.assertEqual(turn.tool_calls[0].arguments, {"query": "app"})
+                self.assertEqual(openai_request.await_args.args[1]["max_output_tokens"], 321)
             with patch(
                 "backend.app.llm.providers.compatible_provider.post_json",
                 new=AsyncMock(return_value={"choices": [{"message": {"tool_calls": [{
                     "id": "c2", "function": {"name": "list_entrypoints", "arguments": "{}"},
                 }]}}]}),
-            ):
+            ) as compatible_request:
                 turn = await OpenAICompatibleProvider(
                     provider_name="ollama", base_url="http://localhost", model="model",
+                    max_output_tokens=654,
                 ).generate_with_tools(instructions="i", prompt="p", tools=[])
                 self.assertEqual(turn.tool_calls[0].name, "list_entrypoints")
+                self.assertEqual(compatible_request.await_args.args[1]["max_tokens"], 654)
         asyncio.run(scenario())
 
 

@@ -61,7 +61,9 @@ class ProjectAnalysisService:
                 operation = transaction.begin(command.user_id)
                 prepared = self._workspace.prepare(operation, command.source)
                 transaction.transition("analyzing")
-                raw_graph, file_symbols = self._run_analysis(str(operation.source_root), command.max_workers)
+                analysis = self._run_analysis(str(operation.source_root), command.max_workers)
+                raw_graph = analysis["dependency_graph"]
+                file_symbols = analysis["file_symbols"]
                 file_tree = build_file_tree_with_symbols(str(operation.source_root), file_symbols)
                 manifest = ProjectManifestBuilder(str(operation.source_root)).build(raw_graph)
                 repo_map = build_repo_map(manifest, file_symbols)
@@ -87,6 +89,19 @@ class ProjectAnalysisService:
                         "overview": overview,
                         "file_symbols": file_symbols,
                         "dependency_graph": raw_graph,
+                        "analysis_statistics": analysis.get("stats") or {},
+                        "analysis_diagnostics": analysis.get("diagnostics") or {},
+                        "analysis_metadata": {
+                            "schema_version": "2.0",
+                            "analyzer": getattr(
+                                self._analyzer_factory,
+                                "__name__",
+                                type(self._analyzer_factory).__name__,
+                            ),
+                            "graph_kind": "multidigraph" if raw_graph.get("multigraph") else "digraph",
+                            "security_evidence_kind": "structural",
+                            "dataflow_verified": False,
+                        },
                     })
                 except Exception as exc:
                     raise ArtifactPersistenceError() from exc
@@ -114,8 +129,8 @@ class ProjectAnalysisService:
             logger.exception("Unexpected project analysis failure")
             raise DependencyAnalysisError() from exc
 
-    def _run_analysis(self, target_dir: str, max_workers: int) -> tuple[dict, dict]:
-        """运行依赖分析并返回原始图、文件树和统计。"""
+    def _run_analysis(self, target_dir: str, max_workers: int) -> dict[str, Any]:
+        """运行依赖分析并返回图、符号、统计和诊断组成的完整契约。"""
         try:
             analyzer = self._analyzer_factory(target_dir, max_workers=max(1, min(max_workers, 16)))
             result = analyzer.run_full_analysis()
@@ -123,7 +138,16 @@ class ProjectAnalysisService:
             file_symbols = result.get("file_symbols")
             if not isinstance(raw_graph, dict) or not isinstance(file_symbols, dict):
                 raise TypeError("Analyzer returned an invalid result contract")
-            return raw_graph, file_symbols
+            stats = result.get("stats") or {}
+            diagnostics = result.get("diagnostics") or {}
+            if not isinstance(stats, dict) or not isinstance(diagnostics, dict):
+                raise TypeError("Analyzer returned invalid diagnostics")
+            return {
+                "dependency_graph": raw_graph,
+                "file_symbols": file_symbols,
+                "stats": stats,
+                "diagnostics": diagnostics,
+            }
         except Exception as exc:
             logger.exception("Dependency analysis failed for imported project")
             raise DependencyAnalysisError() from exc

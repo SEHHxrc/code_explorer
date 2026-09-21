@@ -5,10 +5,8 @@ import json
 import re
 
 from backend.app.agents.contracts import AgentEvidence, ContextPacket
+from backend.app.llm.registry import get_model_limits
 from backend.app.schemas.manifest import ProjectManifest
-
-
-MAX_CONTEXT_CHARS = 18000
 
 
 class ProjectContextBuilder:
@@ -42,7 +40,7 @@ class ProjectContextBuilder:
             + json.dumps(manifest.model_dump(), ensure_ascii=False, indent=2)
             + "\n\nRELEVANT_REPO_MAP\n"
             + selected_map
-        )[:MAX_CONTEXT_CHARS]
+        )[:get_model_limits().max_context_chars]
         return ContextPacket(
             project_id=project_id,
             project_name=manifest.project_name,

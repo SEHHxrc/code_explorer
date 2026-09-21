@@ -20,8 +20,8 @@ begin 工作区操作
 → 文件树 + ProjectManifest + Repo Map
 → publish 工作区
 → 保存项目记录
-→ 保存原始分析产物
-→ GraphExchangeNormalizer.normalize() 生成公开 DTO
+→ 保存无损多重图、统计和未解析诊断
+→ GraphExchangeNormalizer.normalize() 聚合平行边并生成公开 DTO
 → commit
 ```
 
@@ -40,4 +40,4 @@ begin 工作区操作
 | `exceptions.py` | 按导入、分析、项目持久化和产物持久化区分稳定公开错误。 |
 | `__init__.py` | 导出服务、命令、结果和公开异常。 |
 
-存储产物有意保留分析器的原始依赖图，供 Manifest、Agent 证据和实验使用；只有 HTTP 响应使用规范化交换图。数据格式化属于本应用边界，不由通用 Middleware 隐式改写。
+存储产物有意保留分析器的原始多重依赖图、`analysis_statistics`、`analysis_diagnostics` 和 `analysis_metadata`，供静态安全路径与证据构建使用；只有 HTTP 响应使用聚合后的交换图。数据格式化属于本应用边界，不由通用 Middleware 隐式改写。

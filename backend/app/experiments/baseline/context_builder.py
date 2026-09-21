@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import json
 
-from backend.app.agents.context_builder import MAX_CONTEXT_CHARS, ProjectContextBuilder
+from backend.app.agents.context_builder import ProjectContextBuilder
 from backend.app.agents.contracts import AgentEvidence, ContextPacket
 from backend.app.experiments.context import neutral_manifest, neutral_repo_map
+from backend.app.llm.registry import get_model_limits
 
 
 class BaselineContextBuilder:
@@ -31,7 +32,7 @@ class BaselineContextBuilder:
             + json.dumps(manifest.model_dump(), ensure_ascii=False, indent=2)
             + "\n\nNEUTRAL_REPO_MAP\n"
             + repo_map
-        )[:MAX_CONTEXT_CHARS]
+        )[:get_model_limits().max_context_chars]
         return ContextPacket(
             project_id=project_id,
             project_name=manifest.project_name,

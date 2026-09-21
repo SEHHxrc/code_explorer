@@ -24,7 +24,19 @@
           <el-table-column prop="kind" label="类型" width="130" />
           <el-table-column prop="name" label="名称" width="180" />
           <el-table-column label="位置"><template #default="scope"><code>{{ scope.row.path }}{{ scope.row.line ? `:${scope.row.line}` : '' }}</code></template></el-table-column>
-          <el-table-column prop="command" label="命令" />
+          <el-table-column label="命令">
+            <template #default="scope">
+              <div v-if="scope.row.command" class="command-cell">
+                <el-tag size="small" type="success">配置中观察到</el-tag>
+                <code>{{ scope.row.command }}</code>
+              </div>
+              <div v-else-if="scope.row.suggested_command" class="command-cell">
+                <el-tag size="small" type="info">系统建议</el-tag>
+                <code>{{ scope.row.suggested_command }}</code>
+              </div>
+              <span v-else>—</span>
+            </template>
+          </el-table-column>
         </el-table>
       </section>
       <el-alert v-if="overview.warning" :title="overview.warning" type="warning" :closable="false" show-icon />
@@ -36,8 +48,15 @@
 
 <script setup>
 import { computed } from 'vue'
-const props = defineProps({ manifest: { type: Object, default: null }, overview: { type: Object, default: () => ({}) }, modelStatus: { type: Object, default: () => ({}) }, loading: Boolean })
+
+const props = defineProps({
+  manifest: { type: Object, default: null },
+  overview: { type: Object, default: () => ({}) },
+  modelStatus: { type: Object, default: () => ({}) },
+  loading: Boolean,
+})
 defineEmits(['generate'])
+
 const modelLabel = computed(() => props.modelStatus.configured ? `${props.modelStatus.provider} / ${props.modelStatus.model}` : '静态分析模式')
 </script>
 
@@ -47,5 +66,7 @@ const modelLabel = computed(() => props.modelStatus.configured ? `${props.modelS
 .actions { gap: 10px; }
 .entrypoints { margin-top: 18px; }
 .entrypoints h4 { margin: 0 0 10px; }
+.command-cell { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.command-cell code { overflow-wrap: anywhere; }
 .report { margin-top: 18px; padding: 18px; border: 1px solid #ebeef5; border-radius: 6px; background: #fafafa; line-height: 1.7; white-space: pre-wrap; }
 </style>

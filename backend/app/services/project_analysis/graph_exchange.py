@@ -70,7 +70,7 @@ class GraphExchangeNormalizer:
             warnings.append(f"duplicate_nodes_removed:{duplicate_nodes}")
 
         edges: list[GraphEdgeDTO] = []
-        edge_keys: set[tuple[str, str, str, str]] = set()
+        edge_indexes: dict[tuple[str, str, str, str], int] = {}
         dangling_edges = 0
         self_loops = 0
         duplicate_edges = 0
@@ -96,8 +96,13 @@ class GraphExchangeNormalizer:
             relation = self._text(raw_edge.get("relation") or raw_edge.get("type"), 80) or "calls"
             dispatch = self._text(raw_edge.get("dispatch"), 80)
             key = (source, target, relation, dispatch)
-            if key in edge_keys:
+            existing_index = edge_indexes.get(key)
+            if existing_index is not None:
                 duplicate_edges += 1
+                existing = edges[existing_index]
+                edges[existing_index] = existing.model_copy(update={
+                    "occurrence_count": existing.occurrence_count + 1,
+                })
                 continue
             edge_id = self._text(raw_edge.get("id"), 2200) or f"edge:{index}:{source}->{target}:{relation}"
             edges.append(
@@ -107,10 +112,10 @@ class GraphExchangeNormalizer:
                     target=target,
                     relation=relation,
                     dispatch=dispatch or None,
-                    dynamic=dispatch.lower() == "dynamic",
+                    dynamic=dispatch.lower() in {"dynamic", "virtual"},
                 )
             )
-            edge_keys.add(key)
+            edge_indexes[key] = len(edges) - 1
             out_degree[source] += 1
             in_degree[target] += 1
 
@@ -120,7 +125,7 @@ class GraphExchangeNormalizer:
             (invalid_edges, "invalid_edges_removed"),
             (dangling_edges, "dangling_edges_removed"),
             (self_loops, "self_loops_removed"),
-            (duplicate_edges, "duplicate_edges_removed"),
+            (duplicate_edges, "parallel_edges_aggregated"),
         ):
             if count:
                 warnings.append(f"{label}:{count}")

@@ -11,6 +11,22 @@ export const getModelStatus = async ({ signal } = {}) => (
   responseData(await apiClient.get('/api/projects/model/status', { signal }))
 )
 
+export const probeModelConnection = async (model, { signal } = {}) => (
+  responseData(await apiClient.post('/api/projects/model/probe', { model: model || null }, { signal }))
+)
+
+export const getAvailableModels = async ({ signal } = {}) => (
+  responseData(await apiClient.get('/api/projects/model/models', { signal }))
+)
+
+export const listStoredProjects = async ({ signal } = {}) => (
+  responseData(await apiClient.get('/api/projects', { signal }))
+)
+
+export const restoreStoredProject = async (projectId, { signal } = {}) => (
+  responseData(await apiClient.get(`/api/projects/${projectId}/snapshot`, { signal }))
+)
+
 export const analyzeGitProject = async (repoUrl, { signal } = {}) => {
   const form = new FormData()
   form.append('repo_url', repoUrl)

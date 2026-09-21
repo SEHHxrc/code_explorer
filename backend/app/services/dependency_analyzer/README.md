@@ -8,7 +8,7 @@ from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
 graph = UnifiedCodeAnalyzer(project_root, max_workers=4).run_full_analysis()
 ```
 
-构造参数包含项目根目录、并行文件数，以及可选的内置符号/标准库过滤策略；`run_full_analysis()` 输出原始节点、边和统计字典，`get_progress()` 返回当前阶段进度。
+构造参数包含项目根目录、并行文件数，以及可选的内置符号/标准库过滤策略；`run_full_analysis()` 输出符号、无损 `MultiDiGraph`、统计和诊断字典，`get_progress()` 返回当前阶段进度。调用边带有调用点、解析方法、目标范围、`must/may`、置信度和截断信息；未解析引用不会被静默丢弃。
 
 ## 阶段与依赖方向
 
@@ -27,7 +27,7 @@ CollectionPhase
 | 文件/类 | 作用 |
 | --- | --- |
 | `analyzer.py` / `UnifiedCodeAnalyzer` | 稳定门面、配置、进度、并发和阶段编排。 |
-| `models.py` | `Definition`、`Reference`、`ImportRec` 和作用域 `Frame`。 |
+| `models.py` | `Definition`、`Reference`、`ReferenceResolution`、`ImportRec` 和作用域 `Frame`。 |
 | `context.py` / `FileContext` | 单文件源码、语法树、作用域栈、类型绑定和提取结果。 |
 | `constants.py` | 扩展名、语言标准库、内置符号和图节点映射。 |
 | `ast_utils.py` | Tree-sitter 节点字段、文本和类型提取工具。 |
@@ -43,4 +43,4 @@ CollectionPhase
 4. 若模块解析规则不同，在 `phases/imports.py` 增加专用分支。
 5. 添加定义、调用、导入和标准库分类测试。
 
-分析器不会执行项目代码。原始图随后由 `project_analysis.GraphExchangeNormalizer` 生成前端 DTO，并由 Manifest、Agent 与实验模块复用。
+分析器不会执行项目代码。持久化产物保留多重边，供后续安全路径计算；`project_analysis.GraphExchangeNormalizer` 只为前端聚合同类平行边，并通过 `occurrence_count` 保留调用次数。结构调用路径不等同于已经验证的数据流或污点路径。

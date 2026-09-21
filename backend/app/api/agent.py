@@ -59,6 +59,32 @@ async def get_agent_run(run_id: str, current_user: dict[str, str] = Depends(get_
     return {"code": 200, "data": view.model_dump()}
 
 
+@router.get("/projects/{project_id}/runs")
+async def list_project_agent_runs(
+    project_id: str,
+    limit: int = Query(default=30, ge=1, le=100),
+    current_user: dict[str, str] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """返回当前项目的普通 Agent 历史摘要；不混入 A/B 实验运行。"""
+    user_id = current_user["user_id"]
+    if projects.get_owned(project_id, user_id) is None:
+        raise HTTPException(status_code=404, detail="Project not found or unauthorized.")
+    items = agent_run_manager.store.list_project_history(project_id, user_id, limit=limit)
+    return {"code": 200, "data": [item.model_dump() for item in items]}
+
+
+@router.get("/runs/{run_id}/snapshot")
+async def get_agent_run_snapshot(
+    run_id: str,
+    current_user: dict[str, str] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """返回可重建问题、答案、时间线和证据的有界历史快照。"""
+    snapshot = agent_run_manager.store.snapshot(run_id, current_user["user_id"])
+    if snapshot is None:
+        raise HTTPException(status_code=404, detail="Agent run not found.")
+    return {"code": 200, "data": snapshot.model_dump()}
+
+
 @router.get("/runs/{run_id}/events")
 async def stream_agent_events(
     run_id: str,

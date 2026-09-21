@@ -32,7 +32,7 @@
         :disabled="running"
       />
       <div class="setup-actions">
-        <span>展示顺序和执行顺序都会随机化；评分前不显示实验组身份。</span>
+        <span>展示顺序已随机化；当前队列仍固定先执行无图组，正式实验前需修正顺序混杂。</span>
         <el-button
           type="primary"
           :loading="running"
@@ -57,10 +57,25 @@
         </div>
         <dl class="metrics">
           <div><dt>耗时</dt><dd>{{ metric(lane, 'duration_ms', ' ms') }}</dd></div>
-          <div><dt>输入 Token</dt><dd>≈ {{ metric(lane, 'estimated_input_tokens') }}</dd></div>
-          <div><dt>输出 Token</dt><dd>≈ {{ metric(lane, 'estimated_output_tokens') }}</dd></div>
+          <div>
+            <el-tooltip content="仅按初始静态上下文字符数 ÷ 4 估算，不包含工具 Schema、多轮提示和工具观察">
+              <dt>静态输入估算</dt>
+            </el-tooltip>
+            <dd>≈ {{ metric(lane, 'estimated_input_tokens') }}</dd>
+          </div>
+          <div>
+            <el-tooltip content="仅按最终答案字符数 ÷ 4 估算，不是供应商返回的真实 usage">
+              <dt>答案 Token 估算</dt>
+            </el-tooltip>
+            <dd>≈ {{ metric(lane, 'estimated_output_tokens') }}</dd>
+          </div>
           <div><dt>工具调用</dt><dd>{{ metric(lane, 'tool_calls') }}</dd></div>
-          <div><dt>证据数量</dt><dd>{{ metric(lane, 'evidence_count') }}</dd></div>
+          <div>
+            <el-tooltip content="按 path、line、symbol 去重后的最终证据条目；不等于漏洞数量或答案引用数量">
+              <dt>去重证据条目</dt>
+            </el-tooltip>
+            <dd>{{ metric(lane, 'evidence_count') }}</dd>
+          </div>
         </dl>
         <el-tag v-if="reveal" class="reveal" effect="dark" :type="reveal[lane] === 'graph' ? 'success' : 'warning'">
           {{ strategyLabel(reveal[lane]) }}

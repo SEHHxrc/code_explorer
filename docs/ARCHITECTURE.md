@@ -72,6 +72,12 @@ Manifest 与 Repo Map 是模型事实底座。模型只负责解释和归纳，�
 
 `create_model_provider()` 对 OpenAI 创建 `OpenAIResponsesProvider`，对 Ollama、vLLM 或自定义兼容服务创建 `OpenAICompatibleProvider`。普通文本入口是 `generate(instructions, prompt)`；工具入口是 `generate_with_tools(instructions, prompt, tools)`。
 
+模型配置状态、真实连通性和模型目录是三个不同接口：状态接口只做本地环境检查；探测接口由用户在智能体页面显式触发一次最小函数工具请求，同时验证文本生成与 Agent 工具协议；模型目录通过兼容 `GET /models` 返回当前凭据可见的 ID。智能体选择的模型作为单次运行参数进入持久化队列，由 Worker 恢复并创建独立 Provider，不修改环境变量默认值。上游 HTTP 错误只保留安全的状态码、错误类型/代码、`Retry-After` 和请求 ID；余额及消费上限错误不重试，临时 429 与 502、503、504 网关错误执行有限退避。
+
+模型输入使用 `CODE_EXPLORER_LLM_MAX_CONTEXT_CHARS` 作为供应商无关的近似字符预算，输出使用 `CODE_EXPLORER_LLM_MAX_OUTPUT_TOKENS`。字符预算会覆盖系统指令、工具 Schema、静态项目事实与多轮工具观察的组合，但不代表也不能改变模型自身的 Token 上下文窗口。`model.started` 事件只记录提示、工具和输出预算的数量，不持久化请求正文；第三方网关在长输入时返回 5xx 或重置连接，可据此调低字符预算。
+
+项目数据库是后端资源的权威索引。数据管理页通过项目库存服务统计受控工作区和分析产物占用，并可从持久化文件树、Manifest 与依赖图重新恢复前端状态；完整删除继续经过生命周期服务，活动任务会阻止删除。
+
 智能体流程：
 
 1. `POST /api/agent/projects/{project_id}/runs` 创建运行和持久化队列项。

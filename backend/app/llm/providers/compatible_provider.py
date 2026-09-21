@@ -15,12 +15,21 @@ class OpenAICompatibleProvider(ModelProvider):
     输出统一模型结果。可用于 Ollama、vLLM 及其他兼容服务。
     """
 
-    def __init__(self, *, provider_name: str, base_url: str, model: str, api_key: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        provider_name: str,
+        base_url: str,
+        model: str,
+        api_key: str = "",
+        max_output_tokens: int = 2400,
+    ) -> None:
         """保存连接配置，不在构造阶段发起网络请求。"""
         self.name = provider_name
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
+        self.max_output_tokens = max_output_tokens
 
     async def generate(self, *, instructions: str, prompt: str) -> ModelResult:
         """调用 ``/chat/completions`` 生成文本并输出规范化结果。"""
@@ -35,6 +44,7 @@ class OpenAICompatibleProvider(ModelProvider):
                 ],
                 "stream": False,
                 "temperature": 0.1,
+                "max_tokens": self.max_output_tokens,
             },
             headers,
             timeout=180.0,
@@ -72,6 +82,7 @@ class OpenAICompatibleProvider(ModelProvider):
                 "tool_choice": "auto",
                 "stream": False,
                 "temperature": 0.1,
+                "max_tokens": self.max_output_tokens,
             },
             headers,
             timeout=180.0,

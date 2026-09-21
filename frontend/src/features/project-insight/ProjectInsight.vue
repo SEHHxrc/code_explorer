@@ -7,6 +7,7 @@
       :has-project="false"
       @analyze-git="handleGit"
       @analyze-zip="handleZip"
+      @manage-data="dataManagerVisible = true"
     />
 
     <div v-else class="project-shell">
@@ -16,6 +17,7 @@
         :graph="analysis.dependencyGraph.value"
         :deleting="analysis.deleting.value"
         @delete="handleReset"
+        @manage-data="dataManagerVisible = true"
       />
 
       <div class="workspace-layout">
@@ -58,6 +60,13 @@
         </main>
       </div>
     </div>
+
+    <ProjectDataManager
+      v-model:visible="dataManagerVisible"
+      :current-project-id="analysis.currentProjectId.value"
+      @restore="handleRestore"
+      @deleted="handleManagedDelete"
+    />
   </div>
 </template>
 
@@ -66,6 +75,7 @@ import { defineAsyncComponent, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiErrorMessage } from '../../services/httpClient.js'
 import ProjectImportPanel from './components/ProjectImportPanel.vue'
+import ProjectDataManager from './components/ProjectDataManager.vue'
 import ProjectOverviewPanel from './components/ProjectOverviewPanel.vue'
 import ProjectWorkspaceHeader from './components/ProjectWorkspaceHeader.vue'
 import ProjectWorkspaceNav from './components/ProjectWorkspaceNav.vue'
@@ -78,6 +88,7 @@ const ExecutionWorkspace = defineAsyncComponent(() => import('../execution/Execu
 
 const analysis = useProjectAnalysis()
 const activeWorkspace = ref('overview')
+const dataManagerVisible = ref(false)
 
 const handleGit = async (url) => {
   try {
@@ -120,6 +131,18 @@ const handleOverview = async () => {
   } catch (error) {
     ElMessage.error(apiErrorMessage(error, '项目概览生成失败'))
   }
+}
+
+const handleRestore = (snapshot) => {
+  analysis.restoreProjectSnapshot(snapshot)
+  activeWorkspace.value = 'overview'
+  ElMessage.success('已从后端分析产物恢复项目工作台')
+}
+
+const handleManagedDelete = (projectId) => {
+  if (projectId !== analysis.currentProjectId.value) return
+  analysis.clearLocal()
+  activeWorkspace.value = 'overview'
 }
 
 const handleReset = async () => {

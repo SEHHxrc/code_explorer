@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import hashlib
 import os
 import threading
 import traceback
@@ -14,7 +15,7 @@ from ..ast_utils import *
 from ..constants import *
 from ..context import FileContext
 from ..handlers import BaseHandler, get_handler
-from ..models import Definition, ImportRec, Reference
+from ..models import Definition, ImportRec, Reference, ReferenceResolution
 
 class GraphResolutionPhase:
     """图阶段：生成节点并解析定义、重写、调用和外部依赖边。"""
@@ -110,12 +111,25 @@ class GraphResolutionPhase:
                     self.stats["edges_uses"] += 1
                 continue
 
-            target, dispatch = self._resolve_reference(ref)
+            resolution = self._resolve_reference(ref)
+            target = resolution.target
             if target is None:
                 self.stats["unresolved"] += 1
-                if len(self.global_index["unresolved"]) < 500:
-                    self.global_index["unresolved"].append(
-                        {"file": ref.file, "line": ref.line, "name": ref.name, "receiver": ref.receiver})
+                self.global_index["unresolved"].append({
+                    "file": ref.file,
+                    "line": ref.line,
+                    "column": ref.column,
+                    "end_line": ref.end_line,
+                    "end_column": ref.end_column,
+                    "from_fqn": ref.from_fqn,
+                    "kind": ref.kind,
+                    "name": ref.name,
+                    "receiver": ref.receiver,
+                    "resolution_method": resolution.resolution_method,
+                    "unresolved_reason": resolution.unresolved_reason or "symbol_not_found",
+                    "target_certainty": "unresolved",
+                    "confidence": resolution.confidence,
+                })
                 continue
             if not graph.has_node(target) or target == source:
                 continue
@@ -124,14 +138,68 @@ class GraphResolutionPhase:
                 relation = "instantiates"          # Python/TS 里 ``Foo()`` 就是实例化
             else:
                 relation = "calls"
-            graph.add_edge(source, target, relation=relation, dispatch=dispatch)
+            graph.add_edge(
+                source,
+                target,
+                id=self._reference_edge_id(ref, source, target, relation, resolution),
+                relation=relation,
+                **self._reference_edge_attributes(ref, resolution),
+            )
             self.stats[f"edges_{relation}"] += 1
-            self.stats[f"resolved_{dispatch}"] += 1
+            self.stats[f"resolved_{resolution.resolution_method}"] += 1
 
             if self.include_virtual_dispatch and relation == "calls":
-                self._expand_virtual(graph, source, target)
+                self._expand_virtual(graph, source, target, ref)
 
-    def _expand_virtual(self, graph: nx.MultiDiGraph, source: str, target: str) -> None:
+    @staticmethod
+    def _reference_edge_attributes(ref: Reference, resolution: ReferenceResolution) -> dict:
+        """把引用位置和解析不确定性转换为可持久化边属性。"""
+        return {
+            "dispatch": resolution.dispatch,
+            "target_scope": resolution.target_scope,
+            "resolution_method": resolution.resolution_method,
+            "target_certainty": resolution.target_certainty,
+            "confidence": resolution.confidence,
+            "truncated": resolution.truncated,
+            "unresolved_reason": resolution.unresolved_reason,
+            "origin": "inferred",
+            "callsite": {
+                "path": ref.file,
+                "line": ref.line,
+                "column": ref.column,
+                "end_line": ref.end_line,
+                "end_column": ref.end_column,
+            },
+            "reference": {
+                "kind": ref.kind,
+                "name": ref.name,
+                "receiver": ref.receiver,
+            },
+        }
+
+    @staticmethod
+    def _reference_edge_id(
+        ref: Reference,
+        source: str,
+        target: str,
+        relation: str,
+        resolution: ReferenceResolution,
+    ) -> str:
+        """根据源码位置和解析目标生成跨运行稳定的引用边标识。"""
+        material = "\x1f".join((
+            ref.file,
+            str(ref.line),
+            str(ref.column),
+            str(ref.end_line),
+            str(ref.end_column),
+            source,
+            target,
+            relation,
+            resolution.resolution_method,
+        ))
+        return "ref:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
+
+    def _expand_virtual(self, graph: nx.MultiDiGraph, source: str, target: str, ref: Reference) -> None:
         """多态：调用点连向基类方法时，同时连向各子类的覆写实现。"""
         definition = self.definitions.get(target)
         if definition is None or definition.kind not in ("method", "constructor"):
@@ -139,25 +207,70 @@ class GraphResolutionPhase:
         owner = definition.parent_fqn
         if owner not in self.subclasses:
             return
-        expanded = 0
+        overrides: list[str] = []
+        seen: set[str] = set()
         for subclass in self.subclasses.get(owner, ()):
             override = self.class_members.get(subclass, {}).get(definition.name)
             if not override:
                 continue
             override = self._canonical(override)
-            if override in (target, source) or not graph.has_node(override):
+            if override in (target, source) or override in seen or not graph.has_node(override):
                 continue
-            if graph.has_edge(source, override):
-                continue
-            graph.add_edge(source, override, relation="calls", dispatch="dynamic")
+            seen.add(override)
+            overrides.append(override)
+        truncated = len(overrides) > self.MAX_VIRTUAL_TARGETS
+        for override in overrides[:self.MAX_VIRTUAL_TARGETS]:
+            resolution = ReferenceResolution(
+                target=override,
+                dispatch="virtual",
+                target_scope="project",
+                resolution_method="virtual_expansion",
+                target_certainty="may",
+                confidence="medium",
+                truncated=truncated,
+            )
+            graph.add_edge(
+                source,
+                override,
+                id=self._reference_edge_id(ref, source, override, "calls", resolution),
+                relation="calls",
+                **self._reference_edge_attributes(ref, resolution),
+            )
             self.stats["edges_calls_dynamic"] += 1
-            expanded += 1
-            if expanded >= self.MAX_VIRTUAL_TARGETS:
-                self.stats["virtual_truncated"] += 1
-                break
+        if truncated:
+            self.stats["virtual_truncated"] += 1
+            self.diagnostics["truncations"].append({
+                "kind": "virtual_targets",
+                "file": ref.file,
+                "line": ref.line,
+                "available": len(overrides),
+                "retained": self.MAX_VIRTUAL_TARGETS,
+            })
 
-    def _resolve_reference(self, ref: Reference) -> tuple[str | None, str]:
-        """返回 (目标节点 id 或 None, 派发方式)。目标可能是内置/外部虚拟节点。"""
+    @staticmethod
+    def _resolution(
+        target: str | None,
+        method: str,
+        *,
+        dispatch: str = "direct",
+        target_scope: str = "project",
+        target_certainty: str = "must",
+        confidence: str = "high",
+        unresolved_reason: str | None = None,
+    ) -> ReferenceResolution:
+        """构造稳定的解析结果，避免把范围、派发与置信度混为一个字段。"""
+        return ReferenceResolution(
+            target=target,
+            dispatch=dispatch,
+            target_scope=target_scope,
+            resolution_method=method,
+            target_certainty=target_certainty if target is not None else "unresolved",
+            confidence=confidence,
+            unresolved_reason=unresolved_reason if target is None else None,
+        )
+
+    def _resolve_reference(self, ref: Reference) -> ReferenceResolution:
+        """解析引用目标并返回派发、范围、方法及确定性元数据。"""
         lang = ref.lang
         handler = get_handler(lang)
         name, receiver = ref.name, ref.receiver
@@ -168,7 +281,7 @@ class GraphResolutionPhase:
             literal = f"{receiver}.{name}" if receiver else name
             target = self._resolve_type(file, literal, lang)
             if target:
-                return target, "static"
+                return self._resolution(target, "type_resolution")
             return self._fallback_symbol(ref, handler, prefer_type=True)
 
         # ---- 有接收者 ----
@@ -183,16 +296,16 @@ class GraphResolutionPhase:
                     if attr_class:
                         hit = self._lookup_member(attr_class, name)
                         if hit:
-                            return hit, "static"
+                            return self._resolution(hit, "receiver_attribute_type", confidence="medium")
                 hit = self._lookup_member(class_fqn, name)
                 if hit:
-                    return hit, "static"
+                    return self._resolution(hit, "class_scope")
 
             if handler and head in handler.super_names and class_fqn:
                 for base in self._mro(class_fqn)[1:]:
                     hit = self.class_members.get(base, {}).get(name)
                     if hit:
-                        return self._canonical(hit), "static"
+                        return self._resolution(self._canonical(hit), "inheritance_lookup")
 
             var_type = self._var_type_of(ref, head)
             if var_type:
@@ -204,10 +317,10 @@ class GraphResolutionPhase:
                         if nested:
                             hit = self._lookup_member(nested, name)
                             if hit:
-                                return hit, "static"
+                                return self._resolution(hit, "receiver_attribute_type", confidence="medium")
                     hit = self._lookup_member(type_fqn, name)
                     if hit:
-                        return hit, "static"
+                        return self._resolution(hit, "receiver_type", confidence="medium")
 
             binding = self.bindings.get(file, {}).get(head)
             if binding:
@@ -215,15 +328,15 @@ class GraphResolutionPhase:
                 if btype == "module" and payload:
                     hit = self._lookup_in_module(payload, name, lang)
                     if hit:
-                        return self._canonical(hit), "static"
+                        return self._resolution(self._canonical(hit), "module_binding")
                     hit = self._member_in_module(payload, name)
                     if hit:
-                        return hit, "static"
+                        return self._resolution(hit, "module_binding")
                 elif btype == "symbol" and payload:
                     hit = self._lookup_member(payload, name)
                     if hit:
-                        return hit, "static"
-                    return self._canonical(payload), "static"
+                        return self._resolution(hit, "imported_symbol")
+                    return self._resolution(self._canonical(payload), "imported_symbol")
 
             # Go 的包名前缀：包 = 目录，需要在退回“外部依赖”之前先查本项目的包
             if lang == "go":
@@ -231,26 +344,37 @@ class GraphResolutionPhase:
                 if pkg_dir:
                     hit = self._go_package_symbol(pkg_dir, name)
                     if hit:
-                        return self._canonical(hit), "static"
+                        return self._resolution(self._canonical(hit), "package_scope")
 
             if binding and binding[0] in ("external_module", "external_symbol", "stdlib_module", "stdlib_symbol"):
                 # 保留完整前缀：os + ".path" -> os.path
                 module = (binding[1] or binding[2] or head) + receiver[len(head):]
                 is_stdlib = binding[0].startswith("stdlib")
-                return self._external_node(module, name, is_stdlib=is_stdlib), "stdlib" if is_stdlib else "external"
+                target = self._external_node(module, name, is_stdlib=is_stdlib)
+                return self._resolution(
+                    target,
+                    "external_binding",
+                    target_scope="stdlib" if is_stdlib else "third_party",
+                    unresolved_reason="excluded_scope",
+                )
 
             # 接收者是本项目里的类型名（静态方法 / 关联函数）
             type_fqn = self._resolve_type(file, receiver, lang)
             if type_fqn:
                 hit = self._lookup_member(type_fqn, name)
                 if hit:
-                    return hit, "static"
+                    return self._resolution(hit, "receiver_type", confidence="medium")
                 # 命名空间只是前缀，连到它没有意义；类则退化为“用到了这个类”
                 if self.definitions[type_fqn].kind != "namespace":
-                    return type_fqn, "static"
+                    return self._resolution(type_fqn, "receiver_type", confidence="medium")
 
             if handler and handler.is_builtin_call(name, receiver):
-                return self._builtin_node(lang, f"{receiver}.{name}"), "builtin"
+                return self._resolution(
+                    self._builtin_node(lang, f"{receiver}.{name}"),
+                    "builtin_catalog",
+                    target_scope="builtin",
+                    unresolved_reason="excluded_scope",
+                )
 
             return self._fallback_member(ref, handler)
 
@@ -258,41 +382,67 @@ class GraphResolutionPhase:
         if handler and handler.bare_call_hits_class and class_fqn:
             hit = self._lookup_member(class_fqn, name)
             if hit:
-                return hit, "static"
+                return self._resolution(hit, "class_scope")
 
         hit = self.module_scope.get(file, {}).get(name)
         if hit:
-            return self._canonical(hit), "static"
+            return self._resolution(self._canonical(hit), "local_scope")
 
         binding = self.bindings.get(file, {}).get(name)
         if binding:
             btype, payload, extra = binding
             if btype == "symbol" and payload:
-                return self._canonical(payload), "static"
+                return self._resolution(self._canonical(payload), "imported_symbol")
             if btype in ("external_symbol", "stdlib_symbol"):
                 is_stdlib = btype == "stdlib_symbol"
-                return self._external_node(payload, extra or name, is_stdlib=is_stdlib), "stdlib" if is_stdlib else "external"
+                target = self._external_node(payload, extra or name, is_stdlib=is_stdlib)
+                return self._resolution(
+                    target,
+                    "external_binding",
+                    target_scope="stdlib" if is_stdlib else "third_party",
+                    unresolved_reason="excluded_scope",
+                )
             if btype == "module" and payload:
-                return payload, "static"
+                return self._resolution(payload, "module_binding")
             if btype in ("external_module", "stdlib_module"):
                 is_stdlib = btype == "stdlib_module"
-                return self._external_node(payload, name, is_stdlib=is_stdlib), "stdlib" if is_stdlib else "external"
+                target = self._external_node(payload, name, is_stdlib=is_stdlib)
+                return self._resolution(
+                    target,
+                    "external_binding",
+                    target_scope="stdlib" if is_stdlib else "third_party",
+                    unresolved_reason="excluded_scope",
+                )
 
         hit = self._lookup_package_scope(file, name, lang)
         if hit:
-            return self._canonical(hit), "static"
+            return self._resolution(self._canonical(hit), "package_scope")
 
         if handler and handler.is_builtin_call(name, ""):
-            return self._builtin_node(lang, name), "builtin"
+            return self._resolution(
+                self._builtin_node(lang, name),
+                "builtin_catalog",
+                target_scope="builtin",
+                unresolved_reason="excluded_scope",
+            )
 
         wildcard = self.bindings.get(file, {}).get("*")
         if wildcard:
             if wildcard[1]:
                 hit = self._lookup_in_module(wildcard[1], name, lang)
                 if hit:
-                    return self._canonical(hit), "static"
+                    return self._resolution(
+                        self._canonical(hit), "wildcard_import",
+                        target_certainty="may", confidence="medium",
+                    )
             elif self.include_externals:
-                return self._external_node(wildcard[2], name), "external"
+                return self._resolution(
+                    self._external_node(wildcard[2], name),
+                    "wildcard_import",
+                    target_scope="third_party",
+                    target_certainty="may",
+                    confidence="low",
+                )
 
         return self._fallback_symbol(ref, handler)
 
@@ -311,7 +461,7 @@ class GraphResolutionPhase:
                 return self._canonical(hit)
         return ""
 
-    def _fallback_symbol(self, ref: Reference, handler: BaseHandler | None, prefer_type: bool = False) -> tuple[str | None, str]:
+    def _fallback_symbol(self, ref: Reference, handler: BaseHandler | None, prefer_type: bool = False) -> ReferenceResolution:
         """全项目简名唯一匹配（弱推断），否则归入内置/外部/未解析。"""
         pool = self.class_simple_index if prefer_type else self.simple_index
         candidates = [fqn for fqn in pool.get(ref.name, [])
@@ -319,27 +469,61 @@ class GraphResolutionPhase:
                                                         else {"function", "method", "constructor"})]
         canonical = {self._canonical(fqn) for fqn in candidates}
         if len(canonical) == 1:
-            return next(iter(canonical)), "heuristic"
+            return self._resolution(
+                next(iter(canonical)), "unique_name_heuristic",
+                target_certainty="may", confidence="low",
+            )
         if handler and handler.is_builtin_call(ref.name, ref.receiver):
-            return self._builtin_node(ref.lang, ref.name), "builtin"
+            return self._resolution(
+                self._builtin_node(ref.lang, ref.name),
+                "builtin_catalog",
+                target_scope="builtin",
+                unresolved_reason="excluded_scope",
+            )
         if canonical:
             best_file = self._best_module_match([self.definitions[f].file for f in candidates], ref.file)
             for fqn in candidates:
                 if self.definitions[fqn].file == best_file:
-                    return self._canonical(fqn), "heuristic"
-        return None, "unresolved"
+                    return self._resolution(
+                        self._canonical(fqn), "nearest_module_heuristic",
+                        target_certainty="may", confidence="low",
+                    )
+        return self._resolution(
+            None,
+            "unresolved",
+            confidence="low",
+            unresolved_reason="ambiguous_symbol" if canonical else "symbol_not_found",
+        )
 
-    def _fallback_member(self, ref: Reference, handler: BaseHandler | None) -> tuple[str | None, str]:
+    def _fallback_member(self, ref: Reference, handler: BaseHandler | None) -> ReferenceResolution:
         """带接收者但接收者类型未知：先判内置类型方法，再退化为“项目里唯一同名方法”。"""
         if handler and ref.name in handler.type_methods:
-            return self._builtin_node(ref.lang, ref.name), "builtin"
+            return self._resolution(
+                self._builtin_node(ref.lang, ref.name),
+                "builtin_catalog",
+                target_scope="builtin",
+                unresolved_reason="excluded_scope",
+            )
         candidates = {self._canonical(fqn) for fqn in self.simple_index.get(ref.name, [])
                       if self.definitions[fqn].kind in ("method", "constructor")}
         if len(candidates) == 1:
-            return next(iter(candidates)), "heuristic"
+            return self._resolution(
+                next(iter(candidates)), "unique_member_heuristic",
+                target_certainty="may", confidence="low",
+            )
         if handler and handler.is_builtin_call(ref.name, ref.receiver):
-            return self._builtin_node(ref.lang, ref.name), "builtin"
-        return None, "unresolved"
+            return self._resolution(
+                self._builtin_node(ref.lang, ref.name),
+                "builtin_catalog",
+                target_scope="builtin",
+                unresolved_reason="excluded_scope",
+            )
+        return self._resolution(
+            None,
+            "unresolved",
+            confidence="low",
+            unresolved_reason="ambiguous_member" if candidates else "unknown_receiver_type",
+        )
 
     def _builtin_node(self, lang: str, name: str) -> str | None:
         """构造语言内置符号对应的图节点标识。"""

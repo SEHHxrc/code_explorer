@@ -34,6 +34,15 @@ def load_analysis_artifact(project_id: str) -> dict[str, Any] | None:
     return json.loads(target.read_text(encoding="utf-8"))
 
 
+def analysis_artifact_size(project_id: str) -> int | None:
+    """返回正式分析产物的字节数；文件不存在或不可访问时返回 ``None``。"""
+    target = _artifact_path(project_id)
+    try:
+        return target.stat().st_size if target.is_file() else None
+    except OSError:
+        return None
+
+
 def remove_analysis_artifact(project_id: str) -> None:
     """输入项目 ID，幂等删除正式产物和可能残留的原子写入临时文件。"""
     for target in (_artifact_path(project_id), _artifact_path(project_id, ".tmp")):

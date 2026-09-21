@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 
-from backend.app.llm.registry import create_model_provider
+from backend.app.llm.registry import create_model_provider, get_model_limits
 from backend.app.schemas.manifest import ProjectManifest
 from backend.app.services.reports.overview_report import render_deterministic_overview
 
@@ -29,12 +29,16 @@ async def generate_project_overview(manifest: ProjectManifest, repo_map: str, us
             "provider": None,
             "model": None,
         }
+    prompt_budget = max(
+        1_000,
+        get_model_limits().max_context_chars - len(OVERVIEW_INSTRUCTIONS),
+    )
     prompt = (
         "PROJECT_MANIFEST\n"
         + json.dumps(manifest.model_dump(), ensure_ascii=False, indent=2)
         + "\n\nREPO_MAP\n"
         + repo_map
-    )
+    )[:prompt_budget]
     result = await provider.generate(instructions=OVERVIEW_INSTRUCTIONS, prompt=prompt)
     return {
         "content": result.text,

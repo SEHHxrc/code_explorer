@@ -35,8 +35,18 @@ class CollectionPhase:
                 try:
                     if os.path.getsize(full) > self.max_file_bytes:
                         self.stats["skipped_large_files"] += 1
+                        self.diagnostics["skipped_files"].append({
+                            "file": os.path.relpath(full, self.project_root).replace("\\", "/"),
+                            "reason": "file_too_large",
+                        })
                         continue
-                except OSError:
+                except OSError as exc:
+                    self.stats["skipped_unreadable_files"] += 1
+                    self.diagnostics["skipped_files"].append({
+                        "file": os.path.relpath(full, self.project_root).replace("\\", "/"),
+                        "reason": "metadata_unavailable",
+                        "detail": type(exc).__name__,
+                    })
                     continue
                 targets.append(full)
         return targets
@@ -86,9 +96,22 @@ class CollectionPhase:
                 src = fh.read()
             tree = self._get_parser(lang).parse(src)
             ctx = FileContext(rel_path, full_path, lang, src, handler)
+            if tree.root_node.has_error:
+                ctx.diagnostics.append({
+                    "file": rel_path,
+                    "reason": "syntax_error",
+                    "detail": "tree_sitter_recovery",
+                })
             self._walk(ctx, tree.root_node)
         except Exception as exc:
             print(f"[Warning] parse error in {rel_path}: {exc}")
+            with self._diagnostics_lock:
+                self.diagnostics["parse_failures"].append({
+                    "file": rel_path,
+                    "reason": "parse_error",
+                    "detail": type(exc).__name__,
+                })
+                self.stats["parse_failures"] += 1
             if os.environ.get("CODE_EXPLORER_DEBUG"):
                 traceback.print_exc()
         finally:
@@ -114,6 +137,12 @@ class CollectionPhase:
                     flags = handler(node, ctx) or 0
                 except Exception as exc:
                     print(f"[Warning] handler {node.type} failed in {ctx.path}:{node.start_point[0] + 1}: {exc}")
+                    ctx.diagnostics.append({
+                        "file": ctx.path,
+                        "line": node.start_point[0] + 1,
+                        "reason": "handler_error",
+                        "detail": node.type,
+                    })
                     if os.environ.get("CODE_EXPLORER_DEBUG"):
                         traceback.print_exc()
             pushed = len(ctx.frames) - depth_before
@@ -132,6 +161,9 @@ class CollectionPhase:
     def _merge_contexts(self, contexts: list[FileContext]) -> None:
         """合并各文件上下文并生成分析阶段统计。"""
         for ctx in contexts:
+            if ctx.diagnostics:
+                self.diagnostics["parse_failures"].extend(ctx.diagnostics)
+                self.stats["partial_parse_failures"] += len(ctx.diagnostics)
             self.file_symbols_map[ctx.path] = ctx.symbols
             self.file_lang[ctx.path] = ctx.lang
             self.file_package[ctx.path] = ctx.package

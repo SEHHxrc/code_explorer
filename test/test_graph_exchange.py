@@ -48,6 +48,19 @@ class GraphExchangeNormalizerTests(unittest.TestCase):
         self.assertEqual(0, result.summary.edge_count)
         self.assertTrue(result.summary.truncated)
 
+    def test_aggregates_parallel_call_sites_only_for_display(self):
+        result = GraphExchangeNormalizer().normalize({
+            "nodes": [{"id": "caller"}, {"id": "target"}],
+            "links": [
+                {"id": "call-1", "source": "caller", "target": "target", "relation": "calls", "dispatch": "direct", "callsite": {"line": 4}},
+                {"id": "call-2", "source": "caller", "target": "target", "relation": "calls", "dispatch": "direct", "callsite": {"line": 9}},
+            ],
+        })
+
+        self.assertEqual(1, result.summary.edge_count)
+        self.assertEqual(2, result.edges[0].occurrence_count)
+        self.assertIn("parallel_edges_aggregated:1", result.warnings)
+
 
 if __name__ == "__main__":
     unittest.main()

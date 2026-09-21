@@ -87,6 +87,7 @@ class AgentQueueWorker:
                 question=claim.question,
                 use_model=claim.use_model,
                 max_steps=claim.max_steps,
+                model=claim.model,
             )
             execution = asyncio.create_task(manager._run(
                 run_id=claim.run_id,
