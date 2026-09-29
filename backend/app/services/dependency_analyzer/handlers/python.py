@@ -1,14 +1,18 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import os
-from collections import defaultdict
+import tree_sitter
 
-from ..ast_utils import *
-from ..constants import *
+from ..ast_utils import _descend_for, _field, _fields, _first_of, _is_meaningful_name
+from ..constants import (
+    CALL_TYPE_PREFIX,
+    PY_BUILTINS,
+    PY_STDLIB,
+    PY_TYPE_METHODS,
+    SKIP_CHILDREN,
+)
 from ..context import FileContext
-from ..models import Definition, Reference
 from .base import BaseHandler
+
 
 class PythonHandler(BaseHandler):
     """提取 Python 导入、类、函数、赋值、类型和调用关系。"""
@@ -35,7 +39,7 @@ class PythonHandler(BaseHandler):
         })
 
     # import a.b / import a.b as c
-    def h_import(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_import(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析导入声明语法节点并把结果写入文件上下文。"""
         for child in node.named_children:
             if child.type == "dotted_name":
@@ -48,7 +52,7 @@ class PythonHandler(BaseHandler):
         return SKIP_CHILDREN
 
     # from x import a as b / from . import x / from x import *
-    def h_import_from(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_import_from(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析from 导入语法节点并把结果写入文件上下文。"""
         mod_node = _field(node, "module_name") or _field(node, "module")
         module = ctx.text(mod_node)
@@ -70,23 +74,25 @@ class PythonHandler(BaseHandler):
             ctx.add_import(module, alias=module.split(".")[-1], kind="module", line=line)
         return SKIP_CHILDREN
 
-    def h_class(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_class(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析类定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
         bases = []
         supers = _field(node, "superclasses")
         if supers is not None:
-            for base in supers.named_children:
-                if base.type in ("identifier", "attribute", "subscript"):
-                    bases.append(ctx.text(base))
+            bases.extend(
+                ctx.text(base)
+                for base in supers.named_children
+                if base.type in ("identifier", "attribute", "subscript")
+            )
         definition = ctx.add_def(node, name, "class", name_node=name_node, bases=bases)
         if definition is None:
             return 0
         ctx.push(definition.fqn, "class", name, definition)
         return 0
 
-    def h_function(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_function(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析函数定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
@@ -108,7 +114,7 @@ class PythonHandler(BaseHandler):
                     ctx.bind_frame_var(frame, first_name, class_frame.name)
         return 0
 
-    def h_typed_param(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_typed_param(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析带类型参数语法节点并把结果写入文件上下文。"""
         name_node = _descend_for(node, {"identifier"}, 2)
         type_node = _field(node, "type")
@@ -116,7 +122,7 @@ class PythonHandler(BaseHandler):
             ctx.set_var_type(ctx.text(name_node), ctx.text(type_node))
         return 0
 
-    def h_assignment(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_assignment(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析赋值语法节点并把结果写入文件上下文。"""
         left = _field(node, "left")
         right = _field(node, "right")
@@ -155,7 +161,7 @@ class PythonHandler(BaseHandler):
                 return CALL_TYPE_PREFIX + ctx.text(func)
         return ""
 
-    def h_call(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_call(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析函数调用语法节点并把结果写入文件上下文。"""
         name, receiver = self.split_callee(ctx, _field(node, "function"))
         if receiver.endswith("()"):

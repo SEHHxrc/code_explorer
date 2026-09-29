@@ -1,11 +1,9 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
 from typing import Any
-
 
 ARTIFACT_ROOT = Path("backend/storage/artifacts").resolve()
 

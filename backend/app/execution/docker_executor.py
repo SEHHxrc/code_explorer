@@ -6,6 +6,7 @@ import queue
 import subprocess
 import threading
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
@@ -161,7 +162,7 @@ class DockerExecutor:
 
     def _force_remove(self, container_name: str) -> None:
         """强制删除仅由本 Worker 命名的容器；忽略清理命令自身输出。"""
-        try:
+        with suppress(OSError, subprocess.TimeoutExpired):
             subprocess.run(
                 [self.settings.docker_binary, "rm", "-f", container_name],
                 shell=False,
@@ -171,5 +172,3 @@ class DockerExecutor:
                 timeout=15,
                 check=False,
             )
-        except (OSError, subprocess.TimeoutExpired):
-            pass

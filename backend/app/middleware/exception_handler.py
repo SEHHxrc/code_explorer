@@ -1,5 +1,5 @@
-# -*- coding: utf-8 -*-
 import traceback
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import RequestResponseEndpoint
@@ -18,7 +18,7 @@ def setup_exception_handler(app: FastAPI) -> None:
         try:
             response = await call_next(request)
             return response
-        except Exception as e:
+        except Exception:
             # 仅在后端服务器控制台打印完整日志，用于排查
             print(f"[CRITICAL ERROR TRACE]:\n{traceback.format_exc()}")
 

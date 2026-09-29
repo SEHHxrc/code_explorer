@@ -17,8 +17,12 @@ FastAPI
 ├─ ProjectAnalysisService
 │  ├─ ProjectWorkspaceService（Git/ZIP、清洗、发布、回滚日志）
 │  ├─ UnifiedCodeAnalyzer（Tree-sitter + NetworkX）
+│  ├─ SecurityAnalysisService（通用安全 IR + 规则包 + 结构路径）
 │  ├─ ProjectManifestBuilder / build_repo_map
 │  └─ ProjectRepository / AnalysisArtifactRepository
+├─ ProgramIdentity（依赖图与安全分析共享文件、符号、位置、调用点身份）
+├─ SyntaxAnalysis（共享语言目录、Tree-sitter Parser 池和节点工具）
+├─ ProgramGraphService（八种依赖分析语言的公共控制 IR、函数级 CFG、到达定义）
 ├─ AgentQueueWorker → AgentRunManager
 │  ├─ ProjectContextBuilder
 │  ├─ ModelProvider（OpenAI Responses 或 OpenAI 兼容 API）
@@ -38,6 +42,10 @@ FastAPI
 | 项目分析 | 导入—清洗—分析—派生—持久化事务 | `backend/app/services/project_analysis/README.md` |
 | 安全工作区 | Git/ZIP 获取、路径策略、清洗、发布和恢复 | `backend/app/services/project_workspace/README.md` |
 | 依赖分析器 | 多语言语法提取与跨文件关系解析 | `backend/app/services/dependency_analyzer/README.md` |
+| 语法基础设施 | 共享语言目录、Tree-sitter Parser 池和节点读取 | `backend/app/services/syntax_analysis/README.md` |
+| 程序身份 | 统一文件、符号、源码位置和调用点 ID | `backend/app/services/program_index/README.md` |
+| 最小程序图 | 八种依赖分析语言的公共控制 IR、CFG 与到达定义 Overlay | `backend/app/services/program_graph/README.md` |
+| 静态安全证据 | 跨语言前端、通用 IR、规则包、候选路径和证据协议 | `backend/app/services/security_analysis/README.md` |
 | 大模型接入 | 配置、Provider 抽象与 HTTP 协议 | `backend/app/llm/README.md` |
 | 项目智能体 | 上下文、模型—工具循环、队列与事件 | `backend/app/agents/README.md` |
 | 只读工具 | JSON Schema、参数校验、源码/图查询 | `backend/app/agents/tools/README.md` |
@@ -54,10 +62,11 @@ FastAPI
 2. `ProjectAnalysisTransaction.begin()` 创建受控暂存操作并登记补偿。
 3. `ProjectWorkspaceService.prepare()` 获取来源并由 `ProjectSanitizer` 清理链接、敏感文件、超大文件、禁止类型和噪声目录。
 4. `UnifiedCodeAnalyzer.run_full_analysis()` 按采集、索引、导入、类型和图构建五阶段产生原始依赖图。
-5. `build_file_tree_with_symbols()`、`ProjectManifestBuilder.build()` 和 `build_repo_map()` 产生前端与模型共同使用的确定性事实。
-6. 工作区发布后，项目记录和分析产物依次持久化。
-7. `GraphExchangeNormalizer.normalize()` 生成有版本、有限额、路径安全的公开图 DTO。
-8. 全部成功后提交事务；任何异常都会逆序删除已写入的产物、数据库记录和工作区。补偿失败会写入操作日志，供 `WorkspaceJanitor` 在后续启动时清理。
+5. `SecurityAnalysisService.analyze()` 复用依赖分析文件范围和调用边，生成安全结构证据；不重复持久化完整依赖图。
+6. `build_file_tree_with_symbols()`、`ProjectManifestBuilder.build()` 和 `build_repo_map()` 产生前端与模型共同使用的确定性事实。
+7. 工作区发布后，项目记录和分析产物依次持久化。
+8. `GraphExchangeNormalizer.normalize()` 生成有版本、有限额、路径安全的公开图 DTO。
+9. 全部成功后提交事务；任何异常都会逆序删除已写入的产物、数据库记录和工作区。补偿失败会写入操作日志，供 `WorkspaceJanitor` 在后续启动时清理。
 
 Manifest 与 Repo Map 是模型事实底座。模型只负责解释和归纳，不应替代静态分析器制造不存在的文件、符号或入口点。
 
@@ -102,15 +111,38 @@ Manifest 与 Repo Map 是模型事实底座。模型只负责解释和归纳，�
 - `GraphResolutionPhase` 生成节点以及 contains、declares、imports、calls、inherits、overrides 等关系。
 - `UnifiedCodeAnalyzer` 是唯一公共门面，提供 `run_full_analysis()` 和 `get_progress()`。
 
+依赖图调用边保存精确调用位置、`callsite_id`、置信度、解析方法、may/must 语义和截断状态。`callsite_id` 由共享 `ProgramIdentity` 只根据源码位置生成：同一调用点解析出的多个候选目标共享调用点身份，但各自保留不同边 ID。安全分析通过该身份引用已有调用关系，不再创建第二套 caller→callee 图。
+
 分析器不执行项目代码。语言内置、标准库和第三方依赖使用独立节点类别，前端可按层级筛选或临时隐藏。
 
-## 6. 隔离执行与安全扫描
+## 6. 静态安全证据基础设施
+
+`services/program_graph` 是面向多语言 CFG/PDG 的最小 CPG 公共层。Python、Java、JavaScript、TypeScript、Go、C、C++ 和 Rust 全部继承同一个 `ProgramGraphFrontend` 文件编排模板，并进一步继承 `TreeSitterProgramGraphFrontend`；语言差异只保留在 collector/adapter 钩子中。`ControlFlowGraphBuilder` 统一处理顺序、分支、循环和突然退出，`ReachingDefinitionsPass` 使用同一个工作列表算法生成变量级数据依赖，`ValueFlowPass` 消费八种语言一致的声明/赋值配对、复合赋值旧值、调用实参与接收者。公共 `AccessPathResolver` 将各语言成员和静态下标表达式转换为稳定变量身份。每个函数同时保存可连接现有调用图的 `symbol_id` 和防止重载或重复绑定互相覆盖的 `method_id`。细粒度函数图不进入前端依赖图。
+
+`services/syntax_analysis` 是依赖图与 ProgramGraph 之间更底层的共享层，唯一维护源码扩展名目录、忽略目录、线程本地 Tree-sitter Parser 池、节点字段/文本读取和类型文本归一化。两个图仍分别拥有自己的中间记录与边类型：依赖图负责跨文件符号和调用目标，ProgramGraph 负责函数内 CFG 和到达定义。当前不跨阶段常驻完整 AST；若性能测量证明重复 parse 是瓶颈，再增加按内容哈希、生命周期有界的语法树缓存。
+
+`services/graph_core` 使用 `typing.Protocol` 定义 `GraphArtifactView`，通过能力声明区分宏观依赖图和函数分区 ProgramGraph。现有 NetworkX node-link 依赖图与 Pydantic ProgramGraph 由只读适配器接入，因此公共校验可以检查重复身份和悬空边，而不要求两个图继承同一存储基类，也不改变持久化格式。
+
+`services/semantic_index` 使用独立的 `SemanticIndexView` 和 `SemanticValueFlowView` 接口共享解析事实，而不创建第三张图。依赖分析器在同一次 Tree-sitter 解析后投影可调用对象、调用点、候选目标、变量类型及解析不确定性；ProgramGraph 提供器继续追加形参、`return` 和调用结果槽位。项目分析将增强后的 1.1 索引作为独立 JSON 产物持久化。跨过程安全数据流优先查询此索引，旧产物缺失索引时才兼容回退到依赖图边与 ProgramGraph 节点；CFG 和 reaching-def 仍由 ProgramGraph 独立负责。
+
+该公共层已经由安全分析内部消费，但不作为独立完整产物加入默认项目导入结果。
+安全服务只为已注册安全规则的语言请求 ProgramGraph，避免额外解析不可能生成 Source/Sink
+事实的项目文件。Python 专用名字传播实现已经删除；所有依赖分析语言均已通过函数身份、
+分支、循环、到达定义和调用点参数契约验证。后续语言安全规则只产生事实并复用同一数据流分析器。
+
+`services/security_analysis` 把语言语法解析、语言语义、规则知识和跨函数路径分开：`LanguageFrontend` 生成通用 `SecurityProgramIR`，`LanguageSemantics` 提供参数绑定等语言语义，分层 `RulePack` 描述安全入口、Source、Sink、Guard 与 Sanitizer，通用规则引擎只消费这些抽象。当前默认注册 Python、Java 与 Go 前端；Java 通过公共 `TreeSitterSecurityFrontend` 接入 Spring Web、Servlet 和首批高价值 API，Go 复用同一模板接入标准库及 `net/http` 注册式入口。未注册语言会明确进入覆盖率与诊断，不能被计为已扫描。
+
+`SecurityEvidencePack 2.3` 使用顶层 `entrypoints`、`facts`、`call_edges`、`dataflows` 和 `snippets` 注册表，候选项只保存 ID 引用，避免重复保存路径和片段。证据包保存精确位置、不确定性、规则包版本、覆盖率和分析局限，但不包含完整依赖图、Repo Map、自然语言架构概述或系统生成命令。生产安全数据流已统一使用 `program_graph` 的公共 CFG、到达定义和变量感知 `value_flow` Overlay，并能沿已解析调用执行有限深度的实参到形参及直接返回值传播；语言绑定由 `LanguageSemantics` 提供。全部八种依赖分析语言都已对齐声明/赋值配对、复合赋值、调用实参/接收者和词法访问路径能力，可区分 `obj.field`、`payload["key"][0]`、`values[0]` 等变量身份，但这不代表对象或堆身份敏感分析。安全规则和 `LanguageSemantics` 当前覆盖 Python/FastAPI、Java/Spring/Servlet 与 Go 标准库/net/http，其他五种语言的 ProgramGraph 能力不会被误报为已有安全规则覆盖。对象/字段/容器别名、动态下标元素身份、嵌套调用返回、路径条件、控制依赖和完整对象传播仍属于后续阶段。
+
+`SecurityEvidencePromptBuilder` 将完整产物投影为 `LLMSecurityEvidenceEnvelope 1.2`：按问题、真实数据流、严重性和置信度选择候选，展开 Source/Sink、赋值、调用与返回边界，保持有效 JSON，并通过 `omitted_findings` 显式报告预算省略。普通 Agent 初始上下文使用该格式，也可以通过只读工具分页获取剩余候选。
+
+## 7. 隔离执行与安全扫描
 
 执行请求由 `ExecutionTaskRequest` 描述为 `argv` 数组，不能提交宿主 Shell 字符串。`ExecutionPolicy` 先验证镜像白名单、扫描 Profile 和资源上限，`ExecutionService` 只负责入队。独立 `ExecutionWorker` 再按当前策略复核计划，最后调用 `DockerExecutor`。
 
 容器禁网、项目只读挂载、根文件系统只读、非 root、丢弃 capabilities，并限制 CPU、内存、PID、时间和输出。执行模块不作为 Agent 工具注册，因此模型不能自行启动容器。完整配置见 `docs/EXECUTION.md`。
 
-## 7. 前端架构
+## 8. 前端架构
 
 `features/project-insight/ProjectInsight.vue` 是工作台总入口，使用异步组件和 `KeepAlive` 切换概览、代码与图、Agent、实验和执行页面。项目状态由 `useProjectAnalysis()` 管理，删除或重新导入时先中止在途请求并销毁旧图实例。
 
@@ -118,7 +150,7 @@ Manifest 与 Repo Map 是模型事实底座。模型只负责解释和归纳，�
 
 组件只通过 `src/services` 访问后端。Axios 处理普通 HTTP，`consumeSse()` 处理 JSON SSE 和取消信号。
 
-## 8. 持久化模型与契约
+## 9. 持久化模型与契约
 
 主要数据库模型：
 
@@ -131,11 +163,14 @@ Manifest 与 Repo Map 是模型事实底座。模型只负责解释和归纳，�
 
 - `ProjectManifest`、`Entrypoint`、`Evidence`：确定性项目事实。
 - `DependencyGraphDTO`：版本化依赖图交换格式。
+- `SecurityEvidencePack 2.3`：去重后的静态安全事实、结构路径、函数内/跨过程 Def-Use、片段、覆盖率和不确定性。
+- `ProgramGraphArtifact 1.0`：按函数分区的最小 CPG、CFG 和到达定义内部协议，当前不属于公开 API。
+- `LLMSecurityEvidenceEnvelope 1.2`：按预算生成的自包含模型安全证据。
 - `AgentRunRequest`、`ContextPacket`、`ToolResult`、`AgentRunView`：智能体边界。
 - `ModelResult`、`ModelTurn`、`ToolCall`、`ProviderCapabilities`：模型适配边界。
 - `ExecutionTaskRequest`、`ExecutionPlan`、`ExecutionTaskView`：隔离执行边界。
 
-## 9. 安全与扩展边界
+## 10. 安全与扩展边界
 
 - 外部项目先进入暂存目录，路径、链接、文件类型和大小都受策略约束。
 - 源码工具只能访问解析后的项目根目录；读取、搜索、耗时和输出均有限额并进行敏感信息脱敏。

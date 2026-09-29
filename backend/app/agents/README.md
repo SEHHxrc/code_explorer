@@ -23,7 +23,7 @@ HTTP 入口是 `api/agent.py:create_agent_run()`：请求体使用 `AgentRunRequ
 POST /api/agent/projects/{project_id}/runs
   → AgentRunStore.create() 持久化 run 与 queue job
   → AgentQueueWorker.claim_next() 认领并续租
-  → ProjectContextBuilder.build() 生成 manifest + 相关 repo map
+  → ProjectContextBuilder.build() 生成 manifest + 紧凑静态安全证据 + 相关 repo map
   → create_model_provider(request.model) 选择在线或本地模型
   → AgentRunManager.generate_with_tools()
       ├─ 无 tool_calls：保存答案并完成
@@ -41,7 +41,7 @@ POST /api/agent/projects/{project_id}/runs
 | 文件/类 | 作用 |
 | --- | --- |
 | `contracts.py` | `AgentRunRequest`、`AgentClaim`、`ContextPacket`、`ToolResult`、`AgentEvent`、`AgentRunView`、历史摘要与快照等边界模型。 |
-| `context_builder.py` / `ProjectContextBuilder` | 验证 Manifest，按问题关键词筛选仓库地图，并限制提示上下文长度。 |
+| `context_builder.py` / `ProjectContextBuilder` | 验证 Manifest，优先加入按问题筛选的静态安全证据，再加入有界仓库地图。 |
 | `orchestrator.py` / `AgentRunManager` | 执行模型—工具循环、收集证据、输出事件、处理取消与错误。 |
 | `run_store.py` / `AgentRunStore` | 保存运行、队列租约、事件和取消状态，并生成不含工具正文的历史快照。 |
 | `worker.py` / `AgentQueueWorker` | 认领队列、续租并调用编排器；`python -m backend.app.agents.worker` 是独立进程入口。 |
@@ -50,7 +50,7 @@ POST /api/agent/projects/{project_id}/runs
 
 ## 上下文来源与依赖
 
-`ProjectContextBuilder` 读取分析产物中的 `manifest` 和 `repo_map`；工具还会读取依赖图和经清洗后的项目目录。`AgentRunManager` 依赖 `llm.create_model_provider()`、`ToolRegistry` 和 `AgentRunStore`。普通 Agent 始终包含依赖图上下文；无图逻辑仅存在于带有“临时对照组”标记的实验包中。
+`ProjectContextBuilder` 读取分析产物中的 `manifest`、`security_evidence` 和 `repo_map`；工具还可分页读取静态安全候选、查询依赖图和读取经清洗后的项目目录。`AgentRunManager` 依赖 `llm.create_model_provider()`、`ToolRegistry` 和 `AgentRunStore`。静态证据中的结构可达候选与函数内 Def-Use 使用不同 claim，系统提示禁止把前者表述为污点流。
 
 前端选择的模型属于单次运行参数，不会修改服务器 `.env`。`AgentRunStore` 先把选择写入运行记录，`AgentQueueWorker` 认领任务后再恢复到 `AgentRunRequest`，因此独立 Worker 或进程重启不会把它替换回默认模型。
 

@@ -1,14 +1,17 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import os
-from collections import defaultdict
+import tree_sitter
 
-from ..ast_utils import *
-from ..constants import *
+from ..ast_utils import _field, _fields, _first_of, _split_qualified
+from ..constants import (
+    CALL_TYPE_PREFIX,
+    JAVA_BUILTINS,
+    JAVA_TYPE_METHODS,
+    SKIP_CHILDREN,
+)
 from ..context import FileContext
-from ..models import Definition, Reference
 from .base import BaseHandler
+
 
 class JavaHandler(BaseHandler):
     """提取 Java 包、导入、类、接口、方法、构造器和调用关系。"""
@@ -43,12 +46,12 @@ class JavaHandler(BaseHandler):
             "lambda_expression": self.h_lambda,
         })
 
-    def h_package(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_package(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析包声明语法节点并把结果写入文件上下文。"""
         ctx.package = ctx.text(_first_of(node, {"scoped_identifier", "identifier"}))
         return SKIP_CHILDREN
 
-    def h_import(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_import(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析导入声明语法节点并把结果写入文件上下文。"""
         target = _first_of(node, {"scoped_identifier", "identifier"})
         literal = ctx.text(target)
@@ -62,20 +65,18 @@ class JavaHandler(BaseHandler):
             ctx.add_import(module, alias=simple, symbol=simple, kind="symbol", line=line)
         return SKIP_CHILDREN
 
-    def h_class(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_class(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析类定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
         bases, impls = [], []
         superclass = _field(node, "superclass")
         if superclass is not None:
-            for child in superclass.named_children:
-                bases.append(ctx.text(child))
+            bases.extend(ctx.text(child) for child in superclass.named_children)
         interfaces = _field(node, "interfaces")
         if interfaces is not None:
             type_list = _first_of(interfaces, {"type_list"}) or interfaces
-            for child in type_list.named_children:
-                impls.append(ctx.text(child))
+            impls.extend(ctx.text(child) for child in type_list.named_children)
         kind = {"interface_declaration": "interface", "enum_declaration": "enum"}.get(node.type, "class")
         definition = ctx.add_def(node, name, kind, name_node=name_node, bases=bases, implements=impls)
         if definition is None:
@@ -83,7 +84,7 @@ class JavaHandler(BaseHandler):
         ctx.push(definition.fqn, "class", name, definition)
         return 0
 
-    def h_field(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_field(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析字段定义语法节点并把结果写入文件上下文。"""
         type_literal = ctx.text(_field(node, "type"))
         in_class = ctx.top.kind == "class"
@@ -96,13 +97,13 @@ class JavaHandler(BaseHandler):
                 ctx.set_var_type(name, type_literal)
         return 0
 
-    def h_enum_constant(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_enum_constant(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析枚举常量语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         ctx.add_def(node, ctx.text(name_node), "constant", name_node=name_node)
         return 0
 
-    def h_method(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_method(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析方法定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
@@ -118,12 +119,12 @@ class JavaHandler(BaseHandler):
             ctx.bind_frame_var(frame, "this", class_frame.name)
         return 0
 
-    def h_lambda(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_lambda(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析Lambda 表达式语法节点并把结果写入文件上下文。"""
         ctx.push(ctx.top.fqn, "function", "")
         return 0
 
-    def h_local_var(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_local_var(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析局部变量语法节点并把结果写入文件上下文。"""
         type_literal = ctx.text(_field(node, "type"))
         for declarator in _fields(node, "declarator"):
@@ -134,7 +135,7 @@ class JavaHandler(BaseHandler):
             ctx.set_var_type(name, inferred)
         return 0
 
-    def h_param(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_param(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析参数类型语法节点并把结果写入文件上下文。"""
         ctx.set_var_type(ctx.text(_field(node, "name")), ctx.text(_field(node, "type")))
         return 0
@@ -153,7 +154,7 @@ class JavaHandler(BaseHandler):
             return CALL_TYPE_PREFIX + prefix + name
         return ""
 
-    def h_call(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_call(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析函数调用语法节点并把结果写入文件上下文。"""
         name = ctx.text(_field(node, "name"))
         obj = _field(node, "object")
@@ -162,7 +163,7 @@ class JavaHandler(BaseHandler):
             ctx.add_ref(node, "call", name, receiver)
         return 0
 
-    def h_new(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_new(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析对象实例化语法节点并把结果写入文件上下文。"""
         type_node = _field(node, "type")
         if type_node is not None:

@@ -6,9 +6,9 @@ import os
 import shutil
 import stat
 from collections.abc import Callable
+from pathlib import Path
 from types import TracebackType
 from typing import Any
-from pathlib import Path
 
 from .paths import ProjectWorkspacePaths
 

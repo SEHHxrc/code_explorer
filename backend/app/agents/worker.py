@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import suppress
 import os
 import socket
 import time
 from datetime import datetime, timedelta, timezone
 
-from backend.app.agents.contracts import AgentRunRequest
 from backend.app.agents.context_builder import ProjectContextBuilder
+from backend.app.agents.contracts import AgentRunRequest
 from backend.app.agents.orchestrator import AGENT_INSTRUCTIONS, AgentRunManager
 from backend.app.agents.run_store import AgentRunStore
 from backend.app.agents.tools import create_project_tool_registry
@@ -124,10 +125,8 @@ class AgentQueueWorker:
                 last_recovery = time.monotonic()
             if processed:
                 continue
-            try:
+            with suppress(asyncio.TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), timeout=self.poll_seconds)
-            except asyncio.TimeoutError:
-                pass
 
     def _manager_for(self, strategy: str, artifact: dict) -> tuple[AgentRunManager, dict]:
         """按运行策略创建隔离的智能体编排器。"""
@@ -141,12 +140,16 @@ class AgentQueueWorker:
         if strategy == "baseline":
             # TEMPORARY CONTROL GROUP / 临时对照组：
             # 图增强胜出后连同 baseline 目录与此分支一起删除。
-            from backend.app.experiments.baseline.context_builder import BaselineContextBuilder
+            from backend.app.experiments.baseline.context_builder import (
+                BaselineContextBuilder,
+            )
             from backend.app.experiments.baseline.strategy import (
                 BASELINE_INSTRUCTIONS,
                 prepare_baseline_artifact,
             )
-            from backend.app.experiments.baseline.tool_registry import create_baseline_tool_registry
+            from backend.app.experiments.baseline.tool_registry import (
+                create_baseline_tool_registry,
+            )
 
             return AgentRunManager(
                 store=self.store,

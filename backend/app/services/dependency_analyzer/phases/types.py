@@ -1,22 +1,15 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import os
-import threading
-import traceback
-from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import deque
 
-import networkx as nx
-from tree_sitter_language_pack import get_parser
+from ..ast_utils import _norm_type, _split_qualified
+from ..constants import CALL_TYPE_PREFIX, CLASS_LIKE
+from ..models import Definition
+from ..state import DependencyAnalyzerState
 
-from ..ast_utils import *
-from ..constants import *
-from ..context import FileContext
-from ..handlers import get_handler
-from ..models import Definition, ImportRec, Reference
 
-class TypeResolutionPhase:
+class TypeResolutionPhase(DependencyAnalyzerState):
     """类型阶段：解析继承、成员、返回类型、包作用域和方法解析顺序。"""
 
     def _resolve_inheritance(self) -> None:
@@ -207,7 +200,7 @@ class TypeResolutionPhase:
                     return self._as_class(candidate)
         return ""
 
-    def _as_class(self, fqn: str) -> str:
+    def _as_class(self, fqn: str | None) -> str:
         """类型解析只应返回 class-like 定义（结构体/类/接口/枚举/别名）。"""
         if not fqn:
             return ""

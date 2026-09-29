@@ -7,7 +7,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-
 ExecutionKind = Literal["command", "security_scan"]
 ExecutionStatus = Literal[
     "queued", "running", "cancel_requested", "completed", "failed", "cancelled", "timed_out"
@@ -28,7 +27,7 @@ class ExecutionTaskRequest(BaseModel):
     pids_limit: int = Field(default=128, ge=16, le=512)
 
     @model_validator(mode="after")
-    def validate_shape(self) -> "ExecutionTaskRequest":
+    def validate_shape(self) -> ExecutionTaskRequest:
         """按任务类型校验互斥字段，输出形状明确的请求。"""
         if self.kind == "command":
             if not self.image or not self.argv:

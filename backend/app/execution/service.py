@@ -8,7 +8,7 @@ import uuid
 from backend.app.services.project_analysis.repository import ProjectRepository
 
 from .contracts import ExecutionError, ExecutionTaskRequest, ExecutionTaskView
-from .policy import ExecutionPolicy, ExecutionSettings
+from .policy import ExecutionPolicy
 from .repository import ExecutionRepository
 
 
@@ -80,4 +80,7 @@ class ExecutionService:
         """请求取消任务；终态任务原样返回。"""
         if self.repository.get(task_id, user_id) is None:
             raise ExecutionError("Execution task not found.", 404)
-        return self.repository.request_cancel(task_id, user_id)
+        view = self.repository.request_cancel(task_id, user_id)
+        if view is None:
+            raise ExecutionError("Execution task not found.", 404)
+        return view

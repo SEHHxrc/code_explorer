@@ -1,13 +1,19 @@
-# -*- coding: utf-8 -*-
+"""多语言依赖分析器的稳定门面和流水线编排。"""
+
 from __future__ import annotations
 
-"""多语言依赖分析器的稳定门面和流水线编排。"""
 import os
 import threading
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import networkx as nx
+
+from backend.app.services.semantic_index import (
+    DependencyAnalysisSemanticProvider,
+    SemanticIndexProvider,
+)
+from backend.app.services.syntax_analysis import DEFAULT_TREE_SITTER_PARSER_POOL
 
 from .constants import EXT_MAP
 from .models import Definition, ImportRec, Reference
@@ -41,7 +47,8 @@ class UnifiedCodeAnalyzer(
                  include_externals: bool = True,
                  include_fields: bool = True,
                  include_type_refs: bool = True,
-                 include_virtual_dispatch: bool = True) -> None:
+                 include_virtual_dispatch: bool = True,
+                 semantic_index_provider: SemanticIndexProvider | None = None) -> None:
         """输入项目根目录、并发上限和图节点选项，初始化分析流水线。"""
         self.project_root = os.path.abspath(project_root)
         self.max_workers = max(1, int(max_workers or 1))
@@ -51,6 +58,9 @@ class UnifiedCodeAnalyzer(
         self.include_fields = include_fields
         self.include_type_refs = include_type_refs
         self.include_virtual_dispatch = include_virtual_dispatch
+        self.semantic_index_provider = (
+            semantic_index_provider or DependencyAnalysisSemanticProvider()
+        )
 
         # 同一节点对可能在不同调用点、以不同关系相连；内部分析图必须无损保存。
         # 前端展示所需的聚合由 GraphExchangeNormalizer 单独负责。
@@ -97,7 +107,7 @@ class UnifiedCodeAnalyzer(
         self.total_files_count = 0
         self._progress_lock = threading.Lock()
         self._diagnostics_lock = threading.Lock()
-        self._tls = threading.local()
+        self._parser_pool = DEFAULT_TREE_SITTER_PARSER_POOL
 
         self.stats = defaultdict(int)
         self.global_index = {"imports": {}, "unresolved": []}
@@ -116,6 +126,7 @@ class UnifiedCodeAnalyzer(
             return {
                 "file_symbols": {},
                 "dependency_graph": nx.node_link_data(self.global_graph),
+                "semantic_index": self._build_semantic_index(),
                 "stats": dict(self.stats),
                 "diagnostics": self._diagnostics_snapshot(),
             }
@@ -152,9 +163,21 @@ class UnifiedCodeAnalyzer(
         return {
             "file_symbols": self.file_symbols_map,
             "dependency_graph": nx.node_link_data(self.global_graph),
+            "semantic_index": self._build_semantic_index(),
             "stats": dict(self.stats),
             "diagnostics": self._diagnostics_snapshot(),
         }
+
+    def _build_semantic_index(self) -> dict:
+        """把已有解析状态投影为公共语义事实，不再次读取或解析源码。"""
+        artifact = self.semantic_index_provider.build(
+            definitions=self.definitions,
+            references=self.references,
+            variable_types=self._ref_var_types,
+            graph=self.global_graph,
+            unresolved=self.global_index["unresolved"],
+        )
+        return artifact.model_dump()
 
     def _diagnostics_snapshot(self) -> dict:
         """返回可持久化的诊断快照，并补充完整计数与截断状态。"""

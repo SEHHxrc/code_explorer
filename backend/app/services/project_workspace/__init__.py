@@ -1,6 +1,11 @@
 """受控项目工作区功能包。"""
 
-from .contracts import PreparedWorkspace, SanitizeReport, WorkspaceOperation, WorkspaceSource
+from .contracts import (
+    PreparedWorkspace,
+    SanitizeReport,
+    WorkspaceOperation,
+    WorkspaceSource,
+)
 from .policy import WorkspacePolicy
 from .service import ProjectWorkspaceService
 

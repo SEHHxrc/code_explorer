@@ -1,18 +1,37 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import json
 import re
+from typing import Any, Protocol
 
 from backend.app.agents.contracts import AgentEvidence, ContextPacket
 from backend.app.llm.registry import get_model_limits
 from backend.app.schemas.manifest import ProjectManifest
+from backend.app.services.security_analysis import SecurityEvidencePromptBuilder
+
+
+class ContextBuilder(Protocol):
+    """把项目分析产物转换为单轮模型上下文的最小接口。"""
+
+    def build(
+        self,
+        *,
+        project_id: str,
+        question: str,
+        artifact: dict[str, Any],
+    ) -> ContextPacket:
+        """返回给智能体编排器使用的上下文包。"""
+        ...
 
 
 class ProjectContextBuilder:
     """从项目分析产物构建受字符预算约束的模型上下文。"""
 
-    def build(self, *, project_id: str, question: str, artifact: dict) -> ContextPacket:
+    def __init__(self, security_builder: SecurityEvidencePromptBuilder | None = None,) -> None:
+        """注入静态安全证据投影器。"""
+        self.security_builder = security_builder or SecurityEvidencePromptBuilder()
+
+    def build(self, *, project_id: str, question: str, artifact: dict[str, Any]) -> ContextPacket:
         """构建项目上下文。
 
         Args:
@@ -35,12 +54,22 @@ class ProjectContextBuilder:
             )
             for item in manifest.entrypoints[:20]
         ]
-        prompt_context = (
-            "PROJECT_MANIFEST\n"
-            + json.dumps(manifest.model_dump(), ensure_ascii=False, indent=2)
-            + "\n\nRELEVANT_REPO_MAP\n"
-            + selected_map
-        )[:get_model_limits().max_context_chars]
+        max_chars = get_model_limits().max_context_chars
+        manifest_text = json.dumps(
+            manifest.model_dump(), ensure_ascii=False, separators=(",", ":"),
+        )
+        security_text, security_evidence = self._security_context(
+            artifact,
+            question,
+            max_chars=max(2_000, int(max_chars * 0.55)),
+        )
+        evidence.extend(security_evidence)
+        prefix = "PROJECT_MANIFEST\n" + manifest_text
+        if security_text:
+            prefix += "\n\nSTATIC_SECURITY_EVIDENCE\n" + security_text
+        repo_header = "\n\nRELEVANT_REPO_MAP\n"
+        remaining = max(0, max_chars - len(prefix) - len(repo_header))
+        prompt_context = prefix + repo_header + selected_map[:remaining]
         return ContextPacket(
             project_id=project_id,
             project_name=manifest.project_name,
@@ -49,6 +78,42 @@ class ProjectContextBuilder:
             repo_map=selected_map,
             evidence=evidence,
         )
+
+    def _security_context(
+        self,
+        artifact: dict[str, Any],
+        question: str,
+        *,
+        max_chars: int,
+    ) -> tuple[str, list[AgentEvidence]]:
+        """生成有效 JSON，并把已选候选端点加入 Agent 证据列表。"""
+        raw_pack = artifact.get("security_evidence")
+        if not isinstance(raw_pack, dict):
+            return "", []
+        try:
+            envelope = self.security_builder.build(
+                raw_pack,
+                question=question,
+                max_chars=max_chars,
+            )
+        except (TypeError, ValueError):
+            return "", []
+        items = [
+            AgentEvidence(
+                    path=endpoint.location.path,
+                    line=endpoint.location.line,
+                    symbol=endpoint.symbol,
+                    detail=f"static security {endpoint.role}: {finding.rule_id}",
+            )
+            for finding in envelope.findings
+            for endpoint in (finding.source, finding.sink)
+        ]
+        text = json.dumps(
+            envelope.model_dump(exclude_none=True),
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        return text, items
 
     @staticmethod
     def _select_repo_map(repo_map: str, question: str, max_lines: int = 140) -> str:

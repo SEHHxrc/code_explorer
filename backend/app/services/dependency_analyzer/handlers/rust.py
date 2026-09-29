@@ -1,14 +1,20 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import os
-from collections import defaultdict
+import tree_sitter
 
-from ..ast_utils import *
-from ..constants import *
+from ..ast_utils import _field, _norm_type, _split_qualified
+from ..constants import (
+    CALL_TYPE_PREFIX,
+    RUST_BUILTINS,
+    RUST_STD_ROOTS,
+    RUST_STD_TYPES,
+    RUST_TYPE_METHODS,
+    SKIP_CHILDREN,
+)
 from ..context import FileContext
-from ..models import Definition, Reference
+from ..models import Reference
 from .base import BaseHandler
+
 
 class RustHandler(BaseHandler):
     """提取 Rust 模块、use、结构体、trait、impl、函数和调用关系。"""
@@ -45,7 +51,7 @@ class RustHandler(BaseHandler):
             "struct_expression": self.h_struct_expr,
         })
 
-    def h_use(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_use(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析use 导入语法节点并把结果写入文件上下文。"""
         argument = _field(node, "argument")
         line = node.start_point[0] + 1
@@ -88,7 +94,7 @@ class RustHandler(BaseHandler):
             out.append(("::".join(p for p in (prefix, path) if p), "*", "*", "wildcard"))
         return out
 
-    def h_mod(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_mod(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析模块声明语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
@@ -102,7 +108,7 @@ class RustHandler(BaseHandler):
         ctx.push(definition.fqn, "namespace", name, definition)
         return 0
 
-    def h_record(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_record(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析类、结构体或联合体定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
@@ -112,23 +118,25 @@ class RustHandler(BaseHandler):
         if node.type == "trait_item":
             bounds = _field(node, "bounds")
             if bounds is not None:
-                for child in bounds.named_children:
-                    if child.type in ("type_identifier", "scoped_type_identifier"):
-                        bases.append(_norm_type(ctx.text(child)))
+                bases.extend(
+                    _norm_type(ctx.text(child))
+                    for child in bounds.named_children
+                    if child.type in ("type_identifier", "scoped_type_identifier")
+                )
         definition = ctx.add_def(node, name, kind, name_node=name_node, bases=bases)
         if definition is None:
             return 0
         ctx.push(definition.fqn, "class", name, definition)
         return 0
 
-    def h_type_alias(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_type_alias(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析类型别名语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         ctx.add_def(node, ctx.text(name_node), "type", name_node=name_node,
                     bases=[_norm_type(ctx.text(_field(node, "type")))])
         return SKIP_CHILDREN
 
-    def h_impl(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_impl(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析实现块语法节点并把结果写入文件上下文。"""
         type_literal = _norm_type(ctx.text(_field(node, "type")))
         trait_literal = _norm_type(ctx.text(_field(node, "trait")))
@@ -144,7 +152,7 @@ class RustHandler(BaseHandler):
                                       class_fqn=f"{ctx.path}::{type_literal}", lang=ctx.lang))
         return 0
 
-    def h_function(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_function(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析函数定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
@@ -162,7 +170,7 @@ class RustHandler(BaseHandler):
             ctx.bind_frame_var(frame, "Self", owner)
         return 0
 
-    def h_field(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_field(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析字段定义语法节点并把结果写入文件上下文。"""
         if ctx.top.kind != "class":
             return 0
@@ -171,13 +179,13 @@ class RustHandler(BaseHandler):
                     type_literal=ctx.text(_field(node, "type")))
         return SKIP_CHILDREN
 
-    def h_variant(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_variant(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析枚举变体语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         ctx.add_def(node, ctx.text(name_node), "constant", name_node=name_node)
         return SKIP_CHILDREN
 
-    def h_const(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_const(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析常量定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
@@ -187,7 +195,7 @@ class RustHandler(BaseHandler):
             ctx.add_def(node, name, "constant", name_node=name_node, type_literal=ctx.text(_field(node, "type")))
         return 0
 
-    def h_let(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_let(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析let 绑定语法节点并把结果写入文件上下文。"""
         pattern = _field(node, "pattern")
         name = ctx.text(pattern) if pattern is not None and pattern.type == "identifier" else ""
@@ -196,7 +204,7 @@ class RustHandler(BaseHandler):
             ctx.set_var_type(name, type_literal)
         return 0
 
-    def h_param(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_param(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析参数类型语法节点并把结果写入文件上下文。"""
         pattern = _field(node, "pattern")
         if pattern is not None and pattern.type == "identifier":
@@ -223,7 +231,7 @@ class RustHandler(BaseHandler):
             return self._infer_type(ctx, _field(value, "value"))
         return ""
 
-    def h_call(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_call(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析函数调用语法节点并把结果写入文件上下文。"""
         func = _field(node, "function")
         if func is None:
@@ -238,7 +246,7 @@ class RustHandler(BaseHandler):
                 ctx.add_ref(node, "call", name, receiver)
         return 0
 
-    def h_macro(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_macro(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析宏定义语法节点并把结果写入文件上下文。"""
         macro = _field(node, "macro")
         name = ctx.text(macro)
@@ -246,7 +254,7 @@ class RustHandler(BaseHandler):
             ctx.add_ref(node, "call", name.split("::")[-1], "")
         return 0
 
-    def h_struct_expr(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_struct_expr(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析结构体实例化语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         if name_node is not None:

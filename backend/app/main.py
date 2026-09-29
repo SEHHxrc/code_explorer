@@ -1,17 +1,16 @@
-# -*- coding: utf-8 -*-
 """FastAPI 应用入口。"""
 
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-import os
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from backend.app.agents.worker import agent_queue_worker
 from backend.app.api.agent import router as agent_router
-from backend.app.api.experiment import router as experiment_router
 from backend.app.api.execution import router as execution_router
+from backend.app.api.experiment import router as experiment_router
 from backend.app.api.project import router as project_router
 from backend.app.middleware.exception_handler import setup_exception_handler
 from backend.app.middleware.response_security import setup_response_security
@@ -55,6 +54,6 @@ app.include_router(execution_router)
 
 
 @app.get("/")
-def read_root() -> dict[str, str]:
+def read_root() -> dict[str, int | str]:
     """健康检查入口；无输入，输出后端可用状态。"""
     return {"code": 200, "message": "Backend service is running securely."}

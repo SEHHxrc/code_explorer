@@ -1,14 +1,25 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import os
-from collections import defaultdict
+import tree_sitter
 
-from ..ast_utils import *
-from ..constants import *
+from ..ast_utils import (
+    _descend_for,
+    _field,
+    _first_of,
+    _is_meaningful_name,
+    _split_qualified,
+)
+from ..constants import (
+    CALL_TYPE_PREFIX,
+    JS_BUILTINS,
+    JS_GLOBALS,
+    JS_STDLIB,
+    JS_TYPE_METHODS,
+    SKIP_CHILDREN,
+)
 from ..context import FileContext
-from ..models import Definition, Reference
 from .base import BaseHandler
+
 
 class JavaScriptHandler(BaseHandler):
     """提取 JavaScript/JSX 模块、类、函数、变量和调用关系。"""
@@ -47,7 +58,7 @@ class JavaScriptHandler(BaseHandler):
             "enum_declaration": self.h_enum,
         })
 
-    def h_import(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_import(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析导入声明语法节点并把结果写入文件上下文。"""
         source = _field(node, "source")
         module = ctx.text(source).strip("\"'`")
@@ -72,7 +83,7 @@ class JavaScriptHandler(BaseHandler):
                     ctx.add_import(module, alias=alias, symbol=real, kind="symbol", line=line)
         return SKIP_CHILDREN
 
-    def _heritage(self, node: tree_sitter.Node | None, ctx: FileContext) -> tuple[list[str], list[str]]:
+    def _heritage(self, node: tree_sitter.Node, ctx: FileContext) -> tuple[list[str], list[str]]:
         """提取 JavaScript 或 TypeScript 类型的继承声明。"""
         bases, impls = [], []
         for child in node.named_children:
@@ -80,18 +91,19 @@ class JavaScriptHandler(BaseHandler):
                 continue
             for part in child.named_children:
                 if part.type == "extends_clause":
-                    for target in part.named_children:
+                    bases.extend(
+                        ctx.text(target)
+                        for target in part.named_children
                         if target.type in ("identifier", "type_identifier", "member_expression",
-                                           "generic_type", "nested_type_identifier"):
-                            bases.append(ctx.text(target))
+                                           "generic_type", "nested_type_identifier")
+                    )
                 elif part.type == "implements_clause":
-                    for target in part.named_children:
-                        impls.append(ctx.text(target))
+                    impls.extend(ctx.text(target) for target in part.named_children)
                 elif part.type in ("identifier", "type_identifier", "member_expression"):
                     bases.append(ctx.text(part))
         return bases, impls
 
-    def h_class(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_class(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析类定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
@@ -106,28 +118,30 @@ class JavaScriptHandler(BaseHandler):
         ctx.push(definition.fqn, "class", name, definition)
         return 0
 
-    def h_interface(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_interface(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析接口定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         bases = []
         for child in node.named_children:
             if child.type in ("extends_type_clause", "class_heritage"):
-                for target in child.named_children:
-                    if target.type in ("type_identifier", "identifier", "generic_type", "nested_type_identifier"):
-                        bases.append(ctx.text(target))
+                bases.extend(
+                    ctx.text(target)
+                    for target in child.named_children
+                    if target.type in ("type_identifier", "identifier", "generic_type", "nested_type_identifier")
+                )
         definition = ctx.add_def(node, ctx.text(name_node), "interface", name_node=name_node, bases=bases)
         if definition is None:
             return 0
         ctx.push(definition.fqn, "class", definition.name, definition)
         return 0
 
-    def h_type_alias(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_type_alias(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析类型别名语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         ctx.add_def(node, ctx.text(name_node), "type", name_node=name_node)
         return SKIP_CHILDREN
 
-    def h_enum(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_enum(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析枚举定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         definition = ctx.add_def(node, ctx.text(name_node), "enum", name_node=name_node)
@@ -136,7 +150,7 @@ class JavaScriptHandler(BaseHandler):
         ctx.push(definition.fqn, "class", definition.name, definition)
         return 0
 
-    def h_method(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_method(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析方法定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
@@ -152,7 +166,7 @@ class JavaScriptHandler(BaseHandler):
             ctx.bind_frame_var(frame, "this", class_frame.name)
         return 0
 
-    def h_field(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_field(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析字段定义语法节点并把结果写入文件上下文。"""
         if ctx.top.kind != "class":
             return 0
@@ -173,7 +187,7 @@ class JavaScriptHandler(BaseHandler):
                                       "predefined_type"})
         return ctx.text(inner or type_node)
 
-    def h_function(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_function(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析函数定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         definition = ctx.add_def(node, ctx.text(name_node), "function", name_node=name_node,
@@ -183,13 +197,13 @@ class JavaScriptHandler(BaseHandler):
         ctx.push(definition.fqn, "function", definition.name, definition)
         return 0
 
-    def h_anon_function(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_anon_function(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         # 匿名函数：不建节点，但要建一个作用域帧，避免局部变量污染上层
         """解析匿名函数语法节点并把结果写入文件上下文。"""
         ctx.push(ctx.top.fqn, "function", "")
         return 0
 
-    def h_param(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_param(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析参数类型语法节点并把结果写入文件上下文。"""
         pattern = _field(node, "pattern")
         type_node = _field(node, "type")
@@ -197,7 +211,7 @@ class JavaScriptHandler(BaseHandler):
             ctx.set_var_type(ctx.text(pattern), self._annotation_type(ctx, type_node))
         return 0
 
-    def h_declarator(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_declarator(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析变量声明语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
@@ -247,14 +261,14 @@ class JavaScriptHandler(BaseHandler):
                 return CALL_TYPE_PREFIX + ctx.text(func)
         return ""
 
-    def h_call(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_call(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析函数调用语法节点并把结果写入文件上下文。"""
         name, receiver = self.split_callee(ctx, _field(node, "function"))
         if name:
             ctx.add_ref(node, "call", name, receiver)
         return 0
 
-    def h_new(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_new(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析对象实例化语法节点并把结果写入文件上下文。"""
         ctor = _field(node, "constructor")
         if ctor is not None:

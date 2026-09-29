@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import time
 from collections.abc import Callable
-from pathlib import Path
 
 from sqlalchemy.orm import Session
 
@@ -84,4 +83,3 @@ class WorkspaceJanitor:
             ).first() is not None
         finally:
             session.close()
-

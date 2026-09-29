@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -14,10 +13,16 @@ from backend.app.agents.contracts import (
     AgentRunHistoryItem,
     AgentRunRequest,
     AgentRunSnapshot,
+    AgentRunStatus,
     AgentRunView,
+    AgentStrategy,
 )
-from backend.app.models import AgentEventModel, AgentJobModel, AgentRunModel, SessionLocal
-
+from backend.app.models import (
+    AgentEventModel,
+    AgentJobModel,
+    AgentRunModel,
+    SessionLocal,
+)
 
 ACTIVE_STATUSES = ("queued", "running")
 _HISTORY_EVENT_FIELDS = {
@@ -47,7 +52,7 @@ class AgentRunStore:
         project_id: str,
         user_id: str,
         request: AgentRunRequest,
-        strategy: str = "default",
+        strategy: AgentStrategy = "default",
     ) -> AgentRunView:
         """在一个事务中创建公开运行记录和待认领队列项。"""
         if strategy not in {"default", "graph", "baseline"}:
@@ -208,6 +213,8 @@ class AgentRunStore:
             db.commit()
             row = db.query(AgentRunModel).filter(AgentRunModel.id == candidate[0]).first()
             job = db.query(AgentJobModel).filter(AgentJobModel.run_id == candidate[0]).first()
+            if row is None or job is None:
+                return None
             return AgentClaim(
                 run_id=row.id,
                 project_id=row.project_id,
@@ -216,7 +223,7 @@ class AgentRunStore:
                 use_model=bool(row.use_model),
                 max_steps=row.max_steps,
                 model=row.model,
-                strategy=job.strategy,
+                strategy=self._strategy(job.strategy),
             )
         except Exception:
             db.rollback()
@@ -339,10 +346,18 @@ class AgentRunStore:
 
     def update(self, run_id: str, **values: Any) -> None:
         """更新指定运行字段和更新时间。"""
+        allowed_fields = {"status", "provider", "model", "answer", "error"}
+        unsupported = set(values) - allowed_fields
+        if unsupported:
+            raise ValueError(f"Unsupported agent run fields: {sorted(unsupported)}")
         db = self.session_factory()
         try:
-            values["updated_at"] = datetime.now(timezone.utc)
-            db.query(AgentRunModel).filter(AgentRunModel.id == run_id).update(values)
+            row = db.query(AgentRunModel).filter(AgentRunModel.id == run_id).first()
+            if row is None:
+                return
+            for name, value in values.items():
+                setattr(row, name, value)
+            row.updated_at = datetime.now(timezone.utc)
             db.commit()
         except Exception:
             db.rollback()
@@ -467,7 +482,7 @@ class AgentRunStore:
             id=row.id,
             project_id=row.project_id,
             question=row.question,
-            status=row.status,
+            status=AgentRunStore._status(row.status),
             provider=row.provider,
             model=row.model,
             answer=row.answer,
@@ -475,3 +490,25 @@ class AgentRunStore:
             created_at=row.created_at,
             updated_at=row.updated_at,
         )
+
+    @staticmethod
+    def _strategy(value: str) -> AgentStrategy:
+        """把数据库策略值收敛为公开契约，未知旧值退回默认策略。"""
+        if value == "graph":
+            return "graph"
+        if value == "baseline":
+            return "baseline"
+        return "default"
+
+    @staticmethod
+    def _status(value: str) -> AgentRunStatus:
+        """校验数据库运行状态；未知值作为失败状态安全降级。"""
+        if value == "queued":
+            return "queued"
+        if value == "running":
+            return "running"
+        if value == "completed":
+            return "completed"
+        if value == "cancelled":
+            return "cancelled"
+        return "failed"

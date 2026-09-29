@@ -17,6 +17,7 @@ begin 工作区操作
 → Git/ZIP acquire
 → sanitize
 → UnifiedCodeAnalyzer.run_full_analysis()
+→ SecurityAnalysisService.analyze() 生成安全结构证据包
 → 文件树 + ProjectManifest + Repo Map
 → publish 工作区
 → 保存项目记录
@@ -24,6 +25,9 @@ begin 工作区操作
 → GraphExchangeNormalizer.normalize() 聚合平行边并生成公开 DTO
 → commit
 ```
+
+持久化产物还包含依赖分析同次生成的 `semantic_index`。安全分析优先使用其中的调用目标、
+解析置信度和变量类型事实；前端交换图仍只由 `GraphExchangeNormalizer` 生成，两者互不替代。
 
 任一阶段失败时，`ProjectAnalysisTransaction` 按登记的相反顺序补偿数据库记录、分析产物和工作区；若补偿本身失败，会在操作日志中标记以供 Janitor 恢复。
 
@@ -40,4 +44,4 @@ begin 工作区操作
 | `exceptions.py` | 按导入、分析、项目持久化和产物持久化区分稳定公开错误。 |
 | `__init__.py` | 导出服务、命令、结果和公开异常。 |
 
-存储产物有意保留分析器的原始多重依赖图、`analysis_statistics`、`analysis_diagnostics` 和 `analysis_metadata`，供静态安全路径与证据构建使用；只有 HTTP 响应使用聚合后的交换图。数据格式化属于本应用边界，不由通用 Middleware 隐式改写。
+存储产物有意保留分析器的原始多重依赖图、`analysis_statistics`、`analysis_diagnostics`、`analysis_metadata` 和 `security_evidence`。安全证据 2.3 复用依赖图的文件范围、FQN、`callsite_id` 和调用边，通过语言前端 IR、版本化规则包、公共 ProgramGraph 函数内到达定义、参数/返回槽位、结构路径和最小源码切片构成；候选只引用顶层事实、边、数据流和片段注册表中的 ID。证据包不包含完整图、Repo Map 或生成命令，并分别标记已建立的到达定义链和仅结构可达候选。只有 HTTP 响应使用聚合后的交换图，数据格式化属于本应用边界，不由通用 Middleware 隐式改写。

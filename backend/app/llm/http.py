@@ -1,16 +1,14 @@
-# -*- coding: utf-8 -*-
 """模型 HTTP 请求、有限速率重试与安全错误解析。"""
 
 from __future__ import annotations
 
 import asyncio
-from email.message import Message
 import json
 import random
+from email.message import Message
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
-
 
 MAX_ERROR_BODY_BYTES = 64 * 1024
 MAX_TRANSIENT_RETRIES = 2
@@ -219,7 +217,8 @@ def _model_endpoint_error(exc: HTTPError) -> ModelEndpointError:
             payload = decoded
     except (OSError, UnicodeError, json.JSONDecodeError):
         payload = {}
-    error = payload.get("error") if isinstance(payload.get("error"), dict) else {}
+    raw_error = payload.get("error")
+    error: dict[str, Any] = raw_error if isinstance(raw_error, dict) else {}
     headers = exc.headers if isinstance(exc.headers, Message) else Message()
     return ModelEndpointError(
         status_code=exc.code,

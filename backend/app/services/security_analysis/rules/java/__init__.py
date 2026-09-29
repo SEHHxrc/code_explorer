@@ -1,0 +1,17 @@
+"""Java 安全规则包集合。"""
+
+from .frameworks import SERVLET_RULE_PACK, SPRING_WEB_RULE_PACK
+from .standard_library import JAVA_STANDARD_LIBRARY_PACK
+
+JAVA_RULE_PACKS = (
+    JAVA_STANDARD_LIBRARY_PACK,
+    SPRING_WEB_RULE_PACK,
+    SERVLET_RULE_PACK,
+)
+
+__all__ = [
+    "JAVA_RULE_PACKS",
+    "JAVA_STANDARD_LIBRARY_PACK",
+    "SERVLET_RULE_PACK",
+    "SPRING_WEB_RULE_PACK",
+]

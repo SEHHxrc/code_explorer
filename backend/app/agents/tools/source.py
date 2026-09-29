@@ -7,7 +7,13 @@ import os
 import time
 
 from backend.app.agents.contracts import AgentEvidence, ToolResult
-from backend.app.agents.policy import IGNORED_DIRECTORIES, MAX_READ_LINES, MAX_SOURCE_BYTES, redact_secrets, resolve_project_path
+from backend.app.agents.policy import (
+    IGNORED_DIRECTORIES,
+    MAX_READ_LINES,
+    MAX_SOURCE_BYTES,
+    redact_secrets,
+    resolve_project_path,
+)
 from backend.app.agents.tools.arguments import ReadFileArguments, SearchArguments
 from backend.app.agents.tools.base import AgentTool, ToolContext
 

@@ -11,7 +11,6 @@ from .exceptions import WorkspacePolicyError
 from .filesystem import WorkspaceFilesystem
 from .policy import WorkspacePolicy
 
-
 FORBIDDEN_EXTENSIONS = {
     ".exe", ".dll", ".so", ".dmg", ".iso", ".bin", ".zip", ".tar", ".gz",
 }

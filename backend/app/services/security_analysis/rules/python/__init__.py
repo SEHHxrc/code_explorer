@@ -1,0 +1,8 @@
+"""Python 核心规则和框架规则包。"""
+
+from .frameworks.fastapi import FASTAPI_RULE_PACK
+from .standard_library import PYTHON_STANDARD_LIBRARY_PACK
+
+PYTHON_RULE_PACKS = (PYTHON_STANDARD_LIBRARY_PACK, FASTAPI_RULE_PACK)
+
+__all__ = ["FASTAPI_RULE_PACK", "PYTHON_RULE_PACKS", "PYTHON_STANDARD_LIBRARY_PACK"]

@@ -1,7 +1,7 @@
-# -*- coding: utf-8 -*-
+"""单文件解析上下文和作用域状态。"""
+
 from __future__ import annotations
 
-"""单文件解析上下文和作用域状态。"""
 import os
 from typing import TYPE_CHECKING
 
@@ -17,9 +17,24 @@ if TYPE_CHECKING:
 class FileContext:
     """单文件解析上下文：阶段一的所有产出都挂在这里，线程内独占。"""
 
-    __slots__ = ("path", "abs_path", "lang", "src", "defs", "refs", "imports",
-                 "symbols", "symbol_index", "def_index", "frames", "package",
-                 "handler", "var_type_table", "pending_typedef", "diagnostics")
+    __slots__ = (
+        "abs_path",
+        "def_index",
+        "defs",
+        "diagnostics",
+        "frames",
+        "handler",
+        "imports",
+        "lang",
+        "package",
+        "path",
+        "pending_typedef",
+        "refs",
+        "src",
+        "symbol_index",
+        "symbols",
+        "var_type_table",
+    )
 
     def __init__(self, path: str, abs_path: str, lang: str, src: bytes, handler: BaseHandler) -> None:
         """输入文件路径、语言、源码字节和处理器，初始化单文件分析状态。"""
@@ -189,6 +204,6 @@ class FileContext:
         self.imports.append(ImportRec(file=self.path, module=module, alias=alias or symbol or module.split("/")[-1],
                                       symbol=symbol, kind=kind, line=line))
 
-    def text(self, node: tree_sitter.Node) -> str:
-        """输入 Tree-sitter 节点，输出其 UTF-8 源码文本。"""
+    def text(self, node: tree_sitter.Node | None) -> str:
+        """输入可空 Tree-sitter 节点，输出其 UTF-8 源码文本或空串。"""
         return _text(node, self.src)

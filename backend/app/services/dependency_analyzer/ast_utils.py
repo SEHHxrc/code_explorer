@@ -1,60 +1,45 @@
-# -*- coding: utf-8 -*-
-from __future__ import annotations
+"""依赖分析兼容工具；通用 Tree-sitter 能力由 syntax_analysis 提供。"""
 
-"""Tree-sitter 节点读取、符号构造和类型文本归一化工具。"""
-from collections import deque
+from __future__ import annotations
 
 import tree_sitter
 
+from backend.app.services.syntax_analysis import (
+    descend_for as _descend_for,
+)
+from backend.app.services.syntax_analysis import (
+    field as _field,
+)
+from backend.app.services.syntax_analysis import (
+    fields as _fields,
+)
+from backend.app.services.syntax_analysis import (
+    first_of as _first_of,
+)
+from backend.app.services.syntax_analysis import (
+    normalize_type as _norm_type,
+)
+from backend.app.services.syntax_analysis import (
+    split_qualified as _split_qualified,
+)
+from backend.app.services.syntax_analysis import (
+    text as _text,
+)
+
 from .constants import NOISE_NAMES
 
-def _text(node: tree_sitter.Node | None, src: bytes) -> str:
-    """容错读取 Tree-sitter 节点对应的 UTF-8 源码。"""
-    if node is None:
-        return ""
-    return src[node.start_byte:node.end_byte].decode("utf-8", errors="ignore")
-
-def _field(node: tree_sitter.Node | None, name: str) -> tree_sitter.Node | None:
-    """安全读取 Tree-sitter 节点的命名字段。"""
-    if node is None:
-        return None
-    try:
-        return node.child_by_field_name(name)
-    except Exception:
-        return None
-
-def _fields(node: tree_sitter.Node | None, name: str) -> list:
-    """安全读取 Tree-sitter 节点的同名字段列表。"""
-    if node is None:
-        return []
-    try:
-        return list(node.children_by_field_name(name))
-    except Exception:
-        return []
-
-def _first_of(node: tree_sitter.Node | None, types: set[str]) -> tree_sitter.Node | None:
-    """在直接子节点中找第一个指定类型的节点（不递归）。"""
-    if node is None:
-        return None
-    for child in node.named_children:
-        if child.type in types:
-            return child
-    return None
-
-def _descend_for(node: tree_sitter.Node | None, types: set[str], max_depth: int = 6) -> None | object:
-    """在有限深度内向下找第一个指定类型的节点（用于拆解声明符等小子树）。"""
-    if node is None:
-        return None
-    queue = deque([(node, 0)])
-    while queue:
-        cur, depth = queue.popleft()
-        if cur.type in types:
-            return cur
-        if depth >= max_depth:
-            continue
-        for child in cur.named_children:
-            queue.append((child, depth + 1))
-    return None
+__all__ = [
+    "_build_symbol",
+    "_descend_for",
+    "_field",
+    "_fields",
+    "_first_of",
+    "_is_meaningful_name",
+    "_norm_type",
+    "_split_qualified",
+    "_text",
+    "tree_sitter",
+]
 
 def _build_symbol(node: tree_sitter.Node, name: str, kind: str, fqn: str) -> dict:
     """构造前端文件大纲使用的符号（结构与旧版完全一致）。"""
@@ -70,32 +55,6 @@ def _build_symbol(node: tree_sitter.Node, name: str, kind: str, fqn: str) -> dic
         },
     }
 
-def _norm_type(literal: str) -> str:
-    """把类型字面量归一化成可查找的名字：``*Animal`` / ``List<Animal>`` / ``const Foo&`` -> 主类型名。"""
-    if not literal:
-        return ""
-    lit = literal.strip()
-    for kw in ("const ", "volatile ", "static ", "mut ", "final ", "unsafe ", "struct ", "enum ", "union ", "class "):
-        while lit.startswith(kw):
-            lit = lit[len(kw):].strip()
-    lit = lit.lstrip("*&")
-    if "<" in lit:
-        lit = lit.split("<", 1)[0]
-    if "[" in lit:
-        lit = lit.split("[", 1)[0]
-    lit = lit.replace("(", "").replace(")", "").replace("*", "").replace("&", "")
-    lit = lit.rstrip("?!").strip()
-    return lit
-
-def _split_qualified(literal: str) -> list[str]:
-    """把 ``a.b.c`` / ``a::b::c`` / ``a->b`` 拆成片段。"""
-    if not literal:
-        return []
-    tmp = literal.replace("::", ".").replace("->", ".")
-    return [p for p in tmp.split(".") if p]
-
 def _is_meaningful_name(name: str) -> bool:
     """过滤全局/字段层面的噪音名（单字母临时变量、私有 dunder）。"""
     return bool(name) and name.lower() not in NOISE_NAMES and not name.startswith("__")
-
-__all__ = [name for name in globals() if not name.startswith('__')]

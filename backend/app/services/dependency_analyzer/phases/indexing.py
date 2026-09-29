@@ -1,22 +1,12 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import os
-import threading
-import traceback
-from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import networkx as nx
-from tree_sitter_language_pack import get_parser
+from ..constants import CLASS_LIKE
+from ..state import DependencyAnalyzerState
 
-from ..ast_utils import *
-from ..constants import *
-from ..context import FileContext
-from ..handlers import get_handler
-from ..models import Definition, ImportRec, Reference
 
-class IndexingPhase:
+class IndexingPhase(DependencyAnalyzerState):
     """索引阶段：建立语言无关和语言特定的全局符号索引。"""
 
     def _build_indexes(self) -> None:

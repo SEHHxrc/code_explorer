@@ -1,9 +1,12 @@
-# -*- coding: utf-8 -*-
+"""语言节点处理器的公共分派接口。"""
+
 from __future__ import annotations
 
-"""语言节点处理器的公共分派接口。"""
+import tree_sitter
+
 from ..ast_utils import _field, _first_of
 from ..context import FileContext
+
 
 class BaseHandler:
     """语言处理器基类：只声明分发表与语言常量，具体节点处理由子类实现。"""

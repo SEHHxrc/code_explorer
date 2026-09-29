@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 from backend.app.schemas.manifest import ProjectManifest
@@ -35,8 +34,10 @@ def render_deterministic_overview(manifest: ProjectManifest) -> str:
         "### 项目结构",
         "",
     ])
-    for module in manifest.modules[:12]:
-        lines.append(f"- `{module['path']}`：{module['file_count']} 个文件")
+    lines.extend(
+        f"- `{module['path']}`：{module['file_count']} 个文件"
+        for module in manifest.modules[:12]
+    )
     lines.extend([
         "",
         "### 依赖图摘要",

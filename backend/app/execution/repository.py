@@ -9,7 +9,14 @@ from sqlalchemy.orm import Session
 
 from backend.app.models import ExecutionEventModel, ExecutionTaskModel, SessionLocal
 
-from .contracts import ExecutionEventView, ExecutionPlan, ExecutionTaskView, TERMINAL_EXECUTION_STATUSES
+from .contracts import (
+    TERMINAL_EXECUTION_STATUSES,
+    ExecutionEventView,
+    ExecutionKind,
+    ExecutionPlan,
+    ExecutionStatus,
+    ExecutionTaskView,
+)
 
 
 class ExecutionRepository:
@@ -119,6 +126,8 @@ class ExecutionRepository:
             if updated != 1:
                 return None
             row = db.query(ExecutionTaskModel).filter(ExecutionTaskModel.id == candidate[0]).first()
+            if row is None:
+                return None
             view = self._view(row)
         except Exception:
             db.rollback()
@@ -294,8 +303,8 @@ class ExecutionRepository:
             id=row.id,
             project_id=row.project_id,
             user_id=row.user_id,
-            kind=row.kind,
-            status=row.status,
+            kind=ExecutionRepository._kind(row.kind),
+            status=ExecutionRepository._status(row.status),
             image=row.image,
             argv=list(row.argv or []),
             scan_profile=row.scan_profile,
@@ -310,3 +319,25 @@ class ExecutionRepository:
             started_at=row.started_at,
             finished_at=row.finished_at,
         )
+
+    @staticmethod
+    def _kind(value: str) -> ExecutionKind:
+        """把持久化任务类型规范为公开执行契约。"""
+        return "security_scan" if value == "security_scan" else "command"
+
+    @staticmethod
+    def _status(value: str) -> ExecutionStatus:
+        """把持久化状态规范为公开执行契约，未知状态安全降级为失败。"""
+        if value == "queued":
+            return "queued"
+        if value == "running":
+            return "running"
+        if value == "cancel_requested":
+            return "cancel_requested"
+        if value == "completed":
+            return "completed"
+        if value == "cancelled":
+            return "cancelled"
+        if value == "timed_out":
+            return "timed_out"
+        return "failed"

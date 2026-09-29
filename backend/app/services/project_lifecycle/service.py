@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-from backend.app.services.project_analysis.artifact_repository import AnalysisArtifactRepository
+from backend.app.services.project_analysis.artifact_repository import (
+    AnalysisArtifactRepository,
+)
 from backend.app.services.project_analysis.repository import ProjectRepository
 from backend.app.services.project_workspace import ProjectWorkspaceService
 

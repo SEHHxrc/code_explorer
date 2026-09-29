@@ -6,18 +6,23 @@ TEMPORARY CONTROL GROUP / 临时对照组：本路由包含盲态无图对照，
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator, Callable
 import json
 import time
+from collections.abc import AsyncIterator, Callable
 from typing import Any, TypeVar
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from backend.app.api.sse import sse_response
 
 from backend.app.agents.worker import agent_queue_worker
+from backend.app.api.sse import sse_response
 from backend.app.core.deps import get_current_user
-from backend.app.experiments import BlindReviewRequest, ComparisonRequest, ExperimentComparisonService, ExperimentError
+from backend.app.experiments import (
+    BlindReviewRequest,
+    ComparisonRequest,
+    ExperimentComparisonService,
+    ExperimentError,
+)
 
 router = APIRouter(prefix="/api/experiments", tags=["Experiments"])
 T = TypeVar("T")

@@ -1,23 +1,20 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import hashlib
 import os
-import threading
-import traceback
-from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import networkx as nx
-from tree_sitter_language_pack import get_parser
 
-from ..ast_utils import *
-from ..constants import *
-from ..context import FileContext
+from backend.app.services.program_index import ProgramIdentity
+
+from ..ast_utils import _split_qualified
+from ..constants import CLASS_LIKE, GRAPH_LEVEL
 from ..handlers import BaseHandler, get_handler
-from ..models import Definition, ImportRec, Reference, ReferenceResolution
+from ..models import Reference, ReferenceResolution
+from ..state import DependencyAnalyzerState
 
-class GraphResolutionPhase:
+
+class GraphResolutionPhase(DependencyAnalyzerState):
     """图阶段：生成节点并解析定义、重写、调用和外部依赖边。"""
 
     def _build_graph_nodes(self) -> None:
@@ -64,7 +61,8 @@ class GraphResolutionPhase:
                 target = self._canonical(base)
                 if not graph.has_node(target) or target == source:
                     continue
-                base_kind = self.definitions.get(base).kind if base in self.definitions else "class"
+                base_definition = self.definitions.get(base)
+                base_kind = base_definition.kind if base_definition is not None else "class"
                 relation = "implements" if base_kind in ("interface", "trait") else "inherits"
                 if self.definitions.get(source) is not None and self.definitions[source].lang == "go" \
                         and base_kind in ("struct", "type"):
@@ -116,6 +114,9 @@ class GraphResolutionPhase:
             if target is None:
                 self.stats["unresolved"] += 1
                 self.global_index["unresolved"].append({
+                    "callsite_id": ProgramIdentity.callsite_id(
+                        ref.file, ref.line, ref.column, ref.end_line, ref.end_column
+                    ),
                     "file": ref.file,
                     "line": ref.line,
                     "column": ref.column,
@@ -135,7 +136,7 @@ class GraphResolutionPhase:
                 continue
             target_def = self.definitions.get(target)
             if ref.kind == "new" or (target_def is not None and target_def.kind in CLASS_LIKE):
-                relation = "instantiates"          # Python/TS 里 ``Foo()`` 就是实例化
+                relation = "instantiates"  # Python/TS 里 ``Foo()`` 就是实例化
             else:
                 relation = "calls"
             graph.add_edge(
@@ -154,7 +155,14 @@ class GraphResolutionPhase:
     @staticmethod
     def _reference_edge_attributes(ref: Reference, resolution: ReferenceResolution) -> dict:
         """把引用位置和解析不确定性转换为可持久化边属性。"""
+        callsite_id = ProgramIdentity.callsite_id(
+            ref.file, ref.line, ref.column, ref.end_line, ref.end_column
+        )
+        location_id = ProgramIdentity.location_id(
+            ref.file, ref.line, ref.column, ref.end_line, ref.end_column
+        )
         return {
+            "callsite_id": callsite_id,
             "dispatch": resolution.dispatch,
             "target_scope": resolution.target_scope,
             "resolution_method": resolution.resolution_method,
@@ -164,6 +172,8 @@ class GraphResolutionPhase:
             "unresolved_reason": resolution.unresolved_reason,
             "origin": "inferred",
             "callsite": {
+                "id": callsite_id,
+                "location_id": location_id,
                 "path": ref.file,
                 "line": ref.line,
                 "column": ref.column,
@@ -178,20 +188,10 @@ class GraphResolutionPhase:
         }
 
     @staticmethod
-    def _reference_edge_id(
-        ref: Reference,
-        source: str,
-        target: str,
-        relation: str,
-        resolution: ReferenceResolution,
-    ) -> str:
+    def _reference_edge_id(ref: Reference, source: str, target: str, relation: str, resolution: ReferenceResolution,) -> str:
         """根据源码位置和解析目标生成跨运行稳定的引用边标识。"""
         material = "\x1f".join((
-            ref.file,
-            str(ref.line),
-            str(ref.column),
-            str(ref.end_line),
-            str(ref.end_column),
+            ProgramIdentity.callsite_id(ref.file, ref.line, ref.column, ref.end_line, ref.end_column),
             source,
             target,
             relation,
@@ -249,14 +249,14 @@ class GraphResolutionPhase:
 
     @staticmethod
     def _resolution(
-        target: str | None,
-        method: str,
-        *,
-        dispatch: str = "direct",
-        target_scope: str = "project",
-        target_certainty: str = "must",
-        confidence: str = "high",
-        unresolved_reason: str | None = None,
+            target: str | None,
+            method: str,
+            *,
+            dispatch: str = "direct",
+            target_scope: str = "project",
+            target_certainty: str = "must",
+            confidence: str = "high",
+            unresolved_reason: str | None = None,
     ) -> ReferenceResolution:
         """构造稳定的解析结果，避免把范围、派发与置信度混为一个字段。"""
         return ReferenceResolution(
@@ -290,7 +290,7 @@ class GraphResolutionPhase:
             head = parts[0]
 
             if handler and head in handler.self_names and class_fqn:
-                if len(parts) > 1:                       # self.field.method()
+                if len(parts) > 1:  # self.field.method()
                     attr_type = self._lookup_attr_type(class_fqn, parts[1])
                     attr_class = self._resolve_type(file, attr_type, lang) if attr_type else ""
                     if attr_class:

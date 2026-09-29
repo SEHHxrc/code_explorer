@@ -109,9 +109,29 @@ class ProjectAnalysisServiceTests(unittest.TestCase):
 
             self.assertEqual(1, result.dependency_graph.summary.edge_count)
             self.assertIn("links", artifacts.saved[1]["dependency_graph"])
+            self.assertIn("semantic_index", artifacts.saved[1])
+            self.assertEqual(
+                "1.1",
+                artifacts.saved[1]["analysis_metadata"]["semantic_index_schema_version"],
+            )
             self.assertEqual(1, artifacts.saved[1]["analysis_statistics"]["files_parsed"])
             self.assertEqual(1, artifacts.saved[1]["analysis_diagnostics"]["coverage"]["parsed_files"])
             self.assertEqual("2.0", artifacts.saved[1]["analysis_metadata"]["schema_version"])
+            self.assertIn("security_evidence", artifacts.saved[1])
+            self.assertTrue(artifacts.saved[1]["security_evidence"]["completed"])
+            self.assertFalse(artifacts.saved[1]["security_evidence"]["dataflow_verified"])
+            self.assertEqual(
+                "2.3",
+                artifacts.saved[1]["analysis_metadata"]["security_schema_version"],
+            )
+            self.assertEqual(
+                "1.3",
+                artifacts.saved[1]["analysis_metadata"]["security_ir_version"],
+            )
+            self.assertEqual(
+                artifacts.saved[1]["security_evidence"]["rule_packs"],
+                artifacts.saved[1]["analysis_metadata"]["security_rule_packs"],
+            )
             self.assertEqual("local_upload://sample.zip", projects.created["source"])
             self.assertTrue(Path(projects.created["local_path"]).exists())
             self.assertFalse(any((Path(temp) / "users" / "user-1" / ".staging").glob("*")))

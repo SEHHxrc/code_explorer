@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """项目导入、模型诊断、概览和清理的 HTTP 路由。"""
 
 import math
@@ -22,8 +21,14 @@ from backend.app.services.project_analysis import (
     ProjectSource,
 )
 from backend.app.services.project_analysis.repository import ProjectRepository
-from backend.app.services.project_lifecycle import ProjectLifecycleError, ProjectLifecycleService
-from backend.app.services.project_inventory import ProjectInventoryError, ProjectInventoryService
+from backend.app.services.project_inventory import (
+    ProjectInventoryError,
+    ProjectInventoryService,
+)
+from backend.app.services.project_lifecycle import (
+    ProjectLifecycleError,
+    ProjectLifecycleService,
+)
 from backend.app.services.project_overview import generate_project_overview
 from backend.app.services.reports.overview_report import render_deterministic_overview
 
@@ -84,11 +89,12 @@ async def analyze_project(
             status_code=400,
             detail="Provide exactly one project source: repo_url or ZIP file.",
         )
-    source = (
-        ProjectSource.git(repo_url)
-        if repo_url
-        else ProjectSource.zip(file.file, file.filename)
-    )
+    if repo_url:
+        source = ProjectSource.git(repo_url)
+    else:
+        if file is None:
+            raise HTTPException(status_code=400, detail="ZIP file is required.")
+        source = ProjectSource.zip(file.file, file.filename)
     try:
         result = await project_analysis_service.analyze(
             AnalyzeProjectCommand(user_id=current_user["user_id"], source=source)

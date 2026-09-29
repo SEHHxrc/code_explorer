@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 from typing import Any, Literal
@@ -15,6 +14,12 @@ class Evidence(BaseModel):
 
 CommandOrigin = Literal["observed", "inferred", "generated", "documented"]
 CommandPurpose = Literal["serve", "run", "build", "test", "worker", "unknown"]
+ExecutionProfile = Literal["development", "test", "production", "unknown"]
+CommandAuthority = Literal[
+    "trusted_operator", "service_manager", "ci_pipeline",
+    "administrative_user", "remote_user_influenced", "unknown",
+]
+Confidence = Literal["high", "medium", "low"]
 
 
 class CommandFact(BaseModel):
@@ -28,13 +33,10 @@ class CommandFact(BaseModel):
     source_kind: str = Field(max_length=100)
     path: str | None = Field(default=None, max_length=1000)
     line: int | None = Field(default=None, ge=1)
-    execution_profile: Literal["development", "test", "production", "unknown"] = "unknown"
-    authority: Literal[
-        "trusted_operator", "service_manager", "ci_pipeline",
-        "administrative_user", "remote_user_influenced", "unknown",
-    ] = "unknown"
+    execution_profile: ExecutionProfile = "unknown"
+    authority: CommandAuthority = "unknown"
     shell_interpreted: bool = False
-    confidence: Literal["high", "medium", "low"] = "high"
+    confidence: Confidence = "high"
 
 
 class Entrypoint(BaseModel):

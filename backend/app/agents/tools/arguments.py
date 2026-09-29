@@ -12,7 +12,6 @@ class StrictArguments(BaseModel):
 
 class EmptyArguments(StrictArguments):
     """表示不接收业务参数的工具请求。"""
-    pass
 
 
 class SearchArguments(StrictArguments):
@@ -33,3 +32,11 @@ class DependencyArguments(StrictArguments):
     node_id: str = Field(min_length=1, max_length=1000)
     direction: Literal["both", "incoming", "outgoing"] = "both"
     limit: int = Field(default=30, ge=1, le=100)
+
+
+class SecurityEvidenceArguments(StrictArguments):
+    """分页查询面向 LLM 的静态安全候选。"""
+
+    query: str = Field(default="", max_length=200)
+    offset: int = Field(default=0, ge=0, le=10_000)
+    limit: int = Field(default=10, ge=1, le=25)

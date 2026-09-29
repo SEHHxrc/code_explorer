@@ -7,7 +7,11 @@ import uuid
 
 from backend.app.agents.contracts import AgentRunRequest
 from backend.app.agents.run_store import AgentRunStore
-from backend.app.experiments.contracts import BlindReviewRequest, ComparisonRequest, ExperimentError
+from backend.app.experiments.contracts import (
+    BlindReviewRequest,
+    ComparisonRequest,
+    ExperimentError,
+)
 from backend.app.experiments.metrics import collect_run_metrics
 from backend.app.experiments.repository import ComparisonRecord, ExperimentRepository
 from backend.app.llm.registry import get_model_configuration

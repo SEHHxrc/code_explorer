@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import json
@@ -9,8 +8,17 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-from backend.app.schemas.manifest import CommandFact, Entrypoint, Evidence, ProjectManifest
-
+from backend.app.schemas.manifest import (
+    CommandAuthority,
+    CommandFact,
+    CommandOrigin,
+    CommandPurpose,
+    Confidence,
+    Entrypoint,
+    Evidence,
+    ExecutionProfile,
+    ProjectManifest,
+)
 
 LANGUAGE_BY_EXTENSION = {
     ".py": "Python", ".pyi": "Python", ".js": "JavaScript",
@@ -380,15 +388,15 @@ class ProjectManifestBuilder:
     def _command_fact(
         command: str,
         *,
-        purpose: str,
-        origin: str,
+        purpose: CommandPurpose,
+        origin: CommandOrigin,
         source_kind: str,
         path: str | None = None,
         line: int | None = None,
-        authority: str = "unknown",
+        authority: CommandAuthority = "unknown",
         shell_interpreted: bool | None = None,
-        execution_profile: str = "unknown",
-        confidence: str = "high",
+        execution_profile: ExecutionProfile = "unknown",
+        confidence: Confidence = "high",
     ) -> CommandFact:
         """把命令转换为带来源的结构化事实；不在此处进行风险判定。"""
         normalized = command.strip()
@@ -407,7 +415,7 @@ class ProjectManifestBuilder:
                 argv = []
         launcher = Path(argv[0]).name if argv else None
         if shell_interpreted is None:
-            shell_interpreted = bool(re.search(r"(?:&&|\|\||[|;`]|\$\(|\$\{)", normalized))
+            shell_interpreted = bool(re.search(r"&&|\|\||[|;`]|\$\(|\$\{", normalized))
         return CommandFact(
             command=normalized,
             purpose=purpose,

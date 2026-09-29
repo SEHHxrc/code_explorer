@@ -1,7 +1,7 @@
-# -*- coding: utf-8 -*-
+"""语言处理器注册表与线程安全实例缓存。"""
+
 from __future__ import annotations
 
-"""语言处理器注册表与线程安全实例缓存。"""
 import threading
 
 from .base import BaseHandler
@@ -42,6 +42,14 @@ def get_handler(lang: str) -> BaseHandler | None:
     return handler
 
 __all__ = [
-    "BaseHandler", "PythonHandler", "JavaScriptHandler", "TypeScriptHandler",
-    "GoHandler", "JavaHandler", "CHandler", "CppHandler", "RustHandler", "get_handler",
+    "BaseHandler",
+    "CHandler",
+    "CppHandler",
+    "GoHandler",
+    "JavaHandler",
+    "JavaScriptHandler",
+    "PythonHandler",
+    "RustHandler",
+    "TypeScriptHandler",
+    "get_handler",
 ]

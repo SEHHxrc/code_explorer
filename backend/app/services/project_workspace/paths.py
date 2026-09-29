@@ -6,7 +6,6 @@ import os
 import re
 from pathlib import Path
 
-
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 

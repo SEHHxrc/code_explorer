@@ -1,9 +1,7 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import re
 from pathlib import Path
-
 
 MAX_SOURCE_BYTES = 1024 * 1024
 MAX_READ_LINES = 200

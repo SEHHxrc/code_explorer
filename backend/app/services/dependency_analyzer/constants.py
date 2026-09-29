@@ -1,9 +1,15 @@
-# -*- coding: utf-8 -*-
 """多语言分析器共享的语言、符号和图谱常量。"""
 from __future__ import annotations
 
 import builtins as _py_builtins
 import sys
+
+from backend.app.services.syntax_analysis import (
+    C_HEADER_EXTENSIONS,
+    CPP_HEADER_MARKERS,
+    IGNORED_SOURCE_DIRECTORIES,
+    SOURCE_LANGUAGE_BY_EXTENSION,
+)
 
 SKIP_CHILDREN = 1
 
@@ -132,31 +138,10 @@ NOISE_NAMES = frozenset({
     "tmp", "temp", "ret", "res", "val", "err", "ok", "buf", "idx", "_",
 })
 
-IGNORED_DIRS = frozenset({
-    ".git", ".svn", ".hg", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache",
-    "venv", ".venv", "env", "dist", "build", "out", "target", "vendor", "third_party",
-    ".idea", ".vscode", ".next", ".nuxt", "coverage", "bin", "obj", "Pods", ".tox",
-})
-
-EXT_MAP = {
-    ".py": "python", ".pyi": "python",
-    ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript",
-    ".ts": "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript",
-    ".go": "go",
-    ".rs": "rust",
-    ".java": "java",
-    ".c": "c", ".h": "c",
-    ".cpp": "cpp", ".cc": "cpp", ".cxx": "cpp", ".c++": "cpp",
-    ".hpp": "cpp", ".hh": "cpp", ".hxx": "cpp", ".h++": "cpp",
-}
-
-C_HEADER_EXTS = frozenset({".h", ".hpp", ".hh", ".hxx", ".h++"})
-
-# 出现在 .h 里即可判定为 C++ 的标志
-CPP_MARKERS = (b"namespace ", b"class ", b"template<", b"template <", b"public:", b"private:",
-               b"protected:", b"::", b"std::", b"virtual ", b"operator", b"nullptr")
+IGNORED_DIRS = IGNORED_SOURCE_DIRECTORIES
+EXT_MAP = SOURCE_LANGUAGE_BY_EXTENSION
+C_HEADER_EXTS = C_HEADER_EXTENSIONS
+CPP_MARKERS = CPP_HEADER_MARKERS
 
 # 表示“该变量的类型 = 某次调用的结果”，阶段三再用返回值类型回填
 CALL_TYPE_PREFIX = "@call:"
-
-__all__ = [name for name in globals() if not name.startswith('__')]

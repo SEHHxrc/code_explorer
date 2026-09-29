@@ -5,9 +5,12 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from types import TracebackType
-from typing import Callable
+from typing import Callable, Literal
 
-from backend.app.services.project_workspace import ProjectWorkspaceService, WorkspaceOperation
+from backend.app.services.project_workspace import (
+    ProjectWorkspaceService,
+    WorkspaceOperation,
+)
 
 from .artifact_repository import AnalysisArtifactRepository
 
@@ -46,11 +49,16 @@ class ProjectAnalysisTransaction:
         self._compensations: list[_Compensation] = []
         self._committed = False
 
-    def __enter__(self) -> "ProjectAnalysisTransaction":
+    def __enter__(self) -> ProjectAnalysisTransaction:
         """进入项目分析补偿事务并返回自身。"""
         return self
 
-    def __exit__(self, exc_type: type[BaseException] | None, _exc: BaseException | None, _traceback: TracebackType | None) -> bool:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        _exc: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> Literal[False]:
         """离开事务时按异常和提交状态执行补偿清理。"""
         if not self._committed:
             self.rollback()

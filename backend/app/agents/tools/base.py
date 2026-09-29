@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Type
+from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
@@ -21,19 +21,18 @@ class ToolContext:
     user_id: str
     project_root: Path
     artifact: dict[str, Any]
-    evidence_index: ProjectEvidenceIndex | None = None
+    evidence_index: ProjectEvidenceIndex = field(init=False)
 
     def __post_init__(self) -> None:
         """校验数据类实例在初始化后的约束。"""
-        if self.evidence_index is None:
-            object.__setattr__(self, "evidence_index", ProjectEvidenceIndex(self.artifact))
+        object.__setattr__(self, "evidence_index", ProjectEvidenceIndex(self.artifact))
 
 
 class AgentTool(ABC):
     """智能体只读工具的抽象接口。"""
     name: str
     description: str
-    arguments_model: Type[BaseModel]
+    arguments_model: type[BaseModel]
 
     def schema(self) -> dict[str, Any]:
         """返回工具名称、说明和严格 JSON 参数模式。"""
@@ -59,7 +58,7 @@ class AgentTool(ABC):
             raise ValueError(f"Invalid arguments for {self.name}") from exc
 
     @abstractmethod
-    async def execute(self, context: ToolContext, arguments: BaseModel) -> ToolResult:
+    async def execute(self, context: ToolContext, arguments) -> ToolResult:
         """执行工具请求并返回结构化结果和证据。"""
         raise NotImplementedError
 

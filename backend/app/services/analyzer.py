@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 import os
 from typing import Any
 
@@ -6,7 +5,7 @@ from typing import Any
 def build_file_tree_with_symbols(target_dir: str, file_symbols_map: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
     """输入项目目录和文件符号映射，递归输出附带符号列表的文件树。"""
 
-    def _scan(root_path: str) -> dict[str, Any]:
+    def _scan(root_path: str) -> list[dict[str, Any]]:
         """扫描当前目录并返回按名称组织的文件或子目录节点。"""
         tree = []
         try:

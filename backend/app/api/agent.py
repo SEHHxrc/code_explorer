@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import uuid
@@ -14,7 +13,6 @@ from backend.app.api.sse import persisted_events, sse_response
 from backend.app.core.deps import get_current_user
 from backend.app.services.artifact_store import load_analysis_artifact
 from backend.app.services.project_analysis.repository import ProjectRepository
-
 
 router = APIRouter(prefix="/api/agent", tags=["Agent"])
 projects = ProjectRepository()

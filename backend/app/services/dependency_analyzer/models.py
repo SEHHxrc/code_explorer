@@ -1,8 +1,9 @@
-# -*- coding: utf-8 -*-
+"""分析流水线使用的不可跨线程共享数据载体。"""
+
 from __future__ import annotations
 
-"""分析流水线使用的不可跨线程共享数据载体。"""
 from dataclasses import dataclass, field
+
 
 @dataclass
 class Definition:

@@ -8,7 +8,7 @@ from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
 graph = UnifiedCodeAnalyzer(project_root, max_workers=4).run_full_analysis()
 ```
 
-构造参数包含项目根目录、并行文件数，以及可选的内置符号/标准库过滤策略；`run_full_analysis()` 输出符号、无损 `MultiDiGraph`、统计和诊断字典，`get_progress()` 返回当前阶段进度。调用边带有调用点、解析方法、目标范围、`must/may`、置信度和截断信息；未解析引用不会被静默丢弃。
+构造参数包含项目根目录、并行文件数，以及可选的内置符号/标准库过滤策略；`run_full_analysis()` 输出符号、无损 `MultiDiGraph`、公共 `semantic_index`、统计和诊断字典，`get_progress()` 返回当前阶段进度。调用边带有调用点、解析方法、目标范围、`must/may`、置信度和截断信息；未解析引用不会被静默丢弃。所有引用边通过 `program_index.ProgramIdentity` 生成与目标无关的 `callsite_id`，一个虚调用点的多个目标边共享该身份，但各自保留独立 `edge_id`。语义索引由同一次解析的定义、引用、变量类型表和调用边投影生成，不会为了共享事实再次解析源码。
 
 ## 阶段与依赖方向
 
@@ -30,7 +30,7 @@ CollectionPhase
 | `models.py` | `Definition`、`Reference`、`ReferenceResolution`、`ImportRec` 和作用域 `Frame`。 |
 | `context.py` / `FileContext` | 单文件源码、语法树、作用域栈、类型绑定和提取结果。 |
 | `constants.py` | 扩展名、语言标准库、内置符号和图节点映射。 |
-| `ast_utils.py` | Tree-sitter 节点字段、文本和类型提取工具。 |
+| `ast_utils.py` | 兼容导出层；通用节点读取和类型归一化来自 `services/syntax_analysis`。 |
 | `handlers/` | 按语言把语法节点提取成中间记录。 |
 | `phases/` | 建立全局索引并解析导入、类型、调用和图关系。 |
 | `__init__.py` | 仅导出 `UnifiedCodeAnalyzer`。 |
@@ -43,4 +43,8 @@ CollectionPhase
 4. 若模块解析规则不同，在 `phases/imports.py` 增加专用分支。
 5. 添加定义、调用、导入和标准库分类测试。
 
-分析器不会执行项目代码。持久化产物保留多重边，供后续安全路径计算；`project_analysis.GraphExchangeNormalizer` 只为前端聚合同类平行边，并通过 `occurrence_count` 保留调用次数。结构调用路径不等同于已经验证的数据流或污点路径。
+扩展名、忽略目录和 Parser 生命周期属于 `syntax_analysis` 公共层；语言 Handler、符号索引和
+调用目标解析仍属于本模块。新增语言时还必须为 ProgramGraph 注册相应 collector/adapter，
+注册表契约测试会阻止两个模块的语言集合静默分叉。
+
+分析器不会执行项目代码。持久化产物保留多重边，供后续安全路径计算；安全 IR 和未来数据流通过 `callsite_id`/`edge_id` 引用这些结构边，不会复制 caller-to-callee 关系。`project_analysis.GraphExchangeNormalizer` 只为前端聚合同类平行边，并通过 `occurrence_count` 保留调用次数。结构调用路径不等同于已经验证的数据流或污点路径。

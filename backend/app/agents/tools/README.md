@@ -24,6 +24,7 @@
 | `source.py` | 受限源码读取与全文搜索工具。 |
 | `graph.py` | 依赖邻居查询工具。 |
 | `evidence_index.py` | `ProjectEvidenceIndex`：为符号、节点和入/出边建立一次性索引，避免每轮重复扫描。 |
+| `security.py` | `get_static_security_evidence`：按问题和分页参数读取自包含安全候选及省略信息。 |
 
 ## 工具调用约束
 

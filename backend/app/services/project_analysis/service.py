@@ -8,12 +8,18 @@ from collections.abc import Callable
 from typing import Any
 
 from backend.app.services.analyzer import build_file_tree_with_symbols
-from backend.app.services.code_intelligence.manifest_builder import ProjectManifestBuilder
+from backend.app.services.code_intelligence.manifest_builder import (
+    ProjectManifestBuilder,
+)
 from backend.app.services.code_intelligence.repo_map_builder import build_repo_map
 from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
 from backend.app.services.project_workspace import ProjectWorkspaceService
 from backend.app.services.project_workspace.exceptions import WorkspaceError
 from backend.app.services.reports.overview_report import render_deterministic_overview
+from backend.app.services.security_analysis import (
+    SecurityAnalysisService,
+    SecurityEvidencePack,
+)
 
 from .artifact_repository import AnalysisArtifactRepository
 from .contracts import AnalyzeProjectCommand, ProjectAnalysisResult
@@ -41,6 +47,7 @@ class ProjectAnalysisService:
         graph_normalizer: GraphExchangeNormalizer | None = None,
         workspace_service: ProjectWorkspaceService | None = None,
         analyzer_factory: Callable[..., Any] = UnifiedCodeAnalyzer,
+        security_analysis_service: SecurityAnalysisService | None = None,
     ) -> None:
         """注入项目仓储、产物仓储、图规范化器、工作区和分析器工厂。"""
         self._projects = project_repository or ProjectRepository()
@@ -48,6 +55,7 @@ class ProjectAnalysisService:
         self._graph_normalizer = graph_normalizer or GraphExchangeNormalizer()
         self._workspace = workspace_service or ProjectWorkspaceService()
         self._analyzer_factory = analyzer_factory
+        self._security_analysis = security_analysis_service or SecurityAnalysisService()
 
     async def analyze(self, command: AnalyzeProjectCommand) -> ProjectAnalysisResult:
         """在线程池执行阻塞导入和静态分析，避免阻塞 FastAPI 事件循环。"""
@@ -64,6 +72,13 @@ class ProjectAnalysisService:
                 analysis = self._run_analysis(str(operation.source_root), command.max_workers)
                 raw_graph = analysis["dependency_graph"]
                 file_symbols = analysis["file_symbols"]
+                semantic_index = analysis.get("semantic_index") or {}
+                security_evidence, semantic_index = self._run_security_analysis(
+                    project_root=str(operation.source_root),
+                    dependency_graph=raw_graph,
+                    diagnostics=analysis.get("diagnostics") or {},
+                    semantic_index=semantic_index,
+                )
                 file_tree = build_file_tree_with_symbols(str(operation.source_root), file_symbols)
                 manifest = ProjectManifestBuilder(str(operation.source_root)).build(raw_graph)
                 repo_map = build_repo_map(manifest, file_symbols)
@@ -89,6 +104,7 @@ class ProjectAnalysisService:
                         "overview": overview,
                         "file_symbols": file_symbols,
                         "dependency_graph": raw_graph,
+                        "semantic_index": semantic_index,
                         "analysis_statistics": analysis.get("stats") or {},
                         "analysis_diagnostics": analysis.get("diagnostics") or {},
                         "analysis_metadata": {
@@ -99,9 +115,17 @@ class ProjectAnalysisService:
                                 type(self._analyzer_factory).__name__,
                             ),
                             "graph_kind": "multidigraph" if raw_graph.get("multigraph") else "digraph",
-                            "security_evidence_kind": "structural",
-                            "dataflow_verified": False,
+                            "security_evidence_kind": "hybrid_static",
+                            "semantic_index_schema_version": str(
+                                semantic_index.get("schema_version") or ""
+                            ),
+                            "security_schema_version": security_evidence.schema_version,
+                            "security_ir_version": security_evidence.ir_version,
+                            "security_rule_packs": security_evidence.rule_packs,
+                            "dataflow_verified": security_evidence.dataflow_verified,
+                            "security_evidence_completed": security_evidence.completed,
                         },
+                        "security_evidence": security_evidence.model_dump(),
                     })
                 except Exception as exc:
                     raise ArtifactPersistenceError() from exc
@@ -140,14 +164,48 @@ class ProjectAnalysisService:
                 raise TypeError("Analyzer returned an invalid result contract")
             stats = result.get("stats") or {}
             diagnostics = result.get("diagnostics") or {}
-            if not isinstance(stats, dict) or not isinstance(diagnostics, dict):
+            semantic_index = result.get("semantic_index") or {}
+            if (
+                not isinstance(stats, dict)
+                or not isinstance(diagnostics, dict)
+                or not isinstance(semantic_index, dict)
+            ):
                 raise TypeError("Analyzer returned invalid diagnostics")
             return {
                 "dependency_graph": raw_graph,
                 "file_symbols": file_symbols,
+                "semantic_index": semantic_index,
                 "stats": stats,
                 "diagnostics": diagnostics,
             }
         except Exception as exc:
             logger.exception("Dependency analysis failed for imported project")
             raise DependencyAnalysisError() from exc
+
+    def _run_security_analysis(
+        self,
+        *,
+        project_root: str,
+        dependency_graph: dict[str, Any],
+        diagnostics: dict[str, Any],
+        semantic_index: dict[str, Any] | None = None,
+    ) -> tuple[SecurityEvidencePack, dict[str, Any]]:
+        """生成静态安全结构证据；失败时显式降级而不伪造空分析成功。"""
+        try:
+            return self._security_analysis.analyze_with_semantic_index(
+                project_root=project_root,
+                dependency_graph=dependency_graph,
+                analysis_diagnostics=diagnostics,
+                semantic_index=semantic_index,
+            )
+        except Exception:
+            logger.exception("Security structural evidence generation failed")
+            return (
+                SecurityEvidencePack(
+                    completed=False,
+                    limitations=[
+                        "静态安全结构证据生成失败；依赖分析产物仍可使用，但本项目没有可用的安全证据包。"
+                    ],
+                ),
+                semantic_index or {},
+            )

@@ -1,10 +1,15 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import json
 import uuid
 
-from backend.app.llm.base import ModelProvider, ModelResult, ModelTurn, ProviderCapabilities, ToolCall
+from backend.app.llm.base import (
+    ModelProvider,
+    ModelResult,
+    ModelTurn,
+    ProviderCapabilities,
+    ToolCall,
+)
 from backend.app.llm.http import post_json
 
 
@@ -93,11 +98,11 @@ class OpenAIResponsesProvider(ModelProvider):
     @staticmethod
     def _extract_output_text(payload: dict) -> str:
         """输入原始 Responses 载荷，输出所有消息文本片段的合并结果。"""
-        chunks: list[str] = []
-        for item in payload.get("output", []):
-            if item.get("type") != "message":
-                continue
-            for content in item.get("content", []):
-                if content.get("type") == "output_text" and content.get("text"):
-                    chunks.append(content["text"])
+        chunks = [
+            content["text"]
+            for item in payload.get("output", [])
+            if item.get("type") == "message"
+            for content in item.get("content", [])
+            if content.get("type") == "output_text" and content.get("text")
+        ]
         return "\n".join(chunks)

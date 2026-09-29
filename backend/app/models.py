@@ -1,15 +1,17 @@
-# -*- coding: utf-8 -*-
 from datetime import datetime, timezone
-from sqlalchemy import Boolean, Column, DateTime, Integer, JSON, String, Text, create_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from typing import Any
+
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, create_engine
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///./database.sqlite"
 engine = create_engine(
     SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False}
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-Base = declarative_base()
+
+class Base(DeclarativeBase):
+    """SQLAlchemy 2 声明式模型基类。"""
 
 
 class ProjectModel(Base):
@@ -20,14 +22,16 @@ class ProjectModel(Base):
     """
     __tablename__ = "projects"
 
-    id = Column(String, primary_key=True, index=True)
-    user_id = Column(
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    user_id: Mapped[str] = mapped_column(
         String, index=True, default="default_user"
     )  # 预留的用户隔离字段
-    repo_url = Column(String, nullable=False)
-    local_path = Column(String, nullable=False)
-    file_tree = Column(JSON, nullable=True)  # 存储静态文件树
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    repo_url: Mapped[str] = mapped_column(String, nullable=False)
+    local_path: Mapped[str] = mapped_column(String, nullable=False)
+    file_tree: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
 
 
 class AgentRunModel(Base):
@@ -38,19 +42,21 @@ class AgentRunModel(Base):
     """
     __tablename__ = "agent_runs"
 
-    id = Column(String, primary_key=True, index=True)
-    project_id = Column(String, nullable=False, index=True)
-    user_id = Column(String, nullable=False, index=True)
-    question = Column(Text, nullable=False)
-    status = Column(String, nullable=False, default="queued", index=True)
-    use_model = Column(Boolean, nullable=False, default=True)
-    max_steps = Column(Integer, nullable=False, default=4)
-    provider = Column(String, nullable=True)
-    model = Column(String, nullable=True)
-    answer = Column(Text, nullable=True)
-    error = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="queued", index=True)
+    use_model: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    max_steps: Mapped[int] = mapped_column(Integer, nullable=False, default=4)
+    provider: Mapped[str | None] = mapped_column(String, nullable=True)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    answer: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
@@ -62,13 +68,17 @@ class AgentJobModel(Base):
 
     __tablename__ = "agent_jobs"
 
-    run_id = Column(String, primary_key=True, index=True)
-    strategy = Column(String, nullable=False, default="default", index=True)
-    worker_id = Column(String, nullable=True, index=True)
-    cancel_requested = Column(Boolean, nullable=False, default=False)
-    attempts = Column(Integer, nullable=False, default=0)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    run_id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    strategy: Mapped[str] = mapped_column(String, nullable=False, default="default", index=True)
+    worker_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    cancel_requested: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
 
 
 class AgentEventModel(Base):
@@ -79,28 +89,32 @@ class AgentEventModel(Base):
     """
     __tablename__ = "agent_events"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    run_id = Column(String, nullable=False, index=True)
-    sequence = Column(Integer, nullable=False)
-    event_type = Column(String, nullable=False, index=True)
-    payload = Column(JSON, nullable=False, default=dict)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
 
 class ExperimentComparisonModel(Base):
     """持久化一组图增强与临时无图对照运行的盲态配对关系。"""
 
     __tablename__ = "experiment_comparisons"
 
-    id = Column(String, primary_key=True, index=True)
-    project_id = Column(String, nullable=False, index=True)
-    user_id = Column(String, nullable=False, index=True)
-    question = Column(Text, nullable=False)
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    question: Mapped[str] = mapped_column(Text, nullable=False)
     # TEMPORARY CONTROL GROUP / 临时对照组：图增强胜出后随实验表迁移删除。
-    baseline_run_id = Column(String, nullable=False, index=True)
-    graph_run_id = Column(String, nullable=False, index=True)
-    blind_order = Column(JSON, nullable=False)
-    execution_order = Column(JSON, nullable=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    baseline_run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    graph_run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    blind_order: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
+    execution_order: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
 
 
 class ExperimentReviewModel(Base):
@@ -108,39 +122,45 @@ class ExperimentReviewModel(Base):
 
     __tablename__ = "experiment_reviews"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    comparison_id = Column(String, nullable=False, index=True)
-    user_id = Column(String, nullable=False, index=True)
-    preferred_lane = Column(String, nullable=False)
-    scores = Column(JSON, nullable=False, default=dict)
-    notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    comparison_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    preferred_lane: Mapped[str] = mapped_column(String, nullable=False)
+    scores: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
 
 class ExecutionTaskModel(Base):
     """持久化由独立 Worker 认领的隔离容器任务。"""
 
     __tablename__ = "execution_tasks"
 
-    id = Column(String, primary_key=True, index=True)
-    project_id = Column(String, nullable=False, index=True)
-    user_id = Column(String, nullable=False, index=True)
-    kind = Column(String, nullable=False)
-    image = Column(String, nullable=False)
-    argv = Column(JSON, nullable=False)
-    scan_profile = Column(String, nullable=True)
-    status = Column(String, nullable=False, default="queued", index=True)
-    timeout_seconds = Column(Integer, nullable=False)
-    cpu_limit = Column(String, nullable=False)
-    memory_mb = Column(Integer, nullable=False)
-    pids_limit = Column(Integer, nullable=False)
-    worker_id = Column(String, nullable=True)
-    exit_code = Column(Integer, nullable=True)
-    error = Column(Text, nullable=True)
-    output_truncated = Column(Boolean, nullable=False, default=False)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    started_at = Column(DateTime, nullable=True)
-    finished_at = Column(DateTime, nullable=True)
+    id: Mapped[str] = mapped_column(String, primary_key=True, index=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    image: Mapped[str] = mapped_column(String, nullable=False)
+    argv: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    scan_profile: Mapped[str | None] = mapped_column(String, nullable=True)
+    status: Mapped[str] = mapped_column(String, nullable=False, default="queued", index=True)
+    timeout_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    cpu_limit: Mapped[str] = mapped_column(String, nullable=False)
+    memory_mb: Mapped[int] = mapped_column(Integer, nullable=False)
+    pids_limit: Mapped[int] = mapped_column(Integer, nullable=False)
+    worker_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    exit_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class ExecutionEventModel(Base):
@@ -148,12 +168,14 @@ class ExecutionEventModel(Base):
 
     __tablename__ = "execution_events"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    task_id = Column(String, nullable=False, index=True)
-    sequence = Column(Integer, nullable=False)
-    event_type = Column(String, nullable=False, index=True)
-    payload = Column(JSON, nullable=False, default=dict)
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    event_type: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(timezone.utc)
+    )
 
 
 def init_db() -> None:

@@ -10,6 +10,7 @@ from backend.app.schemas.dependency_graph import (
     DependencyGraphDTO,
     GraphEdgeDTO,
     GraphNodeDTO,
+    GraphScope,
     GraphSummaryDTO,
 )
 
@@ -206,7 +207,7 @@ class GraphExchangeNormalizer:
         return normalized or None
 
     @staticmethod
-    def _scope(node_id: str, level: str) -> str:
+    def _scope(node_id: str, level: str) -> GraphScope:
         """把后端节点层级映射为交换协议作用域。"""
         lowered_id = node_id.lower()
         lowered_level = level.lower()

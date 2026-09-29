@@ -1,22 +1,17 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import os
-import threading
 import traceback
-from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import networkx as nx
-from tree_sitter_language_pack import get_parser
+import tree_sitter
 
-from ..ast_utils import *
-from ..constants import *
+from ..constants import CPP_MARKERS, EXT_MAP, IGNORED_DIRS, SKIP_CHILDREN
 from ..context import FileContext
 from ..handlers import get_handler
-from ..models import Definition, ImportRec, Reference
+from ..state import DependencyAnalyzerState
 
-class CollectionPhase:
+
+class CollectionPhase(DependencyAnalyzerState):
     """收集阶段：扫描文件、并发解析语法树并合并单文件上下文。"""
 
     def _collect_files(self) -> list[str]:
@@ -73,20 +68,14 @@ class CollectionPhase:
 
     def _get_parser(self, lang: str) -> tree_sitter.Parser:
         """获取并缓存当前语言的 Tree-sitter 解析器。"""
-        cache = getattr(self._tls, "parsers", None)
-        if cache is None:
-            cache = {}
-            self._tls.parsers = cache
-        parser = cache.get(lang)
-        if parser is None:
-            parser = get_parser(lang)
-            cache[lang] = parser
-        return parser
+        return self._parser_pool.get(lang)
 
     def _analyze_file(self, full_path: str) -> FileContext | None:
         """解析单个源码文件并返回独立文件上下文。"""
         rel_path = os.path.relpath(full_path, self.project_root).replace("\\", "/")
         lang = self._detect_lang(full_path)
+        if lang is None:
+            return None
         ctx = None
         try:
             handler = get_handler(lang)
@@ -150,13 +139,11 @@ class CollectionPhase:
                 for _ in range(pushed):
                     ctx.pop()
                 continue
-            for _ in range(pushed):
-                stack.append((node, True))
+            stack.extend((node, True) for _ in range(pushed))
             # 叶子节点占绝大多数，先看计数可以省掉一次 list 构造
             if node.named_child_count:
                 children = node.named_children
-                for index in range(len(children) - 1, -1, -1):
-                    stack.append((children[index], False))
+                stack.extend((child, False) for child in reversed(children))
 
     def _merge_contexts(self, contexts: list[FileContext]) -> None:
         """合并各文件上下文并生成分析阶段统计。"""

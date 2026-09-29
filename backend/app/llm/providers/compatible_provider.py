@@ -1,10 +1,15 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import json
 import uuid
 
-from backend.app.llm.base import ModelProvider, ModelResult, ModelTurn, ProviderCapabilities, ToolCall
+from backend.app.llm.base import (
+    ModelProvider,
+    ModelResult,
+    ModelTurn,
+    ProviderCapabilities,
+    ToolCall,
+)
 from backend.app.llm.http import post_json
 
 

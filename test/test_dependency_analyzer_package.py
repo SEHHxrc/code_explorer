@@ -76,12 +76,42 @@ class DependencyAnalyzerPackageTests(unittest.TestCase):
         ]
         self.assertEqual([5, 6], sorted(edge["callsite"]["line"] for edge in call_edges))
         self.assertEqual(2, len({edge["id"] for edge in call_edges}))
+        self.assertEqual(2, len({edge["callsite_id"] for edge in call_edges}))
+        self.assertTrue(all(edge["callsite"]["id"] == edge["callsite_id"] for edge in call_edges))
+        self.assertTrue(all(edge["callsite"]["location_id"].startswith("location:") for edge in call_edges))
         self.assertTrue(all(edge["id"].startswith("ref:") for edge in call_edges))
         self.assertTrue(all(edge["resolution_method"] == "local_scope" for edge in call_edges))
         self.assertTrue(all(edge["target_certainty"] == "must" for edge in call_edges))
         unresolved = result["diagnostics"]["unresolved_references"]
         self.assertTrue(any(item["name"] == "missing_target" and item["line"] == 7 for item in unresolved))
+        self.assertTrue(all(item["callsite_id"].startswith("callsite:") for item in unresolved))
         self.assertEqual(1, result["diagnostics"]["coverage"]["unresolved_total"])
+
+    def test_virtual_targets_share_one_callsite_identity(self):
+        """One polymorphic expression may resolve to many edges but remains one callsite."""
+        source = (
+            "class Base:\n"
+            "    def work(self):\n"
+            "        pass\n\n"
+            "class Child(Base):\n"
+            "    def work(self):\n"
+            "        pass\n\n"
+            "def caller(item: Base):\n"
+            "    item.work()\n"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "app.py").write_text(source, encoding="utf-8")
+            result = UnifiedCodeAnalyzer(directory, max_workers=1).run_full_analysis()
+
+        edges = [
+            edge for edge in result["dependency_graph"]["links"]
+            if edge.get("relation") == "calls"
+            and str(edge.get("source", "")).endswith("::caller")
+        ]
+        self.assertEqual(2, len(edges))
+        self.assertEqual(2, len({edge["id"] for edge in edges}))
+        self.assertEqual(1, len({edge["callsite_id"] for edge in edges}))
+        self.assertEqual({"direct", "virtual"}, {edge["dispatch"] for edge in edges})
 
 
 if __name__ == "__main__":

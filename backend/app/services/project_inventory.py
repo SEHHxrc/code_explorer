@@ -9,11 +9,16 @@ from pathlib import Path
 from typing import Any
 
 from backend.app.schemas.manifest import ProjectManifest
-from backend.app.services.artifact_store import analysis_artifact_size, load_analysis_artifact
+from backend.app.services.artifact_store import (
+    analysis_artifact_size,
+    load_analysis_artifact,
+)
 from backend.app.services.project_analysis.graph_exchange import GraphExchangeNormalizer
-from backend.app.services.project_analysis.repository import ProjectRecord, ProjectRepository
+from backend.app.services.project_analysis.repository import (
+    ProjectRecord,
+    ProjectRepository,
+)
 from backend.app.services.project_workspace.paths import ProjectWorkspacePaths
-
 
 MAX_SIZE_SCAN_ENTRIES = 200_000
 

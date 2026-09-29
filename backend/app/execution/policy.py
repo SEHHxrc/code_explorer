@@ -8,7 +8,6 @@ from dataclasses import dataclass
 
 from .contracts import ExecutionError, ExecutionPlan, ExecutionTaskRequest
 
-
 _IMAGE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/:@-]{0,254}$")
 _SCAN_COMMANDS = {
     "bandit": ["bandit", "-r", "/workspace", "-f", "json"],
@@ -31,7 +30,7 @@ class ExecutionSettings:
     docker_binary: str = "docker"
 
     @classmethod
-    def from_env(cls) -> "ExecutionSettings":
+    def from_env(cls) -> ExecutionSettings:
         """读取环境变量；未配置镜像时保持禁用，而不是提供宽松默认值。"""
         allowed = frozenset(
             item.strip() for item in os.getenv("EXECUTION_ALLOWED_IMAGES", "").split(",") if item.strip()
@@ -72,10 +71,13 @@ class ExecutionPolicy:
     def resolve(self, request: ExecutionTaskRequest) -> ExecutionPlan:
         """验证镜像、参数与资源上限；失败时不创建任务。"""
         if request.kind == "security_scan":
-            image = self.settings.scan_images.get(request.scan_profile or "")
+            profile = request.scan_profile
+            if profile is None:
+                raise ExecutionError("Security scan profile is required.", 400)
+            image = self.settings.scan_images.get(profile)
             if not image:
                 raise ExecutionError("Requested security scan profile is not configured.", 409)
-            argv = list(_SCAN_COMMANDS[request.scan_profile])
+            argv = list(_SCAN_COMMANDS[profile])
         else:
             image = request.image or ""
             if image not in self.settings.allowed_images:

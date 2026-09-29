@@ -9,7 +9,11 @@ from typing import Callable
 from sqlalchemy.orm import Session
 
 from backend.app.experiments.contracts import BlindReviewRequest
-from backend.app.models import ExperimentComparisonModel, ExperimentReviewModel, SessionLocal
+from backend.app.models import (
+    ExperimentComparisonModel,
+    ExperimentReviewModel,
+    SessionLocal,
+)
 
 
 @dataclass(frozen=True)

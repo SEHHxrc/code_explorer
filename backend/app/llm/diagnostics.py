@@ -5,9 +5,17 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urljoin
 
-from backend.app.llm.http import ModelEndpointError, ModelRequestError, get_json, post_json
-from backend.app.llm.registry import ModelConfiguration, get_model_api_key, get_model_configuration
-
+from backend.app.llm.http import (
+    ModelEndpointError,
+    ModelRequestError,
+    get_json,
+    post_json,
+)
+from backend.app.llm.registry import (
+    ModelConfiguration,
+    get_model_api_key,
+    get_model_configuration,
+)
 
 PROBE_TIMEOUT_SECONDS = 30.0
 MAX_VISIBLE_MODELS = 2_000

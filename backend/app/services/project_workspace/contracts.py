@@ -17,12 +17,12 @@ class WorkspaceSource:
     filename: str | None = None
 
     @classmethod
-    def git(cls, repo_url: str) -> "WorkspaceSource":
+    def git(cls, repo_url: str) -> WorkspaceSource:
         """创建 Git 仓库类型的项目来源描述。"""
         return cls(kind="git", repo_url=repo_url)
 
     @classmethod
-    def zip(cls, file_obj: BinaryIO, filename: str | None) -> "WorkspaceSource":
+    def zip(cls, file_obj: BinaryIO, filename: str | None) -> WorkspaceSource:
         """创建 ZIP 上传类型的项目来源描述。"""
         return cls(kind="zip", file_obj=file_obj, filename=filename)
 

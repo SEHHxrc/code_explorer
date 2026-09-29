@@ -1,22 +1,13 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import os
-import threading
-import traceback
-from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
-import networkx as nx
-from tree_sitter_language_pack import get_parser
-
-from ..ast_utils import *
-from ..constants import *
-from ..context import FileContext
 from ..handlers import get_handler
-from ..models import Definition, ImportRec, Reference
+from ..models import ImportRec
+from ..state import DependencyAnalyzerState
 
-class ImportResolutionPhase:
+
+class ImportResolutionPhase(DependencyAnalyzerState):
     """导入阶段：解析各语言模块、包和头文件绑定。"""
 
     def _resolve_imports(self) -> None:

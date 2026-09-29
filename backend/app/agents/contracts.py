@@ -1,10 +1,12 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+
+AgentStrategy = Literal["default", "graph", "baseline"]
+AgentRunStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 
 
 class AgentRunRequest(BaseModel):
@@ -30,7 +32,7 @@ class AgentClaim(BaseModel):
     use_model: bool
     max_steps: int
     model: str | None = None
-    strategy: Literal["default", "graph", "baseline"] = "default"
+    strategy: AgentStrategy = "default"
 
 
 class AgentEvidence(BaseModel):
@@ -75,7 +77,7 @@ class AgentRunView(BaseModel):
     id: str
     project_id: str
     question: str
-    status: Literal["queued", "running", "completed", "failed", "cancelled"]
+    status: AgentRunStatus
     provider: str | None = None
     model: str | None = None
     answer: str | None = None

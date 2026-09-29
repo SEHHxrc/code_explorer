@@ -6,9 +6,9 @@ import json
 
 from backend.app.agents.context_builder import ProjectContextBuilder
 from backend.app.agents.contracts import AgentEvidence, ContextPacket
+from backend.app.experiments.context import neutral_repo_map
 from backend.app.llm.registry import get_model_limits
 from backend.app.schemas.manifest import ProjectManifest
-from backend.app.experiments.context import neutral_repo_map
 
 
 class GraphAugmentedContextBuilder:

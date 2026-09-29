@@ -17,7 +17,6 @@ from backend.app.execution import (
     ExecutionTaskRequest,
 )
 
-
 router = APIRouter(prefix="/api/executions", tags=["Executions"])
 T = TypeVar("T")
 execution_service = ExecutionService()

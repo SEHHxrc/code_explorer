@@ -1,15 +1,19 @@
-# -*- coding: utf-8 -*-
 from __future__ import annotations
 
-import os
-from collections import defaultdict
+import tree_sitter
 
-from ..ast_utils import *
-from ..constants import *
+from ..ast_utils import (
+    _descend_for,
+    _field,
+    _fields,
+    _first_of,
+    _is_meaningful_name,
+    _norm_type,
+    _split_qualified,
+)
+from ..constants import C_BUILTINS, CALL_TYPE_PREFIX, CPP_BUILTINS, SKIP_CHILDREN
 from ..context import FileContext
-from ..models import Definition, Reference
 from .base import BaseHandler
-
 
 _DECLARATOR_WRAPPERS = frozenset({
     "pointer_declarator",
@@ -75,7 +79,7 @@ class CHandler(BaseHandler):
             "call_expression": self.h_call,
         })
 
-    def h_include(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_include(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析预处理头文件导入语法节点并把结果写入文件上下文。"""
         path_node = _field(node, "path")
         if path_node is None:
@@ -88,7 +92,7 @@ class CHandler(BaseHandler):
             ctx.add_import(literal.strip("\""), alias=literal.strip("\""), kind="module", line=line)
         return SKIP_CHILDREN
 
-    def h_macro(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_macro(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析宏定义语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node)
@@ -97,7 +101,7 @@ class CHandler(BaseHandler):
             ctx.add_def(node, name, kind, name_node=name_node)
         return SKIP_CHILDREN
 
-    def h_typedef(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_typedef(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """``typedef struct {...} Point;``——把别名传给随后被遍历到的结构体节点。"""
         type_node = _field(node, "type")
         alias_node = None
@@ -117,7 +121,7 @@ class CHandler(BaseHandler):
                         bases=[_norm_type(ctx.text(type_node))] if type_node is not None else [])
         return SKIP_CHILDREN
 
-    def h_record(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_record(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析类、结构体或联合体定义语法节点并把结果写入文件上下文。"""
         body = _field(node, "body")
         name_node = _field(node, "name")
@@ -136,12 +140,13 @@ class CHandler(BaseHandler):
             return 0
         kind = {"struct_specifier": "struct", "union_specifier": "union",
                 "enum_specifier": "enum", "class_specifier": "class"}.get(node.type, "struct")
-        bases = []
-        for child in node.named_children:
-            if child.type == "base_class_clause":
-                for base in child.named_children:
-                    if base.type in ("type_identifier", "qualified_identifier", "template_type"):
-                        bases.append(ctx.text(base))
+        bases = [
+            ctx.text(base)
+            for child in node.named_children
+            if child.type == "base_class_clause"
+            for base in child.named_children
+            if base.type in ("type_identifier", "qualified_identifier", "template_type")
+        ]
         definition = ctx.add_def(node, name, kind, name_node=name_node or node, bases=bases)
         if definition is None:
             return 0
@@ -151,13 +156,13 @@ class CHandler(BaseHandler):
         ctx.push(definition.fqn, "class", name, definition)
         return 0
 
-    def h_enumerator(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_enumerator(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析枚举成员语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         ctx.add_def(node, ctx.text(name_node), "constant", name_node=name_node)
         return SKIP_CHILDREN
 
-    def h_field(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_field(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析字段定义语法节点并把结果写入文件上下文。"""
         if ctx.top.kind != "class":
             return 0
@@ -167,7 +172,7 @@ class CHandler(BaseHandler):
             # 匿名联合/结构体成员，继续下探
             return 0
         for declarator in declarators:
-            name_node, is_func, params = _unwrap_declarator(declarator)
+            name_node, is_func, _params = _unwrap_declarator(declarator)
             name = ctx.text(name_node)
             if not name:
                 continue
@@ -180,7 +185,7 @@ class CHandler(BaseHandler):
                 ctx.add_def(node, name, "field", name_node=name_node, type_literal=type_literal)
         return SKIP_CHILDREN
 
-    def h_declaration(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_declaration(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析变量或函数声明语法节点并把结果写入文件上下文。"""
         type_literal = ctx.text(_field(node, "type"))
         scope = ctx.top.kind
@@ -211,7 +216,7 @@ class CHandler(BaseHandler):
                 ctx.add_ref(node, "typeref", normalized)
         return 0
 
-    def h_function_def(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_function_def(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析函数定义语法节点并把结果写入文件上下文。"""
         declarator = _field(node, "declarator")
         name_node, _is_func, _params = _unwrap_declarator(declarator)
@@ -242,7 +247,7 @@ class CHandler(BaseHandler):
             ctx.bind_frame_var(frame, "this", owner)
         return 0
 
-    def h_param(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_param(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析参数类型语法节点并把结果写入文件上下文。"""
         declarator = _field(node, "declarator")
         name_node, _is_func, _params = _unwrap_declarator(declarator)
@@ -273,7 +278,7 @@ class CHandler(BaseHandler):
                 return CALL_TYPE_PREFIX + ctx.text(func).replace("::", ".").replace("->", ".")
         return ""
 
-    def h_call(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_call(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析函数调用语法节点并把结果写入文件上下文。"""
         name, receiver = self.split_callee(ctx, _field(node, "function"))
         if name:
@@ -299,7 +304,7 @@ class CppHandler(CHandler):
             "field_initializer": self.h_passthrough,
         })
 
-    def h_namespace(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_namespace(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析命名空间语法节点并把结果写入文件上下文。"""
         name_node = _field(node, "name")
         name = ctx.text(name_node) or "anonymous"
@@ -309,11 +314,11 @@ class CppHandler(CHandler):
         ctx.push(definition.fqn, "namespace", name, definition)
         return 0
 
-    def h_passthrough(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_passthrough(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析透明包装语法节点并把结果写入文件上下文。"""
         return 0
 
-    def h_using(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_using(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析using 声明语法节点并把结果写入文件上下文。"""
         target = _first_of(node, {"qualified_identifier", "identifier", "type_identifier"})
         literal = ctx.text(target)
@@ -323,7 +328,7 @@ class CppHandler(CHandler):
                            line=node.start_point[0] + 1)
         return SKIP_CHILDREN
 
-    def h_new(self, node: tree_sitter.Node | None, ctx: FileContext) -> int | None:
+    def h_new(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析对象实例化语法节点并把结果写入文件上下文。"""
         type_node = _field(node, "type")
         if type_node is not None:
