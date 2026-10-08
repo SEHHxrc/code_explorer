@@ -51,6 +51,52 @@ class WorkspaceFilesystem:
         target = self.paths.project_root(user_id, project_id)
         self._remove(target, self.paths.user_root(user_id) / "projects")
 
+    def quarantine_project(
+        self,
+        user_id: str,
+        project_id: str,
+        operation_id: str,
+    ) -> bool:
+        """把项目工作区原子移动到删除隔离区，并返回工作区是否存在。"""
+        source = self.paths.project_root(user_id, project_id)
+        self.paths.ensure_child(source, self.paths.user_root(user_id) / "projects")
+        if not source.exists() and not source.is_symlink():
+            return False
+        operation_root = self.paths.deletion_operation_root(user_id, operation_id)
+        self.paths.ensure_child(operation_root, self.paths.deletion_root(user_id))
+        operation_root.mkdir(parents=True, exist_ok=True)
+        target = operation_root / "workspace"
+        if target.exists() or target.is_symlink():
+            raise FileExistsError("Project deletion quarantine already exists")
+        source.replace(target)
+        return True
+
+    def restore_quarantined_project(
+        self,
+        user_id: str,
+        project_id: str,
+        operation_id: str,
+    ) -> None:
+        """把删除隔离区中的项目工作区恢复到正式位置。"""
+        operation_root = self.paths.deletion_operation_root(user_id, operation_id)
+        source = operation_root / "workspace"
+        if not source.exists() and not source.is_symlink():
+            return
+        target = self.paths.project_root(user_id, project_id)
+        if target.exists() or target.is_symlink():
+            raise FileExistsError("Refusing to overwrite an existing project workspace")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source.replace(target)
+        try:
+            operation_root.rmdir()
+        except OSError:
+            pass
+
+    def purge_project_quarantine(self, user_id: str, operation_id: str) -> None:
+        """幂等清除一次已经提交的项目删除隔离目录。"""
+        target = self.paths.deletion_operation_root(user_id, operation_id)
+        self._remove(target, self.paths.deletion_root(user_id))
+
     def remove_child(self, target: Path, root: Path) -> None:
         """删除受控根目录下的指定子路径。"""
         self._remove(target, root)

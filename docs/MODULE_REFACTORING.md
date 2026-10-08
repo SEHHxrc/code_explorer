@@ -7,7 +7,7 @@
 | 状态 | 功能域 | 当前结果 |
 | --- | --- | --- |
 | 已完成 P0 | 前端依赖图 | 图模型、布局、Sigma、控件和检查器已分离并异步加载 |
-| 已完成 P0 | 项目分析流程 | API 收薄，应用服务、图 DTO、仓储和响应安全边界已建立 |
+| 已完成 P0 | 项目功能域 | `projects` 统一导入、CRUD、Artifact、查询/快照与可恢复删除；纯分析已分离 |
 | 已完成 P1 | 受控项目工作区 | 暂存导入、安全策略、补偿事务、Journal 和 Janitor 已建立 |
 | 已完成 P1 | 项目生命周期 | 活动任务保护、文件/Artifact/数据库顺序删除已建立 |
 | 已完成 P1 | ProjectInsight | 页面、组件、composable、API 和纯领域函数已分离 |
@@ -38,24 +38,31 @@ frontend/src/features/dependency-graph/
 
 旧组件保留为 props/emits 薄包装。后端 Exchange DTO 固定输出 `edges`，前端不再兼容 `links`。节点大小、过滤、布局和渲染边界互相独立。
 
-## 2. 项目分析应用服务
+## 2. 项目功能域与纯分析流水线
 
 ```text
-backend/app/services/project_analysis/
-├── service.py
-├── transaction.py
-├── contracts.py
+backend/app/services/projects/
 ├── repository.py
-├── artifact_repository.py
-├── graph_exchange.py
-└── exceptions.py
+├── artifacts.py
+├── import_service.py
+├── query_service.py
+├── deletion_service.py
+├── transaction.py
+├── deletion_journal.py
+└── deletion_janitor.py
+
+backend/app/services/project_analysis/
+├── pipeline.py
+└── graph_exchange.py
 
 backend/app/schemas/
 ├── dependency_graph.py
 └── project_analysis.py
 ```
 
-`ProjectAnalysisService` 负责用例编排，API 负责 HTTP 输入、身份和响应映射。原始依赖图保存在 Artifact 中供 Manifest、Repo Map 和智能体使用；前端仅获得经过白名单、路径脱敏和端点校验的版本化图 DTO。
+`ProjectImportService` 负责导入用例编排；`ProjectAnalysisPipeline` 只分析已有目录，不接触用户、
+数据库、Artifact 或工作区发布。`ProjectRepository` 提供新增、按所有权查询、白名单更新和删除，
+不再操作 Agent、Execution、Experiment 表。
 
 跨文件系统、Artifact 和数据库不能使用单一 ACID 事务，因此使用逆序补偿：
 
@@ -104,15 +111,10 @@ backend/storage/users/<user_id>/
 
 旧 `loader.py`、Middleware 目录下的 `sanitizer.py` 和 `project_cleaner.py` 已删除。
 
-## 4. 项目生命周期
+## 4. 项目删除
 
-```text
-backend/app/services/project_lifecycle/
-├── contracts.py
-└── service.py
-```
-
-删除项目时先校验所有权和活动智能体运行。存在 `queued/running` 任务时返回 409。文件工作区与 Artifact 删除成功后，最后在一个数据库事务中删除 AgentEvent、AgentRun 和 Project。任何失败都返回真实错误，不再出现数据库已删除却报告项目不存在的情况。
+旧 `project_lifecycle` 已删除。`projects.ProjectDeletionService` 先隔离文件资源，再提交数据库事务；
+提交前失败恢复资源，提交后清理失败由持久化删除 Journal 和启动 Janitor 接管。
 
 ## 5. ProjectInsight
 

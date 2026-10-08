@@ -6,9 +6,14 @@ import unittest
 import zipfile
 from pathlib import Path
 
-from backend.app.services.project_analysis import AnalyzeProjectCommand, ProjectSource
-from backend.app.services.project_analysis.exceptions import ArtifactPersistenceError, DependencyAnalysisError, ProjectPersistenceError
-from backend.app.services.project_analysis.service import ProjectAnalysisService
+from backend.app.services.projects import (
+    AnalyzeProjectCommand,
+    ArtifactPersistenceError,
+    DependencyAnalysisError,
+    ProjectImportService,
+    ProjectPersistenceError,
+    ProjectSource,
+)
 from backend.app.services.project_workspace import ProjectWorkspaceService
 from backend.app.services.project_workspace.journal import OperationJournal
 from backend.app.services.project_workspace.paths import ProjectWorkspacePaths
@@ -83,10 +88,10 @@ class FailingCompleteJournal(OperationJournal):
             raise OSError("journal unavailable")
         return super().transition(operation, state)
 
-class ProjectAnalysisServiceTests(unittest.TestCase):
+class ProjectImportServiceTests(unittest.TestCase):
     def _service(self, root, projects, artifacts, analyzer):
         workspace = ProjectWorkspaceService(paths=ProjectWorkspacePaths(Path(root) / "users"))
-        return ProjectAnalysisService(
+        return ProjectImportService(
             project_repository=projects,
             artifact_repository=artifacts,
             workspace_service=workspace,
@@ -105,7 +110,7 @@ class ProjectAnalysisServiceTests(unittest.TestCase):
             projects = RecordingProjects()
             result = asyncio.run(self._service(
                 temp, projects, artifacts, SuccessfulAnalyzer,
-            ).analyze(self._command()))
+            ).import_project(self._command()))
 
             self.assertEqual(1, result.dependency_graph.summary.edge_count)
             self.assertIn("links", artifacts.saved[1]["dependency_graph"])
@@ -142,7 +147,7 @@ class ProjectAnalysisServiceTests(unittest.TestCase):
             with self.assertRaises(DependencyAnalysisError):
                 asyncio.run(self._service(
                     temp, projects, RecordingArtifacts(), FailingAnalyzer,
-                ).analyze(self._command()))
+                ).import_project(self._command()))
             self.assertIsNone(projects.created)
             self.assertFalse(any((Path(temp) / "users").rglob("main.py")))
 
@@ -152,7 +157,7 @@ class ProjectAnalysisServiceTests(unittest.TestCase):
             with self.assertRaises(ArtifactPersistenceError):
                 asyncio.run(self._service(
                     temp, RecordingProjects(), artifacts, SuccessfulAnalyzer,
-                ).analyze(self._command()))
+                ).import_project(self._command()))
             self.assertEqual(1, len(artifacts.removed))
             self.assertFalse(any((Path(temp) / "users").rglob("main.py")))
 
@@ -162,7 +167,7 @@ class ProjectAnalysisServiceTests(unittest.TestCase):
             with self.assertRaises(ProjectPersistenceError):
                 asyncio.run(self._service(
                     temp, RecordingProjects(fail=True), artifacts, SuccessfulAnalyzer,
-                ).analyze(self._command()))
+                ).import_project(self._command()))
             self.assertEqual(1, len(artifacts.removed))
             self.assertFalse(any((Path(temp) / "users").rglob("main.py")))
 
@@ -171,12 +176,12 @@ class ProjectAnalysisServiceTests(unittest.TestCase):
             paths = ProjectWorkspacePaths(Path(temp) / "users")
             workspace = ProjectWorkspaceService(paths=paths, journal=FailingCompleteJournal())
             projects = RecordingProjects()
-            result = asyncio.run(ProjectAnalysisService(
+            result = asyncio.run(ProjectImportService(
                 project_repository=projects,
                 artifact_repository=RecordingArtifacts(),
                 workspace_service=workspace,
                 analyzer_factory=SuccessfulAnalyzer,
-            ).analyze(self._command()))
+            ).import_project(self._command()))
             self.assertEqual(result.project_id, projects.created["project_id"])
             self.assertTrue(Path(projects.created["local_path"]).exists())
 

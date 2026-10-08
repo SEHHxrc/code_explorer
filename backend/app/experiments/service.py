@@ -15,8 +15,7 @@ from backend.app.experiments.contracts import (
 from backend.app.experiments.metrics import collect_run_metrics
 from backend.app.experiments.repository import ComparisonRecord, ExperimentRepository
 from backend.app.llm.registry import get_model_configuration
-from backend.app.services.artifact_store import load_analysis_artifact
-from backend.app.services.project_analysis.repository import ProjectRepository
+from backend.app.services.projects import ProjectArtifactRepository, ProjectRepository
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 
@@ -35,6 +34,7 @@ class ExperimentComparisonService:
         self.repository = repository or ExperimentRepository()
         self.projects = projects or ProjectRepository()
         self.run_store = run_store or AgentRunStore()
+        self.artifacts = ProjectArtifactRepository()
 
     def create(self, project_id: str, user_id: str, request: ComparisonRequest) -> dict:
         """创建并持久化新的领域记录。"""
@@ -44,7 +44,7 @@ class ExperimentComparisonService:
         project = self.projects.get_owned(project_id, user_id)
         if project is None:
             raise ExperimentError("Project not found or unauthorized.", 404)
-        artifact = load_analysis_artifact(project_id)
+        artifact = self.artifacts.load(project_id)
         if not artifact:
             raise ExperimentError("Project analysis artifact is missing.", 409)
         comparison_id = uuid.uuid4().hex

@@ -1,4 +1,4 @@
-"""用户项目库存、存储占用统计和前端状态恢复服务。"""
+"""用户项目库存、存储占用统计和前端快照恢复服务。"""
 
 from __future__ import annotations
 
@@ -9,47 +9,38 @@ from pathlib import Path
 from typing import Any
 
 from backend.app.schemas.manifest import ProjectManifest
-from backend.app.services.artifact_store import (
-    analysis_artifact_size,
-    load_analysis_artifact,
-)
 from backend.app.services.project_analysis.graph_exchange import GraphExchangeNormalizer
-from backend.app.services.project_analysis.repository import (
-    ProjectRecord,
-    ProjectRepository,
-)
 from backend.app.services.project_workspace.paths import ProjectWorkspacePaths
+
+from .artifacts import ProjectArtifactRepository
+from .contracts import ProjectRecord
+from .errors import ProjectQueryError
+from .repository import ProjectDeletionRepository, ProjectRepository
 
 MAX_SIZE_SCAN_ENTRIES = 200_000
 
 
-class ProjectInventoryError(Exception):
-    """可安全转换为 HTTP 响应的项目库存错误。"""
-
-    def __init__(self, message: str, status_code: int) -> None:
-        """保存公开错误消息和对应 HTTP 状态码。"""
-        super().__init__(message)
-        self.public_message = message
-        self.status_code = status_code
-
-
-class ProjectInventoryService:
-    """列出用户项目及存储状态，并重建前端所需的分析快照。"""
+class ProjectQueryService:
+    """列出用户项目及资源状态，并重建前端分析快照。"""
 
     def __init__(
         self,
         *,
         projects: ProjectRepository | None = None,
+        activity: ProjectDeletionRepository | None = None,
         paths: ProjectWorkspacePaths | None = None,
-        artifact_loader: Callable[[str], dict[str, Any] | None] = load_analysis_artifact,
-        artifact_sizer: Callable[[str], int | None] = analysis_artifact_size,
+        artifacts: ProjectArtifactRepository | None = None,
         graph_normalizer: GraphExchangeNormalizer | None = None,
+        artifact_loader: Callable[[str], dict[str, Any] | None] | None = None,
+        artifact_sizer: Callable[[str], int | None] | None = None,
     ) -> None:
-        """注入项目、路径、产物与图交换边界，便于测试和替换存储实现。"""
+        """注入项目、活动任务、路径、产物和图交换边界。"""
         self.projects = projects or ProjectRepository()
+        self.activity = activity or ProjectDeletionRepository()
         self.paths = paths or ProjectWorkspacePaths()
-        self.artifact_loader = artifact_loader
-        self.artifact_sizer = artifact_sizer
+        self.artifacts = artifacts or ProjectArtifactRepository()
+        self.artifact_loader = artifact_loader or self.artifacts.load
+        self.artifact_sizer = artifact_sizer or self.artifacts.size
         self.graph_normalizer = graph_normalizer or GraphExchangeNormalizer()
 
     async def list(self, user_id: str) -> dict[str, Any]:
@@ -74,15 +65,16 @@ class ProjectInventoryService:
         workspace = self.paths.project_root(record.user_id, record.project_id)
         workspace_bytes, workspace_exists, size_complete = self._directory_size(workspace)
         artifact_bytes = self.artifact_sizer(record.project_id)
-        artifact = None
+        artifact: dict[str, Any] | None = None
         artifact_readable = False
         if artifact_bytes is not None:
             try:
-                artifact = self.artifact_loader(record.project_id)
-                artifact_readable = isinstance(artifact, dict)
+                loaded = self.artifact_loader(record.project_id)
+                artifact = loaded if isinstance(loaded, dict) else None
+                artifact_readable = artifact is not None
             except (OSError, UnicodeError, ValueError):
                 artifact = None
-        manifest = artifact.get("manifest") if isinstance(artifact, dict) else {}
+        manifest = artifact.get("manifest") if artifact is not None else {}
         name = manifest.get("project_name") if isinstance(manifest, dict) else None
         return {
             "project_id": record.project_id,
@@ -96,25 +88,48 @@ class ProjectInventoryService:
             "artifact_bytes": artifact_bytes or 0,
             "total_bytes": workspace_bytes + (artifact_bytes or 0),
             "size_complete": size_complete,
-            "active_tasks": self.projects.has_active_runs(record.project_id, record.user_id),
+            "active_tasks": self._has_active_tasks(record),
         }
 
+    def _has_active_tasks(self, record: ProjectRecord) -> bool:
+        """读取活动任务状态，并兼容迁移期旧仓储测试替身。"""
+        legacy = getattr(self.projects, "has_active_runs", None)
+        if callable(legacy):
+            return bool(legacy(record.project_id, record.user_id))
+        return self.activity.has_active_tasks(record.project_id, record.user_id)
+
     def _snapshot_sync(self, project_id: str, user_id: str) -> dict[str, Any]:
-        """校验所有权和资源完整性后生成与导入接口一致的数据。"""
+        """校验所有权和资源完整性后生成前端交换数据。"""
         record = self.projects.get_owned(project_id, user_id)
         if record is None:
-            raise ProjectInventoryError("Project not found or unauthorized.", 404)
+            raise ProjectQueryError(
+                "Project not found or unauthorized.",
+                status_code=404,
+                stage="query",
+            )
         workspace = self.paths.project_root(user_id, project_id)
         if not workspace.is_dir() or workspace.is_symlink():
-            raise ProjectInventoryError("Project workspace is missing; delete this stale record.", 409)
+            raise ProjectQueryError(
+                "Project workspace is missing; delete this stale record.",
+                status_code=409,
+                stage="query",
+            )
         artifact = self.artifact_loader(project_id)
         if not artifact:
-            raise ProjectInventoryError("Project analysis artifact is missing; delete this stale record.", 409)
+            raise ProjectQueryError(
+                "Project analysis artifact is missing; delete this stale record.",
+                status_code=409,
+                stage="query",
+            )
         try:
             manifest = ProjectManifest.model_validate(artifact.get("manifest") or {})
             graph = self.graph_normalizer.normalize(artifact.get("dependency_graph") or {})
         except Exception as exc:
-            raise ProjectInventoryError("Project analysis artifact is invalid; re-import the project.", 409) from exc
+            raise ProjectQueryError(
+                "Project analysis artifact is invalid; re-import the project.",
+                status_code=409,
+                stage="query",
+            ) from exc
         return {
             "project_id": project_id,
             "sanitize_report": {},
@@ -131,7 +146,7 @@ class ProjectInventoryService:
 
     @staticmethod
     def _directory_size(root: Path) -> tuple[int, bool, bool]:
-        """不跟随符号链接地统计目录字节数，并对极端目录设置扫描上限。"""
+        """不跟随符号链接统计目录大小，并限制扫描条目数。"""
         if not root.is_dir() or root.is_symlink():
             return 0, False, True
         total = 0
@@ -159,3 +174,5 @@ class ProjectInventoryService:
         if stack:
             complete = False
         return total, True, complete
+
+__all__ = ["ProjectQueryService"]

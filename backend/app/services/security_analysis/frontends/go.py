@@ -7,13 +7,11 @@ from pathlib import PurePosixPath
 from typing import Any
 
 from backend.app.services.program_index import ProgramIdentity
-from backend.app.services.program_graph.frontends.access_paths import (
-    parse_static_index_literal,
-)
 from backend.app.services.syntax_analysis import extensions_for_language
 from backend.app.services.syntax_analysis import field as _field
 from backend.app.services.syntax_analysis import fields as _fields
 from backend.app.services.syntax_analysis import normalize_type as _norm_type
+from backend.app.services.syntax_analysis import parse_static_index_literal
 from backend.app.services.syntax_analysis import text as _text
 
 from ..ir import (

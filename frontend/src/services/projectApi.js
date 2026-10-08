@@ -1,23 +1,4 @@
-import { apiClient } from './httpClient.js'
-
-const responseData = (response) => {
-  if (!response?.data || response.data.code >= 400) {
-    throw new Error(response?.data?.message || '服务器返回了无效响应')
-  }
-  return response.data.data
-}
-
-export const getModelStatus = async ({ signal } = {}) => (
-  responseData(await apiClient.get('/api/projects/model/status', { signal }))
-)
-
-export const probeModelConnection = async (model, { signal } = {}) => (
-  responseData(await apiClient.post('/api/projects/model/probe', { model: model || null }, { signal }))
-)
-
-export const getAvailableModels = async ({ signal } = {}) => (
-  responseData(await apiClient.get('/api/projects/model/models', { signal }))
-)
+import { apiClient, responseData } from './httpClient.js'
 
 export const listStoredProjects = async ({ signal } = {}) => (
   responseData(await apiClient.get('/api/projects', { signal }))

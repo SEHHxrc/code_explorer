@@ -11,14 +11,17 @@ from backend.app.agents.worker import agent_queue_worker
 from backend.app.api.agent import router as agent_router
 from backend.app.api.execution import router as execution_router
 from backend.app.api.experiment import router as experiment_router
+from backend.app.api.model import router as model_router
 from backend.app.api.project import router as project_router
 from backend.app.middleware.exception_handler import setup_exception_handler
 from backend.app.middleware.response_security import setup_response_security
 from backend.app.models import init_db
+from backend.app.services.projects.deletion_janitor import ProjectDeletionJanitor
 from backend.app.services.project_workspace.janitor import WorkspaceJanitor
 
 init_db()
 WorkspaceJanitor().cleanup_stale()
+ProjectDeletionJanitor().cleanup_pending()
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -51,6 +54,7 @@ app.include_router(project_router)
 app.include_router(agent_router)
 app.include_router(experiment_router)
 app.include_router(execution_router)
+app.include_router(model_router)
 
 
 @app.get("/")

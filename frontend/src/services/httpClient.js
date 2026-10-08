@@ -14,3 +14,11 @@ export const apiErrorMessage = (error, fallback = '请求失败，请稍后重�
   || error?.message
   || fallback
 )
+
+/** Validate the common application envelope and return its data payload. */
+export const responseData = (response) => {
+  if (!response?.data || response.data.code >= 400) {
+    throw new Error(response?.data?.message || '服务器返回了无效响应')
+  }
+  return response.data.data
+}

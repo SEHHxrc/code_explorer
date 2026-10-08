@@ -40,6 +40,15 @@ class ProjectWorkspacePaths:
         self.validate_identifier(project_id, "project id")
         return self.user_root(user_id) / "projects" / project_id
 
+    def deletion_root(self, user_id: str) -> Path:
+        """返回用户项目删除事务的隔离区根目录。"""
+        return self.user_root(user_id) / ".deleting"
+
+    def deletion_operation_root(self, user_id: str, operation_id: str) -> Path:
+        """返回一次项目删除操作的隔离目录。"""
+        self.validate_identifier(operation_id, "operation id")
+        return self.deletion_root(user_id) / operation_id
+
     @staticmethod
     def ensure_child(path: Path | str, root: Path | str) -> Path:
         """按词法绝对路径验证目标在根下，避免跟随末端符号链接。"""

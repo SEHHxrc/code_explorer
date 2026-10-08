@@ -14,12 +14,15 @@ Vue 3 / Vite / Element Plus
               │ HTTP / 可续传 SSE
               ▼
 FastAPI
-├─ ProjectAnalysisService
-│  ├─ ProjectWorkspaceService（Git/ZIP、清洗、发布、回滚日志）
-│  ├─ UnifiedCodeAnalyzer（Tree-sitter + NetworkX）
-│  ├─ SecurityAnalysisService（通用安全 IR + 规则包 + 结构路径）
-│  ├─ ProjectManifestBuilder / build_repo_map
-│  └─ ProjectRepository / AnalysisArtifactRepository
+├─ Projects
+│  ├─ ProjectImportService（导入、发布与持久化编排）
+│  ├─ ProjectQueryService（库存、占用与快照）
+│  ├─ ProjectDeletionService（隔离、删除、补偿与恢复日志）
+│  ├─ ProjectWorkspaceService（Git/ZIP、清洗与受控文件系统）
+│  └─ ProjectAnalysisPipeline（纯源码分析）
+│     ├─ UnifiedCodeAnalyzer（Tree-sitter + NetworkX）
+│     ├─ SecurityAnalysisService（通用安全 IR + 规则包 + 结构路径）
+│     └─ ProjectManifestBuilder / build_repo_map
 ├─ ProgramIdentity（依赖图与安全分析共享文件、符号、位置、调用点身份）
 ├─ SyntaxAnalysis（共享语言目录、Tree-sitter Parser 池和节点工具）
 ├─ ProgramGraphService（八种依赖分析语言的公共控制 IR、函数级 CFG、到达定义）
@@ -39,7 +42,8 @@ FastAPI
 | --- | --- | --- |
 | 后端应用根 | FastAPI 装配、数据库初始化和 Worker 生命周期 | `backend/app/README.md` |
 | HTTP API | 请求、用户上下文、错误映射和 SSE | `backend/app/api/README.md` |
-| 项目分析 | 导入—清洗—分析—派生—持久化事务 | `backend/app/services/project_analysis/README.md` |
+| 项目功能域 | 导入、CRUD、Artifact、库存/快照和可恢复删除 | `backend/app/services/projects/README.md` |
+| 项目分析 | 对已存在源码目录执行无持久化副作用的分析流水线 | `backend/app/services/project_analysis/README.md` |
 | 安全工作区 | Git/ZIP 获取、路径策略、清洗、发布和恢复 | `backend/app/services/project_workspace/README.md` |
 | 依赖分析器 | 多语言语法提取与跨文件关系解析 | `backend/app/services/dependency_analyzer/README.md` |
 | 语法基础设施 | 共享语言目录、Tree-sitter Parser 池和节点读取 | `backend/app/services/syntax_analysis/README.md` |
@@ -56,17 +60,22 @@ FastAPI
 
 分析产物写入 `backend/storage/artifacts/<project_id>.json`，其中保留 Manifest、Repo Map、原始依赖图和符号证据。SQLite 保存项目元数据、Agent 队列/事件、实验记录和执行队列/事件。
 
-## 3. 项目分析与事务回滚
+## 3. 项目导入、分析与事务回滚
 
 1. `POST /api/projects/analyze` 把 Git URL 或 ZIP 转换为 `AnalyzeProjectCommand`。
-2. `ProjectAnalysisTransaction.begin()` 创建受控暂存操作并登记补偿。
+2. `ProjectImportTransaction.begin()` 创建受控暂存操作并登记补偿。
 3. `ProjectWorkspaceService.prepare()` 获取来源并由 `ProjectSanitizer` 清理链接、敏感文件、超大文件、禁止类型和噪声目录。
-4. `UnifiedCodeAnalyzer.run_full_analysis()` 按采集、索引、导入、类型和图构建五阶段产生原始依赖图。
-5. `SecurityAnalysisService.analyze()` 复用依赖分析文件范围和调用边，生成安全结构证据；不重复持久化完整依赖图。
-6. `build_file_tree_with_symbols()`、`ProjectManifestBuilder.build()` 和 `build_repo_map()` 产生前端与模型共同使用的确定性事实。
+4. `ProjectAnalysisPipeline.analyze()` 对暂存源码执行纯分析；它内部调用依赖分析、安全分析和确定性派生，不读取用户或数据库。
+5. `UnifiedCodeAnalyzer.run_full_analysis()` 按采集、索引、导入、类型和图构建五阶段产生原始依赖图。
+6. `SecurityAnalysisService.analyze()` 复用依赖分析文件范围和调用边，生成安全结构证据；不重复持久化完整依赖图。
 7. 工作区发布后，项目记录和分析产物依次持久化。
 8. `GraphExchangeNormalizer.normalize()` 生成有版本、有限额、路径安全的公开图 DTO。
-9. 全部成功后提交事务；任何异常都会逆序删除已写入的产物、数据库记录和工作区。补偿失败会写入操作日志，供 `WorkspaceJanitor` 在后续启动时清理。
+9. 全部成功后提交事务；异常会逆序删除本次产物和工作区，未完成补偿交给 `WorkspaceJanitor`。
+
+`ProjectRepository` 只管理 `ProjectModel`：`create()` 是纯新增，`update_owned(ProjectUpdate)` 只修改
+白名单字段。项目删除先隔离工作区和 Artifact，再由 `ProjectDeletionRepository` 在一个数据库事务
+中删除跨功能域关联记录；提交前失败会恢复资源，进程中断由 `ProjectDeletionJournal` 和
+`ProjectDeletionJanitor` 恢复或清理。
 
 Manifest 与 Repo Map 是模型事实底座。模型只负责解释和归纳，不应替代静态分析器制造不存在的文件、符号或入口点。
 
@@ -81,11 +90,16 @@ Manifest 与 Repo Map 是模型事实底座。模型只负责解释和归纳，�
 
 `create_model_provider()` 对 OpenAI 创建 `OpenAIResponsesProvider`，对 Ollama、vLLM 或自定义兼容服务创建 `OpenAICompatibleProvider`。普通文本入口是 `generate(instructions, prompt)`；工具入口是 `generate_with_tools(instructions, prompt, tools)`。
 
-模型配置状态、真实连通性和模型目录是三个不同接口：状态接口只做本地环境检查；探测接口由用户在智能体页面显式触发一次最小函数工具请求，同时验证文本生成与 Agent 工具协议；模型目录通过兼容 `GET /models` 返回当前凭据可见的 ID。智能体选择的模型作为单次运行参数进入持久化队列，由 Worker 恢复并创建独立 Provider，不修改环境变量默认值。上游 HTTP 错误只保留安全的状态码、错误类型/代码、`Retry-After` 和请求 ID；余额及消费上限错误不重试，临时 429 与 502、503、504 网关错误执行有限退避。
+模型配置状态、真实连通性和模型目录分别由 `GET /api/models/status`、`POST /api/models/probe`
+和 `GET /api/models` 提供。探测接口由用户在智能体页面显式触发一次最小函数工具请求，同时验证
+文本生成与 Agent 工具协议；智能体选择的模型作为单次运行参数进入持久化队列，不修改环境变量
+默认值。上游 HTTP 错误只保留安全状态码、错误类型/代码、`Retry-After` 和请求 ID。
 
 模型输入使用 `CODE_EXPLORER_LLM_MAX_CONTEXT_CHARS` 作为供应商无关的近似字符预算，输出使用 `CODE_EXPLORER_LLM_MAX_OUTPUT_TOKENS`。字符预算会覆盖系统指令、工具 Schema、静态项目事实与多轮工具观察的组合，但不代表也不能改变模型自身的 Token 上下文窗口。`model.started` 事件只记录提示、工具和输出预算的数量，不持久化请求正文；第三方网关在长输入时返回 5xx 或重置连接，可据此调低字符预算。
 
-项目数据库是后端资源的权威索引。数据管理页通过项目库存服务统计受控工作区和分析产物占用，并可从持久化文件树、Manifest 与依赖图重新恢复前端状态；完整删除继续经过生命周期服务，活动任务会阻止删除。
+项目数据库是后端资源的权威索引。数据管理页通过 `ProjectQueryService` 统计工作区和分析产物，
+并从持久化文件树、Manifest 与依赖图恢复前端状态；完整删除经过 `ProjectDeletionService`，活动
+任务会阻止删除。
 
 智能体流程：
 

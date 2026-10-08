@@ -6,15 +6,15 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from backend.app.services.project_analysis.artifact_repository import AnalysisArtifactRepository
-from backend.app.services.project_analysis.transaction import ProjectAnalysisTransaction
+from backend.app.services.projects.artifacts import ProjectArtifactRepository
+from backend.app.services.projects.transaction import ProjectImportTransaction
 from backend.app.services.project_workspace import ProjectWorkspaceService, WorkspacePolicy, WorkspaceSource
 from backend.app.services.project_workspace.exceptions import SourceValidationError, WorkspacePolicyError
 from backend.app.services.project_workspace.paths import ProjectWorkspacePaths
 from backend.app.services.project_workspace.sources.git import validate_repo_url
 
 
-class NoopArtifacts(AnalysisArtifactRepository):
+class NoopArtifacts(ProjectArtifactRepository):
     def remove(self, project_id):
         return None
 
@@ -46,7 +46,7 @@ class WorkspaceSecurityTests(unittest.TestCase):
     def test_zip_traversal_rolls_back_staging(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = ProjectWorkspaceService(paths=ProjectWorkspacePaths(Path(directory) / "users"))
-            transaction = ProjectAnalysisTransaction(workspace, NoopArtifacts())
+            transaction = ProjectImportTransaction(workspace, NoopArtifacts())
             with self.assertRaises(WorkspacePolicyError):
                 with transaction:
                     operation = transaction.begin("test_user")
@@ -59,7 +59,7 @@ class WorkspaceSecurityTests(unittest.TestCase):
     def test_zip_extracts_and_sanitizes_regular_project(self):
         with tempfile.TemporaryDirectory() as directory:
             workspace = ProjectWorkspaceService(paths=ProjectWorkspacePaths(Path(directory) / "users"))
-            transaction = ProjectAnalysisTransaction(workspace, NoopArtifacts())
+            transaction = ProjectImportTransaction(workspace, NoopArtifacts())
             with transaction:
                 operation = transaction.begin("test_user")
                 prepared = workspace.prepare(operation, WorkspaceSource.zip(zip_bytes({

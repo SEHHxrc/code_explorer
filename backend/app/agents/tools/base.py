@@ -58,7 +58,7 @@ class AgentTool(ABC):
             raise ValueError(f"Invalid arguments for {self.name}") from exc
 
     @abstractmethod
-    async def execute(self, context: ToolContext, arguments) -> ToolResult:
+    async def execute(self, context: ToolContext, arguments: BaseModel) -> ToolResult:
         """执行工具请求并返回结构化结果和证据。"""
         raise NotImplementedError
 

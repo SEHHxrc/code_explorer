@@ -9,7 +9,7 @@ from collections.abc import Callable
 from sqlalchemy.orm import Session
 
 from backend.app.models import ProjectModel, SessionLocal
-from backend.app.services.artifact_store import remove_analysis_artifact
+from backend.app.services.projects.artifacts import remove_analysis_artifact
 
 from .filesystem import WorkspaceFilesystem
 from .journal import OperationJournal

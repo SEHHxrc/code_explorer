@@ -7,8 +7,7 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from backend.app.services.project_analysis.repository import ProjectRecord
-from backend.app.services.project_inventory import ProjectInventoryError, ProjectInventoryService
+from backend.app.services.projects import ProjectQueryError, ProjectQueryService, ProjectRecord
 from backend.app.services.project_workspace.paths import ProjectWorkspacePaths
 
 
@@ -78,7 +77,7 @@ class ProjectInventoryTests(unittest.TestCase):
                 created_at=datetime.now(timezone.utc),
             )
             artifact = sample_artifact()
-            service = ProjectInventoryService(
+            service = ProjectQueryService(
                 projects=FakeProjects(record),
                 paths=paths,
                 artifact_loader=lambda _: artifact,
@@ -106,13 +105,13 @@ class ProjectInventoryTests(unittest.TestCase):
                 file_tree=[],
                 created_at=datetime.now(timezone.utc),
             )
-            service = ProjectInventoryService(
+            service = ProjectQueryService(
                 projects=FakeProjects(record),
                 paths=paths,
                 artifact_loader=lambda _: sample_artifact(),
                 artifact_sizer=lambda _: 7,
             )
-            with self.assertRaises(ProjectInventoryError) as caught:
+            with self.assertRaises(ProjectQueryError) as caught:
                 asyncio.run(service.snapshot("project-1", "user-1"))
             self.assertEqual(caught.exception.status_code, 409)
 

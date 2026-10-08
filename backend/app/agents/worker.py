@@ -17,8 +17,7 @@ from backend.app.agents.run_store import AgentRunStore
 from backend.app.agents.tools import create_project_tool_registry
 from backend.app.experiments.graph_context import GraphAugmentedContextBuilder
 from backend.app.models import init_db
-from backend.app.services.artifact_store import load_analysis_artifact
-from backend.app.services.project_analysis.repository import ProjectRepository
+from backend.app.services.projects import ProjectArtifactRepository, ProjectRepository
 
 
 class AgentQueueWorker:
@@ -30,6 +29,7 @@ class AgentQueueWorker:
         worker_id: str,
         store: AgentRunStore | None = None,
         projects: ProjectRepository | None = None,
+        artifacts: ProjectArtifactRepository | None = None,
         poll_seconds: float = 0.5,
         lease_seconds: int = 30,
     ) -> None:
@@ -37,6 +37,7 @@ class AgentQueueWorker:
         self.worker_id = worker_id
         self.store = store or AgentRunStore()
         self.projects = projects or ProjectRepository()
+        self.artifacts = artifacts or ProjectArtifactRepository()
         self.poll_seconds = max(0.1, poll_seconds)
         self.lease_seconds = max(15, lease_seconds)
         self._loop_task: asyncio.Task | None = None
@@ -76,7 +77,7 @@ class AgentQueueWorker:
             project = await asyncio.to_thread(
                 self.projects.get_owned, claim.project_id, claim.user_id,
             )
-            artifact = await asyncio.to_thread(load_analysis_artifact, claim.project_id)
+            artifact = await asyncio.to_thread(self.artifacts.load, claim.project_id)
             if project is None or artifact is None:
                 self.store.fail_claim(
                     claim.run_id,

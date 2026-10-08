@@ -4,8 +4,8 @@ import {
   analyzeZipProject,
   deleteProject,
   generateProjectOverview,
-  getModelStatus,
 } from '../../../services/projectApi.js'
+import { getModelStatus } from '../../../services/modelApi.js'
 
 const emptyGraph = () => ({ schema_version: '1.0', nodes: [], edges: [], warnings: [] })
 const emptyOverview = () => ({ content: '', source: 'static' })

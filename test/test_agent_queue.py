@@ -3,9 +3,7 @@ import asyncio
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -15,7 +13,7 @@ from backend.app.agents.contracts import AgentRunRequest
 from backend.app.agents.run_store import AgentRunStore
 from backend.app.agents.worker import AgentQueueWorker
 from backend.app.models import AgentJobModel, AgentRunModel, Base, ProjectModel
-from backend.app.services.project_analysis.repository import ProjectRepository
+from backend.app.services.projects import ProjectDeletionRepository
 
 
 def sample_artifact():
@@ -147,7 +145,12 @@ class AgentQueueTests(unittest.TestCase):
         self.create_run()
         self.store.request_cancel("run1", "user1")
 
-        self.assertTrue(ProjectRepository(self.sessions).delete_owned_with_runs("project1", "user1"))
+        self.assertTrue(
+            ProjectDeletionRepository(self.sessions).delete_owned_with_dependents(
+                "project1",
+                "user1",
+            )
+        )
         db = self.sessions()
         self.assertIsNone(db.query(AgentJobModel).filter(AgentJobModel.run_id == "run1").first())
         db.close()
@@ -163,12 +166,9 @@ class AgentQueueTests(unittest.TestCase):
                     worker_id="worker1",
                     store=self.store,
                     projects=projects,
+                    artifacts=SimpleNamespace(load=lambda project_id: sample_artifact()),
                 )
-                with patch(
-                    "backend.app.agents.worker.load_analysis_artifact",
-                    return_value=sample_artifact(),
-                ):
-                    self.assertTrue(await worker.run_once())
+                self.assertTrue(await worker.run_once())
             view = self.store.get("run1", "user1")
             self.assertEqual(view.status, "completed")
             events = [event.type for event in self.store.events_after("run1", 0)]

@@ -11,11 +11,11 @@ from backend.app.agents.orchestrator import TERMINAL_STATUSES, agent_run_manager
 from backend.app.agents.worker import agent_queue_worker
 from backend.app.api.sse import persisted_events, sse_response
 from backend.app.core.deps import get_current_user
-from backend.app.services.artifact_store import load_analysis_artifact
-from backend.app.services.project_analysis.repository import ProjectRepository
+from backend.app.services.projects import ProjectArtifactRepository, ProjectRepository
 
 router = APIRouter(prefix="/api/agent", tags=["Agent"])
 projects = ProjectRepository()
+artifacts = ProjectArtifactRepository()
 
 
 @router.post("/projects/{project_id}/runs")
@@ -28,7 +28,7 @@ async def create_agent_run(
     user_id = current_user["user_id"]
     if projects.get_owned(project_id, user_id) is None:
         raise HTTPException(status_code=404, detail="Project not found or unauthorized.")
-    if not load_analysis_artifact(project_id):
+    if not artifacts.load(project_id):
         raise HTTPException(status_code=409, detail="Project analysis artifact is missing.")
     run_id = uuid.uuid4().hex
     view = agent_run_manager.store.create(

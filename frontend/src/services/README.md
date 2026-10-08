@@ -4,8 +4,9 @@
 
 | 文件 | 导出入口 | 对应后端 |
 | --- | --- | --- |
-| `httpClient.js` | `API_BASE`、`apiClient`、`apiErrorMessage()` | Axios 基础配置；`VITE_API_BASE_URL` 默认为 `http://localhost:8000`。 |
-| `projectApi.js` | 后端项目库存/快照恢复、模型诊断、Git/ZIP 分析、概览和删除 | `/api/projects` |
+| `httpClient.js` | `API_BASE`、`apiClient`、`apiErrorMessage()`、`responseData()` | Axios 基础配置与公共响应拆包；`VITE_API_BASE_URL` 默认为 `http://localhost:8000`。 |
+| `projectApi.js` | 后端项目库存/快照恢复、Git/ZIP 分析、概览和删除 | `/api/projects` |
+| `modelApi.js` | 模型配置状态、连通性探测和可见模型目录 | `/api/models` |
 | `agentApi.js` | 创建/取消运行、查询项目历史、加载运行快照和消费 SSE | `/api/agent` |
 | `experimentApi.js` | 创建比较、提交盲评、比较 SSE | `/api/experiments` |
 | `executionApi.js` | 配置、创建/查询/取消任务、执行 SSE | `/api/executions` |

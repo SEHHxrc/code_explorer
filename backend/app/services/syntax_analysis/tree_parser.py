@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 from collections import deque
 from collections.abc import Set
+from typing import Any, cast
 
 import tree_sitter
 from tree_sitter_language_pack import get_parser
@@ -25,7 +26,7 @@ class TreeSitterParserPool:
             self._local.parsers = parsers
         parser = parsers.get(language)
         if parser is None:
-            parser = get_parser(language)
+            parser = get_parser(cast(Any, language))
             parsers[language] = parser
         return parser
 

@@ -11,6 +11,8 @@
 - `text/field/fields`：容错读取节点源码和命名字段；
 - `first_of/descend_for`：有界节点查找；
 - `normalize_type/split_qualified`：跨语言类型和限定名称文本归一化。
+- `normalize_static_index/parse_static_index_literal`：跨语言静态下标字面量归一化，供
+  ProgramGraph 与安全前端共同使用。
 
 `dependency_analyzer` 继续拥有跨文件符号、导入、类型和调用目标解析；`program_graph` 继续拥有
 函数内部控制流与到达定义。两者共享语法工具和稳定身份，但不会互相创建对方负责的边。

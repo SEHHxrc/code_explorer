@@ -7,6 +7,7 @@ from .catalog import (
     SOURCE_LANGUAGE_BY_EXTENSION,
     extensions_for_language,
 )
+from .literals import StaticIndex, normalize_static_index, parse_static_index_literal
 from .tree_parser import (
     DEFAULT_TREE_SITTER_PARSER_POOL,
     TreeSitterParserPool,
@@ -25,6 +26,7 @@ __all__ = [
     "DEFAULT_TREE_SITTER_PARSER_POOL",
     "IGNORED_SOURCE_DIRECTORIES",
     "SOURCE_LANGUAGE_BY_EXTENSION",
+    "StaticIndex",
     "TreeSitterParserPool",
     "descend_for",
     "extensions_for_language",
@@ -32,6 +34,8 @@ __all__ = [
     "fields",
     "first_of",
     "normalize_type",
+    "normalize_static_index",
+    "parse_static_index_literal",
     "split_qualified",
     "text",
 ]

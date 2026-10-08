@@ -5,7 +5,7 @@ from __future__ import annotations
 import shutil
 import uuid
 
-from backend.app.services.project_analysis.repository import ProjectRepository
+from backend.app.services.projects import ProjectRepository
 
 from .contracts import ExecutionError, ExecutionTaskRequest, ExecutionTaskView
 from .policy import ExecutionPolicy

@@ -9,14 +9,14 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from backend.app.execution.contracts import ExecutionPlan, ExecutionTaskRequest
+from backend.app.execution.contracts import ExecutionTaskRequest
 from backend.app.execution.docker_executor import DockerExecutionResult, DockerExecutor
 from backend.app.execution.policy import ExecutionError, ExecutionPolicy, ExecutionSettings
 from backend.app.execution.repository import ExecutionRepository
 from backend.app.execution.service import ExecutionService
 from backend.app.execution.worker import ExecutionWorker
 from backend.app.models import Base, ProjectModel
-from backend.app.services.project_analysis.repository import ProjectRepository
+from backend.app.services.projects import ProjectDeletionRepository
 from backend.app.services.project_workspace.paths import ProjectWorkspacePaths
 
 
@@ -183,8 +183,8 @@ class ExecutionFoundationTests(unittest.TestCase):
         self.assertEqual(cancelled.status, "cancelled")
         self.assertIsNone(self.repository.claim_next("worker1"))
 
-    def test_project_lifecycle_detects_and_cleans_execution_tasks(self):
-        projects = ProjectRepository(self.sessions)
+    def test_project_deletion_repository_detects_and_cleans_execution_tasks(self):
+        deletions = ProjectDeletionRepository(self.sessions)
         db = self.sessions()
         db.add(ProjectModel(
             id="project1",
@@ -199,10 +199,10 @@ class ExecutionFoundationTests(unittest.TestCase):
         self.repository.create(
             task_id="task1", project_id="project1", user_id="user1", plan=plan,
         )
-        self.assertTrue(projects.has_active_runs("project1", "user1"))
+        self.assertTrue(deletions.has_active_tasks("project1", "user1"))
         self.repository.request_cancel("task1", "user1")
-        self.assertFalse(projects.has_active_runs("project1", "user1"))
-        self.assertTrue(projects.delete_owned_with_runs("project1", "user1"))
+        self.assertFalse(deletions.has_active_tasks("project1", "user1"))
+        self.assertTrue(deletions.delete_owned_with_dependents("project1", "user1"))
         self.assertIsNone(self.repository.get("task1", "user1"))
 
     def test_worker_uses_controlled_workspace_and_persists_terminal_state(self):

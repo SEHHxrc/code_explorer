@@ -172,7 +172,7 @@ import {
   listProjectAgentRuns,
   streamAgentEvents,
 } from '../services/agentApi'
-import { getAvailableModels, probeModelConnection } from '../services/projectApi.js'
+import { getAvailableModels, probeModelConnection } from '../services/modelApi.js'
 import { apiErrorMessage } from '../services/httpClient.js'
 
 const props = defineProps({
