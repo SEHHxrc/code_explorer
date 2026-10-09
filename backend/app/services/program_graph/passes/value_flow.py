@@ -27,14 +27,15 @@ class ValueFlowPass:
             target = graph.nodes.get(edge.target)
             if target is None:
                 continue
-            source_variable = edge.variable
+            read_variable = edge.variable
+            source_variable = edge.source_variable or read_variable
             transfers = [
                 transfer
                 for transfer in target.value_transfers
-                if source_variable in transfer.input_variables
+                if read_variable in transfer.input_variables
             ]
             if not transfers:
-                transfers = self._fallback_transfers(target, source_variable)
+                transfers = self._fallback_transfers(target, read_variable)
             for transfer in transfers:
                 target_variable = transfer.output_variable
                 transfer_kind = transfer.transfer_kind
@@ -71,7 +72,7 @@ class ValueFlowPass:
         source_variable: str,
     ) -> list[ProgramValueTransfer]:
         """在语言前端没有精确传递时生成保证完备性的保守关系。"""
-        if not node.definitions:
+        if not node.definitions or node.value_transfers:
             return [ProgramValueTransfer(
                 output_variable=source_variable,
                 input_variables=[source_variable],

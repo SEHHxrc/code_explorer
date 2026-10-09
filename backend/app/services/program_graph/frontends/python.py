@@ -7,6 +7,7 @@ from typing import Any
 
 from backend.app.services.syntax_analysis import extensions_for_language
 from backend.app.services.syntax_analysis import field as _field
+from backend.app.services.syntax_analysis.parameters import python_parameter_kinds
 
 from ..contracts import ValueTransferKind
 from ..control_ir import ControlCallSite, ControlStatement, ControlValueTransfer
@@ -70,6 +71,7 @@ class _PythonFunctionCollector(TreeSitterFunctionCollector):
             # Python 允许运行时重复绑定函数，位置身份比注解签名更可靠。
             parameter_types=(),
             body=_field(node, "body"),
+            parameter_kinds=python_parameter_kinds(_field(node, "parameters"), self.source),
         ) if name else None
 
     def _python_parameters(self, node: Any | None) -> list[str]:
@@ -111,14 +113,44 @@ class _PythonFunctionCollector(TreeSitterFunctionCollector):
         self,
         arguments: Any | None,
     ) -> tuple[list[Any], list[tuple[str, Any]]]:
-        """拆分 Python 位置参数和 keyword_argument。"""
+        """静态展开字面量 *序列/**字典；动态展开不猜测参数位置。"""
         positional: list[Any] = []
         keywords: list[tuple[str, Any]] = []
         if arguments is None:
             return positional, keywords
+        unknown_positions = False
         for item in arguments.named_children:
+            if item.type == "list_splat":
+                value = next(iter(item.named_children), None)
+                if not unknown_positions and value is not None and value.type in {"list", "tuple"} and not any(child.type == "list_splat" for child in value.named_children):
+                    positional.extend(value.named_children)
+                else:
+                    self._limitations.append("Python 动态 *实参展开长度未建模，仅绑定此前的位置参数。")
+                    unknown_positions = True
+                continue
+            if item.type == "dictionary_splat":
+                value = next(iter(item.named_children), None)
+                pairs = list(value.named_children) if value is not None and value.type == "dictionary" else []
+                parsed: list[tuple[str, Any]] = []
+                valid = value is not None and value.type == "dictionary"
+                for pair in pairs:
+                    try:
+                        key = ast.literal_eval(self._text(_field(pair, "key")))
+                    except (SyntaxError, ValueError):
+                        key = None
+                    target = _field(pair, "value")
+                    if pair.type != "pair" or not isinstance(key, str) or target is None or key in {name for name, _ in parsed}:
+                        valid = False
+                        break
+                    parsed.append((key, target))
+                if valid:
+                    keywords.extend(parsed)
+                else:
+                    self._limitations.append("Python 动态 **实参展开未建模，不猜测关键字或将字典整体映射到某一形参。")
+                continue
             if item.type != "keyword_argument":
-                positional.append(item)
+                if not unknown_positions:
+                    positional.append(item)
                 continue
             name = self._text(_field(item, "name")) or "**"
             value = _field(item, "value")

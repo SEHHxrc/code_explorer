@@ -4,13 +4,18 @@ TEMPORARY CONTROL GROUP / 临时对照组：baseline 字段只为实验存在，
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Callable
 
 from sqlalchemy.orm import Session
 
+from backend.app.agents.contracts import AgentRunRequest
+
 from backend.app.experiments.contracts import BlindReviewRequest
 from backend.app.models import (
     ExperimentComparisonModel,
+    AgentRunModel,
+    AgentJobModel,
     ExperimentReviewModel,
     SessionLocal,
 )
@@ -48,6 +53,33 @@ class ExperimentRepository:
                 baseline_run_id=record.baseline_run_id,
                 graph_run_id=record.graph_run_id,
                 blind_order=record.blind_order,
+                execution_order=record.execution_order,
+            ))
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def create_pair(self, record: ComparisonRecord, request: AgentRunRequest) -> None:
+        """同一数据库事务创建随机排序的两个运行、队列项和配对，失败整体回滚。"""
+        session = self.session_factory()
+        try:
+            identifiers = {"baseline": record.baseline_run_id, "security_evidence": record.graph_run_id}
+            now = datetime.now(timezone.utc)
+            for index, strategy in enumerate(record.execution_order):
+                run_id = identifiers[strategy]
+                session.add(AgentRunModel(
+                    id=run_id, project_id=record.project_id, user_id=record.user_id,
+                    question=request.question, use_model=True, max_steps=request.max_steps,
+                    model=request.model, status="queued", created_at=now + timedelta(microseconds=index),
+                ))
+                session.add(AgentJobModel(run_id=run_id, strategy=strategy))
+            session.add(ExperimentComparisonModel(
+                id=record.comparison_id, project_id=record.project_id, user_id=record.user_id,
+                question=record.question, baseline_run_id=record.baseline_run_id,
+                graph_run_id=record.graph_run_id, blind_order=record.blind_order,
                 execution_order=record.execution_order,
             ))
             session.commit()

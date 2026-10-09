@@ -34,6 +34,16 @@ NetworkX 边字段；ProgramGraph 仍只负责函数内控制流和到达定义�
 - 注册表测试直接比较 `dependency_analyzer.EXT_MAP` 的语言集合，防止以后新增依赖语言时
   ProgramGraph 静默落后。
 
+JS/TS 额外复用 `syntax_analysis/javascript.py` 的函数/参数语法，匿名回调使用源码位置身份，
+TypeScript `.tsx` 使用 TSX grammar。spread 之后实参位置未知，停止绑定而非伪造位置映射。
+复杂解构、实参和形参通过 `value_binding` 协议处理，固定字段的空输入显式保留，避免安全兄弟字段获得污点。
+JS/TS 的 `obj["key"]` 与 `obj.key` 规范为同一词法字段；其他语言保留自己的下标语义。
+Vue `.vue` 与其他分析器共用 `source_units`，单个 `<script setup>` 建立生成的 `vue_setup` 函数分区，脚本操作后接入 `v-html` 读值；分区范围覆盖原文件但不伪装源码中真的声明了该函数。
+匿名回调的函数内 CFG/DFG 不代表异步回调调用图、闭包捕获或完整 Promise 时序已实现。
+公共 Def/Use、调用点和结构绑定遍历止于嵌套函数作用域，不把函数创建当函数体执行。
+安全消费者可通过显式 `IRValueBoundary` 在私有副本中绑定捕获槽位和 CFG 退出值，复用
+本模块 Pass；不修改持久化图、不为父函数伪造回调执行，也不把该有限模型当完整事件时序。
+
 依赖图与 ProgramGraph 还共同使用 `syntax_analysis` 中的扩展名目录、忽略目录、线程本地
 Tree-sitter Parser 池、节点字段/文本读取和类型名称归一化。ProgramGraph 不再导入
 `dependency_analyzer` 的私有 AST 工具。
@@ -58,6 +68,18 @@ Tree-sitter Parser 池、节点字段/文本读取和类型名称归一化。Pro
 | `service.py` | 文件范围复用、前端编排、Overlay 构建与覆盖率汇总入口。 |
 
 ## 当前边界
+
+可选 parameter_kinds、实参源码范围、positional_spread_positions、result_targets 和
+return_values 保存声明类别、展开位置与 Go 有序返回分量；历史字段缺失时保持旧行为。
+这些是跨语言契约，语言前端只适配自己能确认的语法。
+安全消费者按原始实参范围绑定直接嵌套 Source，在私有图添加可变参数成员定义、简单输出
+缓冲区写入；仍使用公共 Pass，不修改本模块原始持久化图，也不创建依赖调用边。
+Go 仅显式直接 return 和有序接收得到分量隔离，裸命名返回、隐式转发仍有局限。
+
+公共 `ControlStatement/ProgramGraphNode` 提供默认 must 的 certainty；历史图缺少字段时仍按
+原来的确定写入处理。框架可能写入可显式标记 inferred/may，通用到达定义算法保留之前定义，
+值流 Overlay 延续 may。Vue setup 的有限文本 v-model 使用这个公共能力；它不是按模板源码
+排列事件，也不模拟完整响应式调度。ref 词法身份由 syntax_analysis.vue_bindings 统一映射。
 
 八种语言现在都对可由语法确定的声明和赋值执行输入输出配对：Python 序列解包、Java 多
 declarator、JavaScript/TypeScript declarator、Go 并行绑定、C/C++ init declarator 与 Rust

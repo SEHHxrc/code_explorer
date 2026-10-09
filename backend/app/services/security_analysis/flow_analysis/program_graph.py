@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections import defaultdict, deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from backend.app.services.program_graph import (
@@ -16,6 +16,7 @@ from backend.app.services.program_graph import (
     ProgramGraphNode,
 )
 from backend.app.services.semantic_index import SemanticIndex, SemanticIndexArtifact
+from backend.app.services.program_graph.passes import ReachingDefinitionsPass
 
 from ..contracts import (
     DataFlowEvidence,
@@ -25,6 +26,11 @@ from ..contracts import (
 )
 from ..registry import SemanticsRegistry
 from .call_graph import CallTransitionIndex, ProgramArgumentBinder
+from .value_boundaries import ValueBoundaryIndex
+from .argument_slots import prepare_argument_slots
+from .call_effects import CallOutputEffects
+from .call_sources import prepare_call_sources
+from ..ir import IRValueBoundary
 
 
 @dataclass
@@ -39,6 +45,7 @@ class _ReturnContinuation:
     transition_id: str
     uncertain: bool = False
     reverse_boundary: bool = False
+    result_slots: tuple[str, ...] = ()
 
 
 @dataclass
@@ -54,6 +61,7 @@ class _FlowState:
     uncertain: bool = False
     limitations: tuple[str, ...] = ()
     continuations: tuple[_ReturnContinuation, ...] = ()
+    boundary_ids: tuple[str, ...] = ()
 
 
 _ValueState = tuple[str, str]
@@ -81,8 +89,16 @@ class ProgramGraphSecurityFlowAnalyzer:
         sanitizers: list[StaticSecurityFact],
         dependency_graph: dict[str, Any] | None = None,
         semantic_index: SemanticIndex | SemanticIndexArtifact | dict[str, Any] | None = None,
+        value_boundaries: list[IRValueBoundary] | None = None,
     ) -> list[DataFlowEvidence]:
         """返回函数内及有界实参到形参传播能够建立的 Source-to-Sink 路径。"""
+        semantic_view = SemanticIndex.load(semantic_index) if semantic_index is not None else None
+        transitions = CallTransitionIndex.from_semantic_index(semantic_view) if semantic_view is not None and semantic_view.artifact.callsites else CallTransitionIndex.from_dependency_graph(dependency_graph or {})
+        program_graph = prepare_call_sources(program_graph, sources)
+        program_graph = prepare_argument_slots(program_graph, transitions, self.argument_binder)
+        program_graph = CallOutputEffects.prepare(program_graph, sources)
+        boundary_index = ValueBoundaryIndex(program_graph, value_boundaries or [])
+        program_graph = boundary_index.graph
         functions_by_symbol: dict[str, list[FunctionProgramGraph]] = defaultdict(list)
         for function in program_graph.functions.values():
             functions_by_symbol[function.symbol_id].append(function)
@@ -137,8 +153,7 @@ class ProgramGraphSecurityFlowAnalyzer:
                         sink_names=sink_names,
                         path=path,
                     ))
-        semantic_view = SemanticIndex.load(semantic_index) if semantic_index is not None else None
-        if dependency_graph is not None or semantic_view is not None:
+        if dependency_graph is not None or semantic_view is not None or value_boundaries:
             flows.extend(self._interprocedural_flows(
                 dependency_graph=dependency_graph,
                 semantic_index=semantic_view,
@@ -150,6 +165,7 @@ class ProgramGraphSecurityFlowAnalyzer:
                     (flow.source_fact_id, flow.sink_fact_id)
                     for flow in flows
                 },
+                boundary_index=boundary_index,
             ))
         return sorted(flows, key=lambda item: item.flow_id)
 
@@ -163,6 +179,7 @@ class ProgramGraphSecurityFlowAnalyzer:
         sanitizers_by_symbol: dict[str, list[StaticSecurityFact]],
         functions_by_symbol: dict[str, list[FunctionProgramGraph]],
         excluded_pairs: set[tuple[str, str]],
+        boundary_index: ValueBoundaryIndex,
     ) -> list[DataFlowEvidence]:
         """沿确定调用点把实参绑定到目标形参，搜索有限深度的跨函数路径。"""
         transitions = (
@@ -244,6 +261,7 @@ class ProgramGraphSecurityFlowAnalyzer:
                 ))
                 if state.depth >= self.max_call_depth:
                     continue
+                queue.extend(self._boundary_states(state, boundary_index, blocked_nodes))
                 for transition in transitions.for_source(state.function.symbol_id):
                     hit = call_index.get(transition.callsite_id)
                     if hit is None:
@@ -272,6 +290,7 @@ class ProgramGraphSecurityFlowAnalyzer:
                                 or transition.confidence != "high"
                                 or transition.truncated
                                 or overloaded
+                                or any(pattern.kind != "name" for pattern in target_function.parameter_patterns)
                                 or any(edge.certainty == "may" for edge in local_path)
                             )
                             steps = list(state.steps)
@@ -317,6 +336,7 @@ class ProgramGraphSecurityFlowAnalyzer:
                                 ),
                                 transition_id=transition.edge_id,
                                 uncertain=uncertain,
+                                result_slots=tuple(call.result_targets),
                             ),)
                             queue.append(_FlowState(
                                 function=target_function,
@@ -328,8 +348,47 @@ class ProgramGraphSecurityFlowAnalyzer:
                                 uncertain=uncertain,
                                 limitations=limitations,
                                 continuations=continuations,
+                                boundary_ids=state.boundary_ids,
                             ))
         return results
+
+    def _boundary_states(
+        self, state: _FlowState, index: ValueBoundaryIndex, blocked_nodes: set[str],
+    ) -> list[_FlowState]:
+        """复用局部值流验证写入，再经 may 边界进入读取侧；最多共用四层预算。"""
+        result: list[_FlowState] = []
+        for transition in index.for_source(state.function.method_id):
+            boundary = transition.boundary
+            path = self._path(
+                state.function, source_node_id=state.node_id, source_names=state.names,
+                sink_node_id=transition.source_node_id, sink_names=set(boundary.source_names),
+                blocked_nodes=blocked_nodes,
+            )
+            if path is None:
+                continue
+            target = index.graph.functions[transition.target_method_id]
+            writer = state.function.nodes[transition.source_node_id]
+            reader = target.nodes[transition.target_node_id]
+            steps = [*state.steps, *self._assignment_steps(state.function, path)]
+            for suffix, function, location, expression in (
+                ("write", state.function, boundary.source_location, f"{boundary.kind}: {', '.join(boundary.source_names)}" if boundary.source_at_exit else writer.code),
+                ("read", target, boundary.target_location, f"{boundary.kind}: {', '.join(boundary.target_names)}" if boundary.capture else reader.code),
+            ):
+                steps.append(FlowStepEvidence(
+                    step_id="flowstep:" + self._digest(boundary.boundary_id + suffix),
+                    order=0, kind="assignment", symbol=function.symbol_id,
+                    location=EvidenceLocation(**location.__dict__), expression=expression,
+                    input_names=list(boundary.source_names if suffix == "write" else boundary.target_names),
+                    output_names=list(boundary.target_names), provenance="inferred", certainty="may",
+                    importance="essential",
+                ))
+            result.append(_FlowState(
+                function=target, node_id=transition.target_node_id, names=boundary.target_names,
+                steps=steps, transition_ids=state.transition_ids, depth=state.depth + 1,
+                uncertain=True, boundary_ids=state.boundary_ids + (boundary.boundary_id,),
+                limitations=tuple(dict.fromkeys((*state.limitations, *target.limitations, *boundary.limitations))),
+            ))
+        return result
 
     def _return_states(
         self,
@@ -365,8 +424,20 @@ class ProgramGraphSecurityFlowAnalyzer:
                 if node.kind == "return" and node.uses
             ]
         result: list[_FlowState] = []
-        for continuation in continuations:
+        for base_continuation in continuations:
             for return_node, value_names, return_certainty in return_items:
+                values: list[tuple[int | None, tuple[str, ...]]] = [(None, value_names)]
+                if return_node.return_values and base_continuation.result_slots:
+                    values = [(index, tuple(names)) for index, names in enumerate(return_node.return_values) if names and index < len(base_continuation.result_slots)]
+                for position, names in values:
+                    continuation = replace(base_continuation, result_names=(base_continuation.result_slots[position],)) if position is not None else base_continuation
+                    result.extend(self._return_value_states(state, continuation, return_node, names, return_certainty, blocked_nodes))
+        return result
+
+    def _return_value_states(self, state: _FlowState, continuation: _ReturnContinuation, return_node: ProgramGraphNode, value_names: tuple[str, ...], return_certainty: str, blocked_nodes: set[str]) -> list[_FlowState]:
+        """将一个已选定返回分量映射到对应接收槽位，复用相同局部路径验证。"""
+        result: list[_FlowState] = []
+        if value_names:
                 path = self._path(
                     state.function,
                     source_node_id=state.node_id,
@@ -376,7 +447,7 @@ class ProgramGraphSecurityFlowAnalyzer:
                     blocked_nodes=blocked_nodes,
                 )
                 if path is None:
-                    continue
+                    return []
                 uncertain = (
                     state.uncertain
                     or continuation.uncertain
@@ -412,6 +483,7 @@ class ProgramGraphSecurityFlowAnalyzer:
                         state.continuations[:-1]
                         if state.continuations else ()
                     ),
+                    boundary_ids=state.boundary_ids,
                 ))
         return result
 
@@ -457,6 +529,7 @@ class ProgramGraphSecurityFlowAnalyzer:
                         or overloaded
                     ),
                     reverse_boundary=True,
+                    result_slots=tuple(call.result_targets),
                 ))
         return result
 
@@ -566,14 +639,15 @@ class ProgramGraphSecurityFlowAnalyzer:
             source.fact_id,
             sink.fact_id,
             *state.transition_ids,
+            *state.boundary_ids,
             *(edge.edge_id for edge in final_path),
         ))
         limitations = tuple(dict.fromkeys((
             *state.limitations,
-            f"跨过程参数传播最多分析 {self.max_call_depth} 层调用。",
+            f"跨过程搜索最多分析 {self.max_call_depth} 层调用或静态值边界。",
             "返回值传播只覆盖局部变量直接接收的调用结果；尚未覆盖字段、数组、集合元素和完整对象别名传播。",
         )))
-        uncertain = state.uncertain or any(
+        uncertain = state.uncertain or any(step.certainty == "may" for step in steps) or any(
             edge.certainty == "may" for edge in final_path
         )
         return DataFlowEvidence(
@@ -587,6 +661,7 @@ class ProgramGraphSecurityFlowAnalyzer:
             confidence="low" if uncertain else "medium",
             steps=steps,
             call_edge_ids=list(state.transition_ids),
+            value_boundary_ids=list(state.boundary_ids),
             unresolved=list(limitations),
             truncated=False,
         )
@@ -599,16 +674,25 @@ class ProgramGraphSecurityFlowAnalyzer:
     ) -> tuple[str, tuple[str, ...]] | None:
         """把参数、调用返回或访问结果 Source 映射到定义节点。"""
         value_flow = source.metadata.get("value_flow") or {}
+        if value_flow.get("output_arguments"):
+            node = function.nodes.get(CallOutputEffects.node_id(function.method_id, str(source.metadata.get("callsite_id") or "")))
+            return (node.node_id, tuple(node.definitions)) if node is not None else None
         if value_flow.get("result") == "parameter":
             entry = function.nodes[function.entry_node_id]
-            if source.name in entry.definitions:
-                return entry.node_id, (source.name,)
+            parameter = source.metadata.get("parameter_seed") or source.name
+            if parameter in entry.definitions:
+                return entry.node_id, (parameter,)
             return None
         callsite_id = str(source.metadata.get("callsite_id") or "")
         if callsite_id and callsite_id in call_index:
-            node = call_index[callsite_id][0]
+            node, call = call_index[callsite_id]
+            if call.result_variable and call.result_variable in node.definitions:
+                return node.node_id, (call.result_variable,)
             assigned_targets = source.metadata.get("assigned_targets")
             if isinstance(assigned_targets, list):
+                positions = value_flow.get("result_positions")
+                if positions:
+                    assigned_targets = [assigned_targets[index] for index in positions if isinstance(index, int) and 0 <= index < len(assigned_targets)]
                 exact_targets = tuple(
                     name for name in assigned_targets
                     if isinstance(name, str) and name in node.definitions
@@ -616,8 +700,15 @@ class ProgramGraphSecurityFlowAnalyzer:
                 return (node.node_id, exact_targets) if exact_targets else None
             return (node.node_id, tuple(node.definitions)) if node.definitions else None
         node = self._containing_node(function, source.location)
-        if node is None or not node.definitions:
+        if node is None:
             return None
+        targets = source.metadata.get("assigned_targets")
+        if isinstance(targets, list):
+            names = tuple(name for name in targets if name in node.definitions)
+            if names:
+                return node.node_id, names
+            read_names = tuple(name for name in source.metadata.get("value_identifiers") or [] if name in node.uses)
+            return (node.node_id, read_names) if read_names else None
         return node.node_id, tuple(node.definitions)
 
     def _sink_target(
@@ -630,6 +721,17 @@ class ProgramGraphSecurityFlowAnalyzer:
         callsite_id = str(sink.metadata.get("callsite_id") or "")
         hit = call_index.get(callsite_id)
         if hit is None:
+            if (sink.metadata.get("value_flow") or {}).get("argument_role") == "sink":
+                node = self._containing_node(function, sink.location)
+                names = set(sink.metadata.get("value_identifiers") or [])
+                if node is not None:
+                    # 属性写入的值流落在 LHS 定义，而不是 RHS 的变量状态。
+                    outputs = {
+                        transfer.output_variable for transfer in node.value_transfers
+                        if names.intersection(transfer.input_variables)
+                    }
+                    names = outputs or names.intersection(node.uses)
+                return (node.node_id, names) if node is not None and names else None
             return None
         node, call = hit
         value_flow = sink.metadata.get("value_flow") or {}
@@ -652,6 +754,8 @@ class ProgramGraphSecurityFlowAnalyzer:
         """返回净化调用所在节点；数据流不得穿过其返回值定义。"""
         result: set[str] = set()
         for sanitizer in sanitizers:
+            if (sanitizer.metadata.get("value_flow") or {}).get("result_role") != "sanitized":
+                continue
             if not self._contains(function, sanitizer.location):
                 continue
             callsite_id = str(sanitizer.metadata.get("callsite_id") or "")
@@ -671,6 +775,16 @@ class ProgramGraphSecurityFlowAnalyzer:
         blocked_nodes: set[str],
     ) -> list[ProgramGraphEdge] | None:
         """在增强值流 Overlay 上按变量状态寻找最短 Source-to-Sink 路径。"""
+        if sink_node_id in blocked_nodes:
+            return None
+        if source_node_id == sink_node_id and set(source_names).intersection(sink_names):
+            successors: dict[str, set[str]] = defaultdict(set)
+            for edge in function.edges:
+                if edge.kind == "cfg":
+                    successors[edge.source].add(edge.target)
+            if source_node_id not in ReachingDefinitionsPass._reachable(function.entry_node_id, successors):
+                return None
+            return []  # 直接 Source-to-Sink 操作，不伪造跨操作边。
         adjacency: dict[str, list[ProgramGraphEdge]] = defaultdict(list)
         value_edges = [edge for edge in function.edges if edge.kind == "value_flow"]
         data_edges = value_edges or [
@@ -749,7 +863,7 @@ class ProgramGraphSecurityFlowAnalyzer:
             source_fact_id=source.fact_id,
             sink_fact_id=sink.fact_id,
             status="may_reach_sink",
-            confidence="low" if any(edge.certainty == "may" for edge in path) else "medium",
+            confidence="low" if source.metadata.get("binding_certainty") == "may" or any(edge.certainty == "may" for edge in path) else "medium",
             steps=steps,
             unresolved=list(function.limitations),
         )
@@ -772,6 +886,7 @@ class ProgramGraphSecurityFlowAnalyzer:
             expression=fact.name,
             input_names=[] if kind == "source" else list(names),
             output_names=list(names) if kind == "source" else [],
+            certainty="may" if fact.metadata.get("binding_certainty") == "may" else "must",
             importance="essential",
         )
 
@@ -809,7 +924,9 @@ class ProgramGraphSecurityFlowAnalyzer:
             if node.location is not None
             and node.kind not in {"method_entry", "method_exit"}
             and node.location.path == location.path
-            and node.location.line <= location.line <= node.location.end_line
+            and (node.location.line, node.location.column) <= (location.line, location.column or 1)
+            and (location.end_line or location.line, location.end_column or location.column or 1)
+            <= (node.location.end_line, node.location.end_column)
         ]
         return min(candidates, key=lambda item: (
             item.location.end_line - item.location.line,  # type: ignore[union-attr]

@@ -5,7 +5,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
-AgentStrategy = Literal["default", "graph", "baseline"]
+AgentStrategy = Literal["default", "graph", "baseline", "security_evidence"]
 AgentRunStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
 
 
@@ -94,7 +94,7 @@ class AgentRunHistoryItem(BaseModel):
     question_preview: str
     provider: str | None = None
     model: str | None = None
-    strategy: Literal["default", "graph", "baseline"] = "default"
+    strategy: AgentStrategy = "default"
     tool_calls: int = 0
     evidence_count: int = 0
     created_at: datetime | None = None
@@ -105,6 +105,6 @@ class AgentRunSnapshot(BaseModel):
     """可供前端恢复一次历史会话的运行、展示事件和去重证据。"""
 
     run: AgentRunView
-    strategy: Literal["default", "graph", "baseline"] = "default"
+    strategy: AgentStrategy = "default"
     events: list[AgentEvent] = Field(default_factory=list)
     evidence: list[AgentEvidence] = Field(default_factory=list)

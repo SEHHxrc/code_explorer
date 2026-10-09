@@ -15,7 +15,10 @@ from backend.app.agents.contracts import AgentRunRequest
 from backend.app.agents.orchestrator import AGENT_INSTRUCTIONS, AgentRunManager
 from backend.app.agents.run_store import AgentRunStore
 from backend.app.agents.tools import create_project_tool_registry
-from backend.app.experiments.graph_context import GraphAugmentedContextBuilder
+from backend.app.experiments.context import (
+    SECURITY_EXPERIMENT_INSTRUCTIONS, SecurityExperimentContextBuilder, prepare_experiment_artifact,
+)
+from backend.app.experiments.tools import create_experiment_tool_registry
 from backend.app.models import init_db
 from backend.app.services.projects import ProjectArtifactRepository, ProjectRepository
 
@@ -132,15 +135,17 @@ class AgentQueueWorker:
     def _manager_for(self, strategy: str, artifact: dict) -> tuple[AgentRunManager, dict]:
         """按运行策略创建隔离的智能体编排器。"""
         if strategy == "graph":
+            raise ValueError("Legacy graph experiment cannot be resumed; create a static security comparison instead")
+        if strategy == "security_evidence":
             return AgentRunManager(
                 store=self.store,
-                context_builder=GraphAugmentedContextBuilder(),
-                tools=create_project_tool_registry(),
-                instructions=AGENT_INSTRUCTIONS,
-            ), artifact
+                context_builder=SecurityExperimentContextBuilder(),
+                tools=create_experiment_tool_registry(),
+                instructions=SECURITY_EXPERIMENT_INSTRUCTIONS,
+            ), prepare_experiment_artifact(artifact, with_evidence=True)
         if strategy == "baseline":
             # TEMPORARY CONTROL GROUP / 临时对照组：
-            # 图增强胜出后连同 baseline 目录与此分支一起删除。
+            # 安全证据增强确认更优并结束对照实验后，删除 baseline 目录及此分支。
             from backend.app.experiments.baseline.context_builder import (
                 BaselineContextBuilder,
             )

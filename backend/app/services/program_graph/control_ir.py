@@ -5,6 +5,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
+from backend.app.services.value_binding import BindingPattern, BindingValue
+from backend.app.services.value_binding.parameters import ParameterKind
+
 from .contracts import EdgeCertainty, ProgramGraphLocation, ValueTransferKind
 
 ControlStatementKind = Literal[
@@ -24,6 +27,11 @@ class ControlCallSite:
     positional_arguments: tuple[tuple[str, ...], ...] = ()
     keyword_arguments: tuple[tuple[str, tuple[str, ...]], ...] = ()
     receiver_identifiers: tuple[str, ...] = ()
+    argument_values: tuple[BindingValue, ...] = ()
+    positional_spread_positions: tuple[int, ...] = ()
+    result_targets: tuple[str, ...] = ()
+    positional_argument_locations: tuple[ProgramGraphLocation, ...] = ()
+    keyword_argument_locations: tuple[tuple[str, ProgramGraphLocation], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -54,6 +62,9 @@ class ControlStatement:
     alternative: tuple[ControlStatement, ...] = ()
     handlers: tuple[tuple[ControlStatement, ...], ...] = ()
     finalizer: tuple[ControlStatement, ...] = ()
+    certainty: EdgeCertainty = "must"
+    provenance: Literal["observed", "inferred", "generated"] = "observed"
+    return_values: tuple[tuple[str, ...], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -68,6 +79,8 @@ class ControlFunction:
     parameters: tuple[str, ...]
     body: tuple[ControlStatement, ...]
     limitations: tuple[str, ...] = ()
+    parameter_patterns: tuple[BindingPattern, ...] = ()
+    parameter_kinds: dict[str, ParameterKind] = field(default_factory=dict)
 
 
 @dataclass

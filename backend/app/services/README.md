@@ -9,6 +9,7 @@
 | `project_workspace/` | `ProjectWorkspaceService.prepare()/publish()`：安全获取 Git/ZIP 并发布工作区。 |
 | `dependency_analyzer/` | `UnifiedCodeAnalyzer`：多语言依赖图生成。 |
 | `syntax_analysis/` | 依赖图与 ProgramGraph 共享的语言目录、Tree-sitter Parser 池和节点读取工具。 |
+| `value_binding/` | `PatternResolver.resolve()`：AST/规则无关的对象与序列模式投影，供程序图和安全分析共用。 |
 | `program_index/` | `ProgramIdentity`：依赖图、安全 IR 和未来数据流共享的文件、符号、位置与调用点身份。 |
 | `graph_core/` | `GraphArtifactView`：图能力、最小节点/边投影、只读适配器和与存储无关的结构校验。 |
 | `semantic_index/` | `SemanticIndexView`：持久化并复用可调用对象、调用点、解析目标和变量类型事实。 |
@@ -20,6 +21,10 @@
 | `analyzer.py` | `build_file_tree_with_symbols()`：把符号附加到文件树。 |
 
 项目导入的依赖方向是 `projects → project_workspace + project_analysis`；纯分析内部再调用
-`dependency_analyzer → code_intelligence/security_analysis`。静态分析模块不依赖项目数据库、用户
+`dependency_analyzer + code_intelligence + security_analysis`；`security_analysis` 再消费公共
+`program_graph` 与 `semantic_index`。静态分析模块不依赖项目数据库、用户
 身份或 HTTP。失败补偿由 `projects.ProjectImportTransaction` 管理；删除由隔离区、删除 Journal 和
 `ProjectDeletionJanitor` 保证可恢复。`security_analysis` 只为已注册规则的语言调用 `program_graph`。
+安全语言前端、规则、参数绑定和 Source-to-Sink 证据都属于 `security_analysis`；纯语法共性属于
+`syntax_analysis`，函数内 CFG/DFG 属于 `program_graph`，跨文件调用目标仍由依赖分析与语义索引
+维护。当前安全规则覆盖 Python、Java、Go、C/C++、JavaScript/TypeScript；Rust 仍明确报告安全规则覆盖缺口。

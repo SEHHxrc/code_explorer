@@ -116,6 +116,7 @@ class DataFlowEvidence(BaseModel):
     confidence: Literal["high", "medium", "low"]
     steps: list[FlowStepEvidence]
     call_edge_ids: list[str] = Field(default_factory=list)
+    value_boundary_ids: list[str] = Field(default_factory=list)
     unresolved: list[str] = Field(default_factory=list)
     truncated: bool = False
 

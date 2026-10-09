@@ -7,13 +7,25 @@ from typing import Any
 
 from backend.app.services.program_index import ProgramIdentity
 
-from .frontends import GoSecurityFrontend, JavaSecurityFrontend, PythonSecurityFrontend
+from .frontends import (
+    CSecurityFrontend,
+    CppSecurityFrontend,
+    GoSecurityFrontend,
+    JavaSecurityFrontend,
+    JavaScriptSecurityFrontend,
+    TypeScriptSecurityFrontend,
+    PythonSecurityFrontend,
+)
 from .registry import FrontendRegistry, RulePackRegistry, SemanticsRegistry
 from .rule_engine import SecurityRuleEngine, SecurityScanResult
-from .rules import GO_RULE_PACKS, JAVA_RULE_PACKS, PYTHON_RULE_PACKS
+from .rules import C_FAMILY_RULE_PACKS, GO_RULE_PACKS, JAVA_RULE_PACKS, PYTHON_RULE_PACKS, JAVASCRIPT_RULE_PACKS
 from .semantics import (
+    CLanguageSemantics,
+    CppLanguageSemantics,
     GoLanguageSemantics,
     JavaLanguageSemantics,
+    JavaScriptLanguageSemantics,
+    TypeScriptLanguageSemantics,
     PythonLanguageSemantics,
 )
 
@@ -29,19 +41,27 @@ class SecurityScanner:
         semantics: SemanticsRegistry | None = None,
         rule_engine: SecurityRuleEngine | None = None,
     ) -> None:
-        """注入扩展注册表；默认启用 Python、Java 和 Go 安全前端。"""
+        """注入扩展注册表；默认启用 Python、Java、Go、C/C++、JS/TS 安全前端。"""
         self.frontends = frontends or FrontendRegistry([
             PythonSecurityFrontend(),
             JavaSecurityFrontend(),
             GoSecurityFrontend(),
+            CSecurityFrontend(),
+            CppSecurityFrontend(),
+            JavaScriptSecurityFrontend(),
+            TypeScriptSecurityFrontend(),
         ])
         self.rule_packs = rule_packs or RulePackRegistry(
-            PYTHON_RULE_PACKS + JAVA_RULE_PACKS + GO_RULE_PACKS
+            PYTHON_RULE_PACKS + JAVA_RULE_PACKS + GO_RULE_PACKS + C_FAMILY_RULE_PACKS + JAVASCRIPT_RULE_PACKS
         )
         self.semantics = semantics or SemanticsRegistry([
             PythonLanguageSemantics(),
             JavaLanguageSemantics(),
             GoLanguageSemantics(),
+            CLanguageSemantics(),
+            CppLanguageSemantics(),
+            JavaScriptLanguageSemantics(),
+            TypeScriptLanguageSemantics(),
         ])
         self.rule_engine = rule_engine or SecurityRuleEngine()
 

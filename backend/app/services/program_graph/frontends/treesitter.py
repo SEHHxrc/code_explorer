@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from collections.abc import Iterable
 
 from backend.app.services.program_index import ProgramIdentity
+from backend.app.services.value_binding import BindingPattern, BindingValue
+from backend.app.services.value_binding.parameters import ParameterKind
+from backend.app.services.syntax_analysis.javascript import parser_for_file
+from backend.app.services.syntax_analysis.source_units import SourceUnit, source_unit
 from backend.app.services.syntax_analysis import (
     DEFAULT_TREE_SITTER_PARSER_POOL,
     TreeSitterParserPool,
@@ -43,6 +48,8 @@ class FunctionDescriptor:
     parameters: tuple[str, ...]
     parameter_types: tuple[str, ...]
     body: Any | None
+    parameter_patterns: tuple[BindingPattern, ...] = ()
+    parameter_kinds: dict[str, ParameterKind] = field(default_factory=dict)
 
 
 class TreeSitterProgramGraphFrontend(ProgramGraphFrontend):
@@ -64,7 +71,9 @@ class TreeSitterProgramGraphFrontend(ProgramGraphFrontend):
     ) -> FrontendFileResult:
         """解析一个 Tree-sitter 文件并返回函数和恢复性语法诊断。"""
         source = (project_root / relative_path).read_bytes()
-        tree = self.parser_pool.get(self.parser_name).parse(source)
+        unit = source_unit(relative_path, source, self.language)
+        source = unit.source
+        tree = self.parser_pool.get(parser_for_file(self.parser_name, relative_path)).parse(source)
         failures = []
         if tree.root_node.has_error:
             failures.append({
@@ -74,6 +83,8 @@ class TreeSitterProgramGraphFrontend(ProgramGraphFrontend):
             })
         collector = self.collector_type(relative_path, source)
         collector.collect(tree.root_node)
+        collector.collect_unit(unit, tree.root_node)
+        failures.extend({"path": relative_path, "language": self.language, "reason": reason} for reason in unit.diagnostics)
         return FrontendFileResult(
             functions=collector.functions,
             failures=failures,
@@ -127,6 +138,10 @@ class TreeSitterFunctionCollector:
     def collect(self, root: Any) -> None:
         """从语法树根递归收集语言适配器识别的函数。"""
         self._walk_declarations(root, ())
+
+    def collect_unit(self, unit: SourceUnit, root: Any) -> None:
+        """混合文件可选入口；普通语言无需实现模板语义。"""
+        return None
 
     def _walk_declarations(self, node: Any, scope: tuple[str, ...]) -> None:
         """维护词法作用域并避免把函数体中的语句误当作外层声明。"""
@@ -185,6 +200,8 @@ class TreeSitterFunctionCollector:
             name=descriptor.name,
             location=location,
             parameters=descriptor.parameters,
+            parameter_patterns=descriptor.parameter_patterns,
+            parameter_kinds=descriptor.parameter_kinds,
             body=body,
             limitations=tuple(dict.fromkeys(self._limitations)),
         ))
@@ -315,6 +332,7 @@ class TreeSitterFunctionCollector:
             definitions=definitions,
             uses=uses,
             calls=calls,
+            return_values=self._return_values(node) if kind == "return" else (),
             value_transfers=self._value_transfers(
                 node,
                 definitions,
@@ -367,6 +385,8 @@ class TreeSitterFunctionCollector:
         pending = [node]
         while pending:
             current = pending.pop()
+            if self._is_value_scope_boundary(current):
+                continue
             if current.type not in self.assignment_node_types:
                 pending.extend(reversed(current.named_children))
                 continue
@@ -474,6 +494,8 @@ class TreeSitterFunctionCollector:
         pending = [node]
         while pending:
             current = pending.pop()
+            if self._is_value_scope_boundary(current):
+                continue
             if current.type in self.call_node_types:
                 callee, arguments = self._call_parts(current)
                 positional, keywords = self._call_arguments(arguments)
@@ -499,6 +521,14 @@ class TreeSitterFunctionCollector:
                         for keyword, value in keywords
                     ),
                     receiver_identifiers=self._identifiers(receiver_node),
+                    argument_values=self._call_values(positional),
+                    positional_spread_positions=tuple(
+                        index for index, argument in enumerate(positional)
+                        if argument.type == "variadic_argument"
+                    ),
+                    result_targets=self._call_result_targets(current),
+                    positional_argument_locations=tuple(location_from_tree_sitter(self.path, item) for item in positional),
+                    keyword_argument_locations=tuple((name, location_from_tree_sitter(self.path, item)) for name, item in keywords),
                 ))
             pending.extend(reversed(current.named_children))
         return tuple(sorted(result, key=lambda item: (
@@ -507,6 +537,10 @@ class TreeSitterFunctionCollector:
             item.callsite_id,
         )))
 
+    def _call_values(self, arguments: list[Any]) -> tuple[BindingValue, ...]:
+        """可选结构化实参协议；尚未适配的语言保持原来的位置参数行为。"""
+        return ()
+
     def _assignment_data(self, node: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """提取语句子树中的赋值目标与右值词法使用。"""
         definitions: list[str] = []
@@ -514,6 +548,8 @@ class TreeSitterFunctionCollector:
         pending = [node]
         while pending:
             current = pending.pop()
+            if self._is_value_scope_boundary(current):
+                continue
             if current.type in self.assignment_node_types:
                 left = (
                     _field(current, "left")
@@ -664,6 +700,14 @@ class TreeSitterFunctionCollector:
         """返回调用参数容器中的具名参数节点。"""
         return list(arguments.named_children) if arguments is not None else []
 
+    def _call_result_targets(self, node: Any) -> tuple[str, ...]:
+        """可选的有序多返回值接收槽位；普通语言默认不声明 tuple ABI。"""
+        return ()
+
+    def _return_values(self, node: Any) -> tuple[tuple[str, ...], ...]:
+        """可选的各返回分量使用；默认单返回值兼容原图协议。"""
+        return ()
+
     def _call_arguments(
         self,
         arguments: Any | None,
@@ -679,6 +723,8 @@ class TreeSitterFunctionCollector:
         pending = [node]
         while pending:
             current = pending.pop()
+            if self._is_value_scope_boundary(current):
+                continue
             if current.type in self.call_node_types:
                 callee, arguments = self._call_parts(current)
                 receiver, _ = self._split_callee(callee)
@@ -767,12 +813,22 @@ class TreeSitterFunctionCollector:
         """解析跨语言常见的字符串和整数静态下标。"""
         return parse_static_index_literal(self._text(node)) if node is not None else None
 
-    @staticmethod
-    def _contains_types(node: Any, node_types: frozenset[str]) -> bool:
-        """判断子树是否包含给定语法节点。"""
+    def _is_value_scope_boundary(self, node: Any) -> bool:
+        """嵌套函数的体操作不能进入外层值/调用收集；普通 declarator 不是边界。"""
+        if node.type not in self.function_node_types:
+            return False
+        if node.type == "variable_declarator":
+            value = _field(node, "value")
+            return value is not None and value.type in {"arrow_function", "function_expression"}
+        return True
+
+    def _contains_types(self, node: Any, node_types: frozenset[str]) -> bool:
+        """判断当前值作用域是否包含节点；函数创建不执行其函数体。"""
         pending = [node]
         while pending:
             current = pending.pop()
+            if self._is_value_scope_boundary(current):
+                continue
             if current.type in node_types:
                 return True
             pending.extend(current.named_children)
@@ -784,7 +840,7 @@ class TreeSitterFunctionCollector:
         return next((child for child in node.named_children if child.type in node_types), None)
 
     @staticmethod
-    def _unique(values: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    def _unique(values: Iterable[str]) -> tuple[str, ...]:
         """按首次出现顺序去重非空字符串。"""
         return tuple(dict.fromkeys(value for value in values if value))
 

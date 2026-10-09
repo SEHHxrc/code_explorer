@@ -1,4 +1,4 @@
-"""依赖图增强 A/B 实验模块。"""
+"""原始文件与静态安全证据增强的盲态配对实验模块。"""
 
 from .contracts import BlindReviewRequest, ComparisonRequest, ExperimentError
 from .service import ExperimentComparisonService

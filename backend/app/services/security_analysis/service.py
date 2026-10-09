@@ -23,7 +23,7 @@ from .contracts import (
     SecurityEvidencePack,
     StaticSecurityFact,
 )
-from .flow_analysis import ProgramGraphSecurityFlowAnalyzer
+from .flow_analysis import DataFlowAnalyzer, ProgramGraphSecurityFlowAnalyzer
 from .path_finder import StructuralCallPathFinder, StructuralPath
 from .scanner import SecurityScanner
 from .slicer import SourceSlicer
@@ -32,7 +32,7 @@ DEFAULT_LIMITATIONS = [
     "只有标记为 intra_procedural_dataflow 或 interprocedural_dataflow 的候选包含公共 ProgramGraph 到达定义路径；其余候选只表示结构可达性。",
     "当前 CFG 尚未覆盖全部语言特殊控制语义，也未证明具体分支在运行时可行。",
     "动态派发、反射、运行时导入和未解析引用可能造成漏报或不完整路径。",
-    "当前规则包聚焦 Python/FastAPI、Java/Spring/Servlet、Go net/http 与三种语言的首批高价值 API。",
+    "当前规则包覆盖 Python/FastAPI、Java/Spring/Servlet、Go net/http、C/C++ 标准库/POSIX/SQLite，以及 JS/TS 的浏览器、Node.js、Express、Vue/React 核心语法；不是全量语言/框架扫描。",
 ]
 
 
@@ -45,7 +45,7 @@ class SecurityAnalysisService:
         scanner: SecurityScanner | None = None,
         program_graph_service: ProgramGraphService | None = None,
         semantic_index_enricher: SemanticIndexEnricher | None = None,
-        flow_analyzer: ProgramGraphSecurityFlowAnalyzer | None = None,
+        flow_analyzer: DataFlowAnalyzer | None = None,
         max_path_depth: int = 6,
         max_candidates: int = 500,
         max_sources: int = 300,
@@ -114,6 +114,7 @@ class SecurityAnalysisService:
                 sanitizers=scan.sanitizers,
                 dependency_graph=dependency_graph,
                 semantic_index=enriched_index,
+                value_boundaries=scan.value_boundaries,
             )
         except (OSError, TypeError, ValueError, RuntimeError) as exc:
             scan.failures.append({
@@ -126,6 +127,14 @@ class SecurityAnalysisService:
         guards = self._sorted(scan.guards)
         sanitizers = self._sorted(scan.sanitizers)
         limitations = list(DEFAULT_LIMITATIONS)
+        if set(scan.languages_analyzed).intersection({"javascript", "typescript"}):
+            limitations.append(
+                "JS/TS 已有限连接原生表单/useState、Vue v-model/ref 与请求体 data→end；尚未建模完整回调调度、任意闭包、完整 hooks、Promise 时序和堆别名。此项是能力边界，不表示项目实际使用了全部这些特性。"
+            )
+        if set(scan.languages_analyzed).intersection({"c", "cpp"}):
+            limitations.append(
+                "C/C++ 库 API 采用头文件与词法名称过滤，仅支持独立调用的具名输出缓冲区 may 写入；尚未执行预处理、完整类型绑定、指针别名或通用副作用分析。"
+            )
         if scan.failures:
             limitations.append(f"安全前端产生 {len(scan.failures)} 条失败或不确定性诊断。")
         if any(
@@ -288,10 +297,17 @@ class SecurityAnalysisService:
             "该候选只证明 Source 与 Sink 所在函数之间存在结构调用路径。",
             "尚未验证 Source 值是否沿变量、字段或容器传播到 Sink 参数。",
         ]
+        limitations.extend(dict.fromkeys(
+            (source.metadata.get("limitations") or [])
+            + (sink.metadata.get("limitations") or [])
+        ))
         if dataflow is not None:
+            limitations.extend(dataflow.unresolved)
+            if dataflow.value_boundary_ids:
+                limitations.append("本路径包含静态适配的 may 状态/闭包值边界，不是普通 CALLS 边，也不证明完整事件或重渲染生命周期。")
             if dataflow.scope == "interprocedural":
                 limitations.append(
-                    "跨过程数据流验证已解析调用的实参、形参和直接调用返回值；尚未覆盖字段、容器和完整对象别名。"
+                    "跨过程数据流通过已解析调用或有静态依据的有界值边界连接；尚未覆盖完整堆对象、容器别名和运行时生命周期。"
                 )
             else:
                 limitations.append(
@@ -329,7 +345,7 @@ class SecurityAnalysisService:
                 sink,
                 dataflow_verified=dataflow is not None,
             ),
-            limitations=limitations,
+            limitations=list(dict.fromkeys(limitations)),
             truncated=truncated,
         )
         return candidate, snippets
@@ -408,12 +424,22 @@ class SecurityAnalysisService:
             conditions.append("攻击者需要能够影响环境变量或部署配置。")
         elif source.trust_class == "external_file":
             conditions.append("攻击者需要能够控制被读取文件的路径或内容。")
+        elif source.category == "standard_input":
+            conditions.append("需要验证攻击者能否向进程标准输入提供数据。")
         if sink.category == "network_request":
             conditions.append("需要验证远程目标地址是否可由攻击者控制。")
         elif sink.category == "security_sensitive_random":
             conditions.append("需要验证随机值是否用于令牌、密钥或其他安全敏感用途。")
         elif sink.category == "file_write":
             conditions.append("需要验证写入路径或写入内容是否可由攻击者控制。")
+        elif sink.category == "file_path":
+            conditions.append("需要验证文件访问路径是否可由攻击者控制，以及实际访问模式和权限。")
+        elif sink.category == "format_string":
+            conditions.append("需要验证不可信数据进入的是格式字符串本身，而非固定格式对应的数据参数。")
+        conditions.extend(dict.fromkeys(
+            (source.metadata.get("preconditions") or [])
+            + (sink.metadata.get("preconditions") or [])
+        ))
         return conditions
 
     @staticmethod

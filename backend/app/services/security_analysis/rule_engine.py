@@ -21,6 +21,7 @@ from .ir import (
     IRExpression,
     IRFunction,
     IRLocation,
+    IRValueBoundary,
     SecurityProgramIR,
 )
 from .rules import CallCondition, CallRule, EntrypointRule, RulePack
@@ -42,6 +43,7 @@ class SecurityScanResult:
     unsupported_languages: list[str] = field(default_factory=list)
     rule_packs: list[str] = field(default_factory=list)
     dataflows: list[DataFlowEvidence] = field(default_factory=list)
+    value_boundaries: list[IRValueBoundary] = field(default_factory=list)
 
     def merge(self, other: SecurityScanResult) -> None:
         """合并另一语言扫描结果并保持列表去重。"""
@@ -50,6 +52,7 @@ class SecurityScanResult:
         self.sinks.extend(other.sinks)
         self.guards.extend(other.guards)
         self.sanitizers.extend(other.sanitizers)
+        self.value_boundaries.extend(other.value_boundaries)
         self.files_considered += other.files_considered
         self.files_scanned += other.files_scanned
         self.failures.extend(other.failures)
@@ -82,6 +85,7 @@ class SecurityRuleEngine:
             failures=list(program.failures),
             languages_analyzed=[program.language],
             rule_packs=[pack.identifier for pack in applicable],
+            value_boundaries=list(program.value_boundaries),
         )
         fact_ids: set[str] = set()
         for pack in applicable:
@@ -96,6 +100,18 @@ class SecurityRuleEngine:
                     continue
                 if not rule.matches_name(call.qualified_name):
                     continue
+                if rule.required_headers:
+                    if call.callee_is_project_defined:
+                        continue
+                    if not set(rule.required_headers).intersection(call.visible_headers):
+                        result.failures.append({
+                            "path": call.location.path,
+                            "line": call.location.line,
+                            "callsite_id": call.callsite_id,
+                            "reason": "api_header_not_visible",
+                            "rule_id": rule.rule_id,
+                        })
+                        continue
                 condition_match = self._conditions_match(call, rule.conditions)
                 if condition_match is None:
                     if call.callsite_id not in unresolved_condition_calls:
@@ -109,6 +125,14 @@ class SecurityRuleEngine:
                     continue
                 if not condition_match:
                     continue
+                if rule.output_argument_positions and not all(0 <= index < len(call.arguments) and call.arguments[index].kind in {"identifier", "name"} and len(call.arguments[index].identifiers) == 1 for index in rule.output_argument_positions):
+                    result.failures.append({
+                        "path": call.location.path,
+                        "line": call.location.line,
+                        "callsite_id": call.callsite_id,
+                        "reason": "output_argument_binding_unresolved",
+                        "rule_id": rule.rule_id,
+                    })
                 self._append_fact(
                     result,
                     fact_ids,
@@ -141,7 +165,18 @@ class SecurityRuleEngine:
                     cwe=rule.cwe,
                     trust_class=rule.trust_class,
                     severity=rule.severity,
-                    metadata={"value_flow": {"result_role": rule.result_role}},
+                    metadata={
+                        "assigned_targets": list(access.assigned_targets),
+                        "value_identifiers": list(access.value_identifiers),
+                        "parameter_seed": access.parameter_seed,
+                        **({"binding_certainty": "may"} if access.binding_certainty == "may" else {}),
+                        "preconditions": list(rule.preconditions),
+                        "value_flow": {
+                            "result": "parameter" if access.parameter_seed else "",
+                            "result_role": rule.result_role,
+                            "argument_role": rule.argument_role,
+                        },
+                    },
                 )
         for condition in program.conditions:
             prefix = program.language.upper().replace("-", "_")
@@ -193,7 +228,9 @@ class SecurityRuleEngine:
                 continue
             method, route_path = route
             self._append_entrypoint(result, function.symbol, function.location, method, route_path, rule)
-            for parameter in function.parameters:
+            for position, parameter in enumerate(function.parameters):
+                if rule.source_parameter_positions is not None and position not in rule.source_parameter_positions:
+                    continue
                 if parameter.name in {"self", "cls"}:
                     continue
                 if any(
@@ -302,6 +339,8 @@ class SecurityRuleEngine:
             if method is None:
                 continue
             handler_position = rule.registration_handler_position
+            if handler_position < 0:
+                handler_position += len(call.arguments)
             if handler_position < 0 or handler_position >= len(call.arguments):
                 continue
             handler = call.arguments[handler_position]
@@ -362,6 +401,8 @@ class SecurityRuleEngine:
             if expression is None and condition.keyword:
                 expression = call.keyword(condition.keyword)
             if expression is None:
+                if condition.keyword and call.unknown_keywords:
+                    return None
                 if not condition.has_default:
                     return False
                 value = condition.default
@@ -452,19 +493,47 @@ class SecurityRuleEngine:
                 "arguments": list(rule.argument_positions),
                 "keywords": list(rule.argument_keywords),
                 "receiver_role": rule.receiver_role,
+                "output_arguments": list(rule.output_argument_positions),
             },
         }
-        if rule.category == "process_execution":
+        if rule.required_headers:
+            metadata["api_resolution"] = "header_and_lexical_scope"
+            metadata["rule_match_confidence"] = "medium"
+            metadata["limitations"] = [
+                "库 API 匹配依据可见头文件与词法名称，尚未由编译器类型绑定或预处理结果验证。"
+            ]
+            metadata["visible_headers"] = sorted(
+                set(rule.required_headers).intersection(call.visible_headers)
+            )
+        if rule.preconditions:
+            metadata["preconditions"] = list(rule.preconditions)
+        if rule.output_argument_positions:
+            metadata["binding_certainty"] = "may"
+            metadata["value_flow"]["output_targets"] = {str(index): call.arguments[index].identifiers[0] for index in rule.output_argument_positions if 0 <= index < len(call.arguments) and call.arguments[index].kind in {"identifier", "name"} and len(call.arguments[index].identifiers) == 1}
+            metadata.setdefault("limitations", []).append(
+                "输出参数只支持独立调用的具名缓冲区 may 写入；返回状态码不是输入内容，复杂指针、同操作多调用、字节范围及成功条件未建模。"
+            )
+        if rule.result_positions:
+            metadata["value_flow"]["result_positions"] = list(rule.result_positions)
+        if rule.result_count > 1:
+            metadata["value_flow"]["result_count"] = rule.result_count
+        if rule.category in {"process_execution", "shell_execution"}:
             shell = call.keyword("shell")
-            metadata["shell"] = shell.literal if shell and shell.is_literal else None
+            metadata["shell"] = rule.implicit_shell if rule.implicit_shell is not None else (
+                shell.literal if shell and shell.is_literal else None
+            )
         if rule.category == "sql_execution" and call.arguments:
-            first = call.arguments[0]
+            position = rule.argument_positions[0] if rule.argument_positions else 0
+            first = call.arguments[position] if position < len(call.arguments) else None
             metadata["query_shape"] = (
-                "literal" if first.is_literal and isinstance(first.literal, str)
-                else "formatted" if first.text.startswith("f")
+                "literal" if first and first.is_literal and isinstance(first.literal, str)
+                else "formatted" if first and first.text.startswith("f")
                 else "dynamic"
             )
-            metadata["parameter_argument_present"] = len(call.arguments) > 1 or bool(call.keywords)
+            if rule.sql_parameter_argument_position is not None:
+                metadata["parameter_argument_present"] = (
+                    len(call.arguments) > rule.sql_parameter_argument_position or bool(call.keywords)
+                )
         if rule.category in {"file_read", "file_write"} and rule.conditions:
             mode = call.keyword("mode")
             if mode is None and len(call.arguments) > 1:

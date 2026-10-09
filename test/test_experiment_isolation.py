@@ -2,12 +2,16 @@
 """保护依赖图配对实验的变量隔离与临时对照组删除边界。"""
 
 import unittest
+from unittest.mock import patch
+from backend.app.llm.registry import ModelLimits
 from pathlib import Path
 
 from backend.app.experiments.baseline.context_builder import BaselineContextBuilder
 from backend.app.experiments.baseline.strategy import BaselineExperimentStrategy
 from backend.app.experiments.baseline.tool_registry import create_baseline_tool_registry
-from backend.app.experiments.graph_context import GraphAugmentedContextBuilder
+from backend.app.experiments.context import SecurityExperimentContextBuilder
+from backend.app.experiments.tools import create_experiment_tool_registry
+from backend.app.services.security_analysis.contracts import SecurityEvidencePack
 
 
 def sample_artifact():
@@ -24,6 +28,7 @@ def sample_artifact():
         },
         "repo_map": "GRAPH_RANKED_CONTENT_SHOULD_NOT_LEAK",
         "overview": "GRAPH_DERIVED_OVERVIEW_SHOULD_NOT_LEAK",
+        "security_evidence": SecurityEvidencePack().model_dump(),
         "file_symbols": {
             "main.py": [{
                 "name": "run", "kind": "function", "fully_qualified_name": "run",
@@ -55,12 +60,15 @@ class ExperimentIsolationTests(unittest.TestCase):
         )
         self.assertNotIn("DEPENDENCY_GRAPH", packet.prompt_context)
         self.assertNotIn("GRAPH_RANKED_CONTENT_SHOULD_NOT_LEAK", packet.prompt_context)
-        self.assertEqual({}, packet.manifest["graph_summary"])
+        self.assertEqual({}, packet.manifest)
+        self.assertEqual("", packet.repo_map)
+        self.assertNotIn("uvicorn", packet.prompt_context)
 
     def test_baseline_registry_excludes_dependency_tool(self):
         names = {schema["name"] for schema in create_baseline_tool_registry().schemas()}
         self.assertNotIn("get_dependency_neighbors", names)
-        self.assertIn("search_symbols", names)
+        self.assertEqual({"list_project_files", "read_file_range", "search_project_text"}, names)
+        self.assertEqual(create_experiment_tool_registry().schemas(), create_baseline_tool_registry().schemas())
 
     def test_baseline_strategy_strips_graph_derived_artifacts(self):
         manager = CapturingManager()
@@ -71,19 +79,29 @@ class ExperimentIsolationTests(unittest.TestCase):
         stripped = manager.arguments["artifact"]
         self.assertNotIn("dependency_graph", stripped)
         self.assertNotIn("overview", stripped)
-        self.assertNotIn("GRAPH_RANKED_CONTENT_SHOULD_NOT_LEAK", stripped["repo_map"])
+        self.assertNotIn("repo_map", stripped)
+        self.assertNotIn("security_evidence", stripped)
+        self.assertNotIn("file_symbols", stripped)
 
-    def test_graph_context_contains_bounded_dependency_context(self):
-        packet = GraphAugmentedContextBuilder().build(
+    def test_security_context_contains_only_static_security_evidence(self):
+        packet = SecurityExperimentContextBuilder().build(
             project_id="p1", question="入口在哪", artifact=sample_artifact(),
         )
-        self.assertIn("DEPENDENCY_GRAPH_CONTEXT", packet.prompt_context)
-        self.assertIn('"source": "main.py"', packet.prompt_context)
+        self.assertIn("STATIC_SECURITY_EVIDENCE", packet.prompt_context)
+        self.assertNotIn("DEPENDENCY_GRAPH_CONTEXT", packet.prompt_context)
+        self.assertNotIn("uvicorn", packet.prompt_context)
+        self.assertNotIn("FastAPI", packet.prompt_context)
 
     def test_normal_agent_api_does_not_import_control_group(self):
         source = Path("backend/app/api/agent.py").read_text(encoding="utf-8")
         self.assertNotIn("experiments.baseline", source)
         self.assertNotIn("BaselineExperimentStrategy", source)
+
+    def test_evidence_json_is_not_silently_cut_by_small_prompt_budget(self):
+        """预算不能容纳完整证据头时提前拒绝，而不是传入破损 JSON。"""
+        with patch("backend.app.experiments.context.get_model_limits", return_value=ModelLimits(2000, 128)):
+            with self.assertRaises(ValueError):
+                SecurityExperimentContextBuilder().build(project_id="p1", question="q" * 8000, artifact=sample_artifact())
 
 
 if __name__ == "__main__":

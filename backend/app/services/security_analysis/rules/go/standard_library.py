@@ -7,9 +7,15 @@ from ..base import CallRule, RulePack
 GO_CORE_CALL_RULES: tuple[CallRule, ...] = (
     CallRule(
         "GO-SOURCE-ENV", "source", "environment_read",
-        ("os.Getenv", "os.LookupEnv"), languages=("go",),
+        ("os.Getenv",), languages=("go",),
         trust_class="external_configuration", match_suffix=True,
         result_role="source",
+        result_positions=(0,),
+    ),
+    CallRule(
+        "GO-SOURCE-ENV", "source", "environment_read", ("os.LookupEnv",), languages=("go",),
+        trust_class="external_configuration", match_suffix=True, result_role="source",
+        result_positions=(0,), result_count=2,
     ),
     CallRule(
         "GO-SOURCE-HTTP-REQUEST", "source", "http_request",
@@ -19,29 +25,44 @@ GO_CORE_CALL_RULES: tuple[CallRule, ...] = (
         ),
         languages=("go",), trust_class="untrusted", match_suffix=True,
         result_role="source",
+        result_positions=(0,),
     ),
     CallRule(
         "GO-SOURCE-FILE-READ", "source", "file_read",
         ("os.ReadFile",), languages=("go",),
         trust_class="external_file", match_suffix=True,
         result_role="source",
+        result_positions=(0,),
+        result_count=2,
     ),
     CallRule(
         "GO-SINK-PROCESS", "sink", "process_execution",
-        ("exec.Command", "exec.CommandContext"), languages=("go",),
+        ("exec.Command",), languages=("go",),
         cwe="CWE-78", severity="high", match_suffix=True,
         argument_role="sink", argument_positions=(0,),
+        preconditions=("Command 只构造命令配置；需确认后续执行及攻击者能否控制可执行路径，普通参数不自动等同 Shell 注入。",),
+    ),
+    CallRule(
+        "GO-SINK-PROCESS-CONTEXT", "sink", "process_execution",
+        ("exec.CommandContext",), languages=("go",),
+        cwe="CWE-78", severity="high", match_suffix=True,
+        argument_role="sink", argument_positions=(1,),
+        preconditions=("CommandContext 只构造命令配置；需确认后续执行及攻击者能否控制可执行路径，普通参数不自动等同 Shell 注入。",),
     ),
     CallRule(
         "GO-SINK-SQL", "sink", "sql_execution",
         (
-            "sql.DB.Exec", "sql.DB.ExecContext", "sql.DB.Query",
-            "sql.DB.QueryContext", "sql.DB.QueryRow", "sql.DB.QueryRowContext",
-            "sql.DB.Prepare", "sql.DB.PrepareContext", "sql.Tx.Exec",
-            "sql.Tx.ExecContext", "sql.Tx.Query", "sql.Tx.QueryContext",
+            "sql.DB.Exec", "sql.DB.Query", "sql.DB.QueryRow",
+            "sql.DB.Prepare", "sql.Tx.Exec", "sql.Tx.Query",
         ),
         languages=("go",), cwe="CWE-89", severity="high", match_suffix=True,
         argument_role="sink", argument_positions=(0,),
+    ),
+    CallRule(
+        "GO-SINK-SQL-CONTEXT", "sink", "sql_execution",
+        ("sql.DB.ExecContext", "sql.DB.QueryContext", "sql.DB.QueryRowContext", "sql.DB.PrepareContext", "sql.Tx.ExecContext", "sql.Tx.QueryContext"),
+        languages=("go",), cwe="CWE-89", severity="high", match_suffix=True,
+        argument_role="sink", argument_positions=(1,), sql_parameter_argument_position=2,
     ),
     CallRule(
         "GO-SINK-FILE-WRITE", "sink", "file_write",
@@ -57,9 +78,15 @@ GO_CORE_CALL_RULES: tuple[CallRule, ...] = (
     ),
     CallRule(
         "GO-SINK-NETWORK-REQUEST", "sink", "network_request",
-        ("http.NewRequest", "http.NewRequestWithContext"), languages=("go",),
+        ("http.NewRequest",), languages=("go",),
         cwe="CWE-918", severity="medium", match_suffix=True,
         argument_role="sink", argument_positions=(1,),
+    ),
+    CallRule(
+        "GO-SINK-NETWORK-REQUEST-CONTEXT", "sink", "network_request",
+        ("http.NewRequestWithContext",), languages=("go",),
+        cwe="CWE-918", severity="medium", match_suffix=True,
+        argument_role="sink", argument_positions=(2,),
     ),
     CallRule(
         "GO-SINK-WEAK-RANDOM", "sink", "security_sensitive_random",
@@ -79,7 +106,7 @@ GO_CORE_CALL_RULES: tuple[CallRule, ...] = (
 
 GO_STANDARD_LIBRARY_PACK = RulePack(
     name="go-core",
-    version="1.0",
+    version="1.1",
     languages=("go",),
     call_rules=GO_CORE_CALL_RULES,
 )

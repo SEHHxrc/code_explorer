@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from backend.app.services.syntax_analysis.parameters import java_parameter_parts
+from backend.app.services.syntax_analysis.static_sequences import static_sequence_value
+
 import ast
 from typing import Any
 
@@ -220,18 +223,18 @@ class _JavaIRCollector:
 
     def _parameter(self, node: Any) -> IRParameter:
         """提取参数名、声明类型和参数级注解文本。"""
-        name_node = _field(node, "name")
-        type_text = self._text(_field(node, "type"))
+        _, type_text = java_parameter_parts(node, self.source)
         annotations = [
             self._text(item)
             for item in self._descendants(node, _ANNOTATION_NODES)
         ]
         annotation = " ".join((*annotations, type_text)).strip()
         return IRParameter(
-            name=self._text(name_node),
+            name=java_parameter_parts(node, self.source)[0],
             annotation=annotation,
             default_call="",
             location=self._location(node),
+            kind="variadic_positional" if node.type == "spread_parameter" else "positional_or_keyword",
         )
 
     def _decorators(self, node: Any) -> tuple[IRDecorator, ...]:
@@ -335,6 +338,7 @@ class _JavaIRCollector:
             literal=literal,
             kind=node.type,
             contains_call=any(item.type in _CALL_NODES for item in self._walk(node)),
+            binding_value=static_sequence_value(node, self._identifiers),
         )
 
     def _literal(self, node: Any) -> Any:

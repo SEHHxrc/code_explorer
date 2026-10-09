@@ -4,6 +4,7 @@ SOURCE_LANGUAGE_BY_EXTENSION = {
     ".py": "python", ".pyi": "python",
     ".js": "javascript", ".mjs": "javascript", ".cjs": "javascript", ".jsx": "javascript",
     ".ts": "typescript", ".tsx": "typescript", ".mts": "typescript", ".cts": "typescript",
+    ".vue": "javascript",
     ".go": "go",
     ".rs": "rust",
     ".java": "java",
@@ -35,5 +36,5 @@ def extensions_for_language(language: str) -> frozenset[str]:
     return frozenset(
         extension
         for extension, registered in SOURCE_LANGUAGE_BY_EXTENSION.items()
-        if registered == language
+        if registered == language or extension == ".vue" and language == "typescript"
     )

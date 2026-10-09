@@ -115,6 +115,8 @@ class AgentRunManager:
 
             provider = create_model_provider(request.model) if request.use_model else None
             if provider is None:
+                if artifact.get("_experiment_protocol"):
+                    raise RuntimeError("Security experiment requires a configured model; static fallback is not a valid trial")
                 answer = self._static_answer(request.question, artifact)
                 await self._complete(run_id, answer, provider=None, model=None, evidence=packet.evidence)
                 return
@@ -154,6 +156,12 @@ class AgentRunManager:
                     prompt=prompt,
                     tools=tool_schemas,
                 )
+                self._emit(run_id, "model.completed", {
+                    "step": step,
+                    "response_chars": len(turn.text) + (len(json.dumps([
+                        {"name": call.name, "arguments": call.arguments} for call in turn.tool_calls
+                    ], ensure_ascii=False)) if turn.tool_calls else 0),
+                })
                 if not turn.tool_calls:
                     answer = turn.text.strip()
                     if not answer:
@@ -191,11 +199,20 @@ class AgentRunManager:
                 prompt = base_prompt + history_tail
 
             if not answer:
+                final_instructions = self.instructions + "\n工具调用次数已经用完，请直接根据现有证据完成回答。"
+                self._emit(run_id, "model.started", {
+                    "step": request.max_steps + 1, "prompt_chars": len(prompt), "tool_count": 0,
+                    "request_chars": len(final_instructions) + len(prompt),
+                    "max_output_tokens": limits.max_output_tokens,
+                })
                 final = await provider.generate(
-                    instructions=self.instructions + "\n工具调用次数已经用完，请直接根据现有证据完成回答。",
+                    instructions=final_instructions,
                     prompt=prompt,
                 )
+                self._emit(run_id, "model.completed", {"step": request.max_steps + 1, "response_chars": len(final.text)})
                 answer = final.text.strip()
+                if not answer:
+                    raise RuntimeError("Model returned an empty final answer")
             await self._complete(
                 run_id, answer, provider=provider.name, model=provider.model,
                 evidence=self._dedupe_evidence(evidence),

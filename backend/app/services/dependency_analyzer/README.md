@@ -21,6 +21,8 @@ CollectionPhase
 ```
 
 阶段 Mixin 通过 `UnifiedCodeAnalyzer` 共享一次运行的索引状态，只能按上述方向依赖。语言 Handler 只把语法树转换为定义、引用和导入记录，不能反向导入分析器或阶段模块。
+JS/TS 匿名回调复用 `syntax_analysis.javascript_function()` 的位置身份，并拥有真实函数
+作用域，使回调中的调用归属实际 caller；具名变量函数沿用声明身份，不重复生成子函数。
 
 ## 顶层文件
 

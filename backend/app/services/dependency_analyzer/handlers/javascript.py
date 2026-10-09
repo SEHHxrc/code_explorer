@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tree_sitter
+from backend.app.services.syntax_analysis.javascript import javascript_function
 
 from ..ast_utils import (
     _descend_for,
@@ -198,9 +199,15 @@ class JavaScriptHandler(BaseHandler):
         return 0
 
     def h_anon_function(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
-        # 匿名函数：不建节点，但要建一个作用域帧，避免局部变量污染上层
-        """解析匿名函数语法节点并把结果写入文件上下文。"""
-        ctx.push(ctx.top.fqn, "function", "")
+        """共享位置身份索引匿名回调；变量绑定函数不重复建符号或作用域名称。"""
+        parts = javascript_function(node, ctx.src)
+        if parts is None:
+            ctx.push(ctx.top.fqn, "function", "")
+            return 0
+        definition = ctx.add_def(node, parts[0], "function", name_node=node,
+                                 return_type=self._annotation_type(ctx, _field(node, "return_type")))
+        if definition is not None:
+            ctx.push(definition.fqn, "function", definition.name, definition)
         return 0
 
     def h_param(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:

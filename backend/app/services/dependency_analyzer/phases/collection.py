@@ -5,6 +5,8 @@ import traceback
 
 import tree_sitter
 
+from backend.app.services.syntax_analysis.javascript import parser_for_file
+
 from ..constants import CPP_MARKERS, EXT_MAP, IGNORED_DIRS, SKIP_CHILDREN
 from ..context import FileContext
 from ..handlers import get_handler
@@ -51,6 +53,10 @@ class CollectionPhase(DependencyAnalyzerState):
         """``.h`` 在 C 与 C++ 之间靠同名源文件和内容特征判定，否则按扩展名。"""
         ext = os.path.splitext(full_path)[1].lower()
         lang = EXT_MAP.get(ext)
+        if ext == ".vue":
+            from backend.app.services.syntax_analysis.source_units import source_unit
+            with open(full_path, "rb") as file:
+                return source_unit(full_path, file.read(), "javascript").language
         if lang != "c" or ext != ".h":
             return lang
         stem = os.path.splitext(full_path)[0]
@@ -83,8 +89,12 @@ class CollectionPhase(DependencyAnalyzerState):
                 return None
             with open(full_path, "rb") as fh:
                 src = fh.read()
-            tree = self._get_parser(lang).parse(src)
+            from backend.app.services.syntax_analysis.source_units import source_unit
+            unit = source_unit(rel_path, src, lang)
+            src = unit.source
+            tree = self._get_parser(parser_for_file(lang, rel_path)).parse(src)
             ctx = FileContext(rel_path, full_path, lang, src, handler)
+            ctx.diagnostics.extend({"file": rel_path, "reason": reason} for reason in unit.diagnostics)
             if tree.root_node.has_error:
                 ctx.diagnostics.append({
                     "file": rel_path,

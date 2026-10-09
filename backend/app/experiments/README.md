@@ -1,6 +1,6 @@
-# 依赖图效果对照实验模块
+# 静态安全证据对照实验模块
 
-本模块只用于验证当前“依赖图上下文 + 依赖邻居工具”完整策略是否优于临时无图策略。两条通道使用同一问题、模型、步骤预算和项目快照，并随机化左右展示位置。当前虽保存了随机 `execution_order`，队列项仍固定先创建 baseline、后创建 graph，因此实际执行顺序尚未随机化；正式实验前必须修正。它不是长期支持的两种产品模式。
+本模块比较“相同原始文件访问能力 + 静态安全证据”与“仅原始文件”的安全分析效果，不预设输赢。两组共享指令、模型名、工具 Schema 和预算；独立随机化入队顺序与左右标签，不再输入完整图、Manifest 或 Repo Map。静态分析由 `services/security_analysis` 负责，本模块只负责编排、输入隔离和评审。
 
 ## 入口与数据流
 
@@ -9,8 +9,8 @@ HTTP 入口位于 `api/experiment.py`，应用入口是 `ExperimentComparisonSer
 ```text
 ComparisonRequest
   → ExperimentComparisonService
-  ├─ GraphAugmentedExperimentStrategy → 有图上下文 + 依赖邻居工具
-  └─ BaselineExperimentStrategy       → 无图上下文 + 无依赖图工具
+  ├─ security_evidence → 紧凑安全证据 JSON + 原始文件工具
+  └─ baseline          → 仅相同原始文件工具（临时对照）
   → AgentQueueWorker
   → collect_run_metrics()
   → BlindReviewRequest
@@ -24,10 +24,11 @@ ComparisonRequest
 | `contracts.py` | `ComparisonRequest`、`LaneScores`、`BlindReviewRequest` 和公开错误。 |
 | `service.py` / `ExperimentComparisonService` | 创建配对运行、随机化、查询、评分和揭盲。 |
 | `repository.py` / `ExperimentRepository` | 比较记录、左右映射和评审结果的持久化边界。 |
-| `graph_strategy.py` | 构造正式的依赖图增强运行。 |
-| `graph_context.py` | 将有界依赖图事实加入模型上下文。 |
-| `context.py` | 构建两组共享的中性 Manifest 与无中心性排序仓库地图。 |
+| `context.py` | 共同安全指令、产物允许列表、`SecurityExperimentContextBuilder`，保证完整 JSON 预算。 |
+| `tools.py` | `ListProjectFilesTool` 和两组相同的原始文件工具注册表，不查询静态索引。 |
 | `metrics.py` | 汇总时延、步骤、工具调用、证据和估算字符/Token 指标。 |
-| `baseline/` | 带明显标记的临时无图对照组。 |
+| `baseline/` | 带明显标记的临时原始文件对照组。 |
 
-具体实验规则和删除清单见 `../../../docs/EXPERIMENT_PROTOCOL.md`。若实验确认有图方案更优，必须按清单移除整个无图对照分支，普通 `/api/agent` 路径不受影响。
+`ExperimentRepository.create_pair(record, request)` 在一个事务中创建两个运行、队列项和配对；Worker 按 strategy 构造隔离上下文。两组都成功才可评分，通信失败/取消只算流程失败。旧数据库 `graph_run_id` 为兼容列名，新运行实际策略为 `security_evidence`，旧图实验不可混入新实验。
+
+具体规则、指标含义、已知限制和删除清单见 `../../../docs/EXPERIMENT_PROTOCOL.md`，功能验证见 `../../../docs/FUNCTIONAL_VALIDATION.md`。若重复试验确认安全证据更优并结束对照实验，按清单移除临时对照代码；普通 Agent API 不直接依赖 baseline 包。

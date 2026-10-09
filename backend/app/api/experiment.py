@@ -1,4 +1,4 @@
-"""依赖图 A/B 配对实验 HTTP 与 SSE 接口。
+"""静态安全证据 A/B 配对实验 HTTP 与 SSE 接口。
 
 TEMPORARY CONTROL GROUP / 临时对照组：本路由包含盲态无图对照，删除边界见实验协议。
 """
@@ -43,7 +43,7 @@ async def create_comparison(
     request: ComparisonRequest,
     current_user: dict[str, str] = Depends(get_current_user),
 ) -> dict[str, Any]:
-    """创建问题、模型、预算一致且展示顺序盲化的有图/无图配对运行。"""
+    """创建问题、模型、预算一致且展示顺序盲化的安全证据/原始文件配对。"""
     view = _safe_call(lambda: comparison_service.create(project_id, current_user["user_id"], request))
     agent_queue_worker.notify()
     return {"code": 202, "message": "Experiment comparison accepted.", "data": view}

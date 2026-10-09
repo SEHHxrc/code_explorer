@@ -13,6 +13,7 @@ from backend.app.services.syntax_analysis import fields as _fields
 from backend.app.services.syntax_analysis import normalize_type as _norm_type
 from backend.app.services.syntax_analysis import parse_static_index_literal
 from backend.app.services.syntax_analysis import text as _text
+from backend.app.services.syntax_analysis.static_sequences import static_sequence_value
 
 from ..ir import (
     IRCall,
@@ -216,6 +217,7 @@ class _GoIRCollector:
                         annotation=annotation,
                         default_call="",
                         location=self._location(name_node),
+                        kind="variadic_positional" if parameter.type == "variadic_parameter_declaration" else "positional_or_keyword",
                     ))
         return result
 
@@ -275,7 +277,7 @@ class _GoIRCollector:
                 target_name = self._text(target)
                 if not target_name:
                     continue
-                for call in self._descendants(value, _CALL_NODES, include_root=True):
+                for call in ([value] if value.type in _CALL_NODES else []):
                     location = self._location(call)
                     callsite_id = ProgramIdentity.callsite_id(
                         self.path,
@@ -307,6 +309,7 @@ class _GoIRCollector:
             literal=literal,
             kind=node.type,
             contains_call=any(item.type in _CALL_NODES for item in self._walk(node)),
+            binding_value=static_sequence_value(node, self._identifiers),
         )
 
     def _literal(self, node: Any) -> Any:

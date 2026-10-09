@@ -178,5 +178,11 @@ class ProgramGraphService:
             relative = path.relative_to(root)
             if any(part in IGNORED_SOURCE_DIRECTORIES for part in relative.parts):
                 continue
-            grouped[extensions[path.suffix.lower()]].add(relative.as_posix())
+            language = extensions[path.suffix.lower()]
+            if path.suffix.lower() == ".vue":
+                from backend.app.services.syntax_analysis.source_units import source_unit
+                language = source_unit(relative.as_posix(), path.read_bytes(), language).language
+                if language not in allowed:
+                    continue
+            grouped[language].add(relative.as_posix())
         return {language: sorted(paths) for language, paths in grouped.items()}

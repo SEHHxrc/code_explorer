@@ -33,8 +33,14 @@ class ReachingDefinitionsPass:
                 generated[node.node_id].add(definition)
         killed: dict[str, set[Definition]] = defaultdict(set)
         for node_id, definitions in generated.items():
+            if graph.nodes[node_id].certainty == "may":
+                # 框架事件可能未发生：不能用可能写入杀死此前的真实定义。
+                continue
             for _, variable in definitions:
                 killed[node_id].update(definitions_by_variable[variable] - definitions)
+                for name, candidates in definitions_by_variable.items():
+                    if name.startswith((variable + ".", variable + "[")):
+                        killed[node_id].update(candidates - definitions)
 
         incoming = {node_id: set() for node_id in reachable}
         outgoing = {node_id: set(generated[node_id]) for node_id in reachable}
@@ -64,12 +70,14 @@ class ReachingDefinitionsPass:
             if node.node_id not in reachable:
                 continue
             for variable in node.uses:
-                sources = sorted(
-                    source for source, name in incoming[node.node_id]
-                    if name == variable
-                )
-                certainty = "must" if len(sources) == 1 else "may"
-                for source in sources:
+                sources = [(source, name) for source, name in incoming[node.node_id] if name == variable]
+                if not sources:
+                    parents = [(source, name) for source, name in incoming[node.node_id] if variable.startswith((name + ".", name + "["))]
+                    if parents:
+                        longest = max(len(name) for _, name in parents)
+                        sources = [(source, name) for source, name in parents if len(name) == longest]
+                certainty = "must" if len(sources) == 1 and sources[0][1] == variable else "may"
+                for source, source_name in sorted(sources):
                     key = (source, node.node_id, variable)
                     if key in seen:
                         continue
@@ -83,7 +91,9 @@ class ReachingDefinitionsPass:
                         target=node.node_id,
                         kind="reaching_def",
                         variable=variable,
-                        certainty=certainty,
+                        source_variable=source_name,
+                        target_variable=variable,
+                        certainty="may" if graph.nodes[source].certainty == "may" or node.certainty == "may" else certainty,
                     ))
         return graph.model_copy(update={"edges": cfg_edges + overlay})
 

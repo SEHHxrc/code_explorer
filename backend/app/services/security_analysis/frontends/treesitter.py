@@ -12,6 +12,8 @@ from backend.app.services.syntax_analysis import (
 )
 
 from ..ir import SecurityProgramIR
+from backend.app.services.syntax_analysis.javascript import parser_for_file
+from backend.app.services.syntax_analysis.source_units import SourceUnit, source_unit
 from .base import LanguageFrontend
 
 
@@ -48,14 +50,20 @@ class TreeSitterSecurityFrontend(LanguageFrontend):
                     program.failures.append({"path": relative, "reason": "file_too_large"})
                     continue
                 source = target.read_bytes()
-                tree = self.parser_pool.get(self.parser_name).parse(source)
+                unit = source_unit(relative, source, self.language)
+                if unit.language != self.language:
+                    program.files_considered -= 1
+                    continue
+                source = unit.source
+                tree = self.parser_pool.get(parser_for_file(self.parser_name, relative)).parse(source)
                 if tree.root_node.has_error:
                     program.failures.append({
                         "path": relative,
                         "language": self.language,
                         "reason": f"{self.language}_partial_parse_error",
                     })
-                self.collect_file(program, relative, source, tree.root_node)
+                self.collect_file_context(program, relative, unit, tree.root_node, root)
+                program.failures.extend({"path": relative, "language": self.language, "reason": reason} for reason in unit.diagnostics)
                 program.files_scanned += 1
             except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
                 program.failures.append({
@@ -65,6 +73,17 @@ class TreeSitterSecurityFrontend(LanguageFrontend):
                     "detail": type(exc).__name__,
                 })
         return program
+
+    def collect_file_context(
+        self, program: SecurityProgramIR, path: str, unit: SourceUnit,
+        root: Any, project_root: Path,
+    ) -> None:
+        """提供受控项目上下文；默认适配器不读取额外配置或保存跨项目状态。"""
+        self.collect_unit(program, path, unit, root)
+
+    def collect_unit(self, program: SecurityProgramIR, path: str, unit: SourceUnit, root: Any) -> None:
+        """默认只消费脚本视图，嵌入语言前端可附加模板事实。"""
+        self.collect_file(program, path, unit.source, root)
 
     @abstractmethod
     def collect_file(

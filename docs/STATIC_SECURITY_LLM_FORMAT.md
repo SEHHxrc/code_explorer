@@ -119,7 +119,26 @@ CFG 会参与到达定义计算，但当前不求解路径条件，也不证明�
 }
 ```
 
-## 5. 与 SARIF 的关系
+## 5. 有限状态与回调绑定证据
+
+React 简单 useState 和 Node 同请求局部 data→end 累积通过公共 `IRValueBoundary`
+接入 CFG/DFG，不作为新 Source，也不是已解析的 calls 边。持久化数据流的可选
+`value_boundary_ids` 与真实 `call_edge_ids` 分开，历史产物缺省为空列表，模式版本不变。
+
+相关候选的 `confidence_dimensions.shared_state_binding=inferred_may`；分析范围包含
+`shared_state=bounded_inferred_may_value_boundaries`。流步骤保留写入端与读取端两处
+精确源码位置、输入输出槽位和具体局限。字符串累积读公共 CFG 的退出值；不得把
+回调声明位置或函数退出槽位解释成源码中存在一次真实函数调用。
+这类证据保持低置信度、`may_reach_sink`，不证明重渲染、事件调度、完整堆身份或运行时可利用性。
+未建模原因继续传入候选局限和覆盖盲区；模型需要用原始源码验证利用前提。
+
+## 6. 与 SARIF 的关系
+
+新增调用边界证据仍使用相同信封：输出参数 Source 的 value_role 保存 output_arguments/
+output_targets，保持 binding_certainty=may 和成功条件等局限；返回状态码不能作为内容。
+Go 多返回 Source 保存 result_positions/result_count，以区分内容和错误/是否存在。
+直接嵌套 Source 的 call-result 槽位是消费者符号值，不是项目源码变量；位置仍指向真实调用。
+可变参数成员和返回分量不增加完整图输入，继续保留原始位置、绑定步骤、实际 calls 引用和局限。
 
 该格式不宣称替代 SARIF。后续如需与 GitHub Code Scanning 或其他 SAST 平台交换结果，应单独提供 SARIF 导出器：
 

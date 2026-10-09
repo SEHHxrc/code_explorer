@@ -6,6 +6,8 @@ import ast
 from typing import Any
 
 from backend.app.services.program_index import ProgramIdentity
+from backend.app.services.syntax_analysis.parameters import java_parameter_parts
+from backend.app.services.syntax_analysis.static_sequences import static_sequence_value
 from backend.app.services.syntax_analysis import (
     extensions_for_language,
 )
@@ -75,13 +77,9 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
         if not name:
             return
         parameter_nodes = self._parameter_nodes(_field(node, "parameters"))
-        parameters = tuple(
-            self._text(_field(item, "name")) for item in parameter_nodes
-            if self._text(_field(item, "name"))
-        )
-        parameter_types = tuple(
-            self._text(_field(item, "type")) or "?" for item in parameter_nodes
-        )
+        parts = [java_parameter_parts(item, self.source) for item in parameter_nodes]
+        parameters = tuple(name for name, _ in parts if name)
+        parameter_types = tuple(kind or "?" for _, kind in parts)
         symbol_id = ProgramIdentity.symbol_id(self.path, scope + (name,))
         method_id = symbol_id + "(" + ",".join(parameter_types) + ")"
         body_node = _field(node, "body")
@@ -96,6 +94,7 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
             name=name,
             location=location_from_tree_sitter(self.path, node),
             parameters=parameters,
+            parameter_kinds={name: "variadic_positional" for item, (name, _) in zip(parameter_nodes, parts) if name and item.type == "spread_parameter"},
             body=body,
             limitations=tuple(dict.fromkeys(self._limitations)),
         ))
@@ -432,6 +431,8 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
                 self._identifiers(argument) for argument in argument_nodes
             ),
             receiver_identifiers=self._identifiers(receiver_node),
+            argument_values=tuple(static_sequence_value(item, self._identifiers) for item in argument_nodes),
+            positional_argument_locations=tuple(location_from_tree_sitter(self.path, item) for item in argument_nodes),
         )
 
     def _assignment_targets(self, node: Any) -> tuple[str, ...]:

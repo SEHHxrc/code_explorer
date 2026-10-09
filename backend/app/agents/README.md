@@ -59,3 +59,5 @@ POST /api/agent/projects/{project_id}/runs
 ## 安全保证
 
 系统提示明确把仓库内容、README 和工具输出视为不可信数据。模型不能选择任意 Python 函数或宿主命令，只能按注册表调用工具。工具是只读的，并受路径边界、字节数、行数、文件数、耗时和结果数限制；错误通过公开消息返回，不暴露内部路径或密钥。
+
+实验策略的权限与普通 Agent 不同：`security_evidence/baseline` 使用共同安全指令与仅原始文件的工具注册表；实验组额外接收有界静态安全证据。实验不使用 Manifest、Repo Map 或依赖图工具，并在 Provider 缺失时失败而非静态回退。`model.started/model.completed` 事件记录每轮规范化字符数，用于实验估算，不能当成供应商精确 Token usage。旧图任务拒绝续跑，历史记录不被重写。

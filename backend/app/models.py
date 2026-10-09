@@ -99,7 +99,7 @@ class AgentEventModel(Base):
     )
 
 class ExperimentComparisonModel(Base):
-    """持久化一组图增强与临时无图对照运行的盲态配对关系。"""
+    """持久化静态安全证据与临时原始文件对照的盲态配对，兼容旧版图实验历史。"""
 
     __tablename__ = "experiment_comparisons"
 
@@ -107,9 +107,10 @@ class ExperimentComparisonModel(Base):
     project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     question: Mapped[str] = mapped_column(Text, nullable=False)
-    # TEMPORARY CONTROL GROUP / 临时对照组：图增强胜出后随实验表迁移删除。
+    # TEMPORARY CONTROL GROUP / 临时对照组：证据增强确认更优后随实验表迁移删除。
     baseline_run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     graph_run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    # graph_run_id 是历史列名；新协议通过 execution_order="security_evidence" 区分，绝不输入完整图。
     blind_order: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False)
     execution_order: Mapped[list[str]] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

@@ -22,7 +22,12 @@ class CallCondition:
 
 @dataclass(frozen=True)
 class CallRule:
-    """匹配规范化调用名称，并声明值在调用边界上的安全角色。"""
+    """匹配规范化调用名称，并声明值在调用边界上的安全角色。
+
+    output_argument_positions 表示调用写入的零起始实参位置，不是返回值。
+    result_positions/result_count 表示多返回 API 的内容分量和数量；缺省为单返回。
+    这些字段只提供规则角色，由公共消费者建立 may 值流，不证明调用成功或漏洞可利用。
+    """
 
     rule_id: str
     fact_kind: FactKind
@@ -39,6 +44,13 @@ class CallRule:
     argument_keywords: tuple[str, ...] = ()
     receiver_role: Literal["none", "source", "sink", "sanitizer_input"] = "none"
     conditions: tuple[CallCondition, ...] = ()
+    required_headers: tuple[str, ...] = ()
+    output_argument_positions: tuple[int, ...] = ()
+    implicit_shell: bool | None = None
+    sql_parameter_argument_position: int | None = 1
+    preconditions: tuple[str, ...] = ()
+    result_positions: tuple[int, ...] = ()
+    result_count: int = 1
 
     def matches_name(self, qualified_name: str) -> bool:
         """判断规范化调用名是否符合本规则。"""
@@ -64,6 +76,8 @@ class AccessRule:
     trust_class: TrustClass = "unknown"
     severity: Severity = "informational"
     result_role: Literal["none", "source"] = "none"
+    argument_role: Literal["none", "sink"] = "none"
+    preconditions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -86,6 +100,7 @@ class EntrypointRule:
     excluded_annotation_fragments: tuple[str, ...] = ()
     default_parameter_category: str = "framework_parameter"
     websocket_methods: tuple[str, ...] = ("websocket",)
+    source_parameter_positions: tuple[int, ...] | None = None
 
 
 @dataclass(frozen=True)

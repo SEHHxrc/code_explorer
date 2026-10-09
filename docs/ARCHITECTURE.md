@@ -2,6 +2,8 @@
 
 本文描述当前代码边界与实际入口。各目录的文件、类和依赖关系见对应 `README.md`。
 
+JS/TS 已增加公共复杂解构与 Vue/React/Node 核心规则，实际覆盖边界以 `SECURITY_COVERAGE.md` 为准，不表示全量安全分析。
+
 ## 1. 系统边界
 
 ```text
@@ -30,7 +32,7 @@ FastAPI
 │  ├─ ProjectContextBuilder
 │  ├─ ModelProvider（OpenAI Responses 或 OpenAI 兼容 API）
 │  └─ 只读 ToolRegistry
-├─ ExperimentComparisonService（有图 / 临时无图对照）
+├─ ExperimentComparisonService（静态安全证据 / 原始文件对照）
 └─ ExecutionService → ExecutionWorker → DockerExecutor
 ```
 
@@ -47,13 +49,14 @@ FastAPI
 | 安全工作区 | Git/ZIP 获取、路径策略、清洗、发布和恢复 | `backend/app/services/project_workspace/README.md` |
 | 依赖分析器 | 多语言语法提取与跨文件关系解析 | `backend/app/services/dependency_analyzer/README.md` |
 | 语法基础设施 | 共享语言目录、Tree-sitter Parser 池和节点读取 | `backend/app/services/syntax_analysis/README.md` |
+| 公共值绑定 | 对象、序列和默认/rest 模式投影 | `backend/app/services/value_binding/README.md` |
 | 程序身份 | 统一文件、符号、源码位置和调用点 ID | `backend/app/services/program_index/README.md` |
 | 最小程序图 | 八种依赖分析语言的公共控制 IR、CFG 与到达定义 Overlay | `backend/app/services/program_graph/README.md` |
 | 静态安全证据 | 跨语言前端、通用 IR、规则包、候选路径和证据协议 | `backend/app/services/security_analysis/README.md` |
 | 大模型接入 | 配置、Provider 抽象与 HTTP 协议 | `backend/app/llm/README.md` |
 | 项目智能体 | 上下文、模型—工具循环、队列与事件 | `backend/app/agents/README.md` |
 | 只读工具 | JSON Schema、参数校验、源码/图查询 | `backend/app/agents/tools/README.md` |
-| 对照实验 | 有图/无图盲态配对与指标 | `backend/app/experiments/README.md` |
+| 对照实验 | 静态安全证据/原始文件盲态配对与指标 | `backend/app/experiments/README.md` |
 | 隔离执行 | 策略、队列、Docker Worker 和审计 | `backend/app/execution/README.md` |
 | 前端功能 | 项目、图、实验和执行页面 | `frontend/src/features/README.md` |
 | 前端通信 | Axios 与 SSE 客户端 | `frontend/src/services/README.md` |
@@ -144,9 +147,18 @@ Manifest 与 Repo Map 是模型事实底座。模型只负责解释和归纳，�
 事实的项目文件。Python 专用名字传播实现已经删除；所有依赖分析语言均已通过函数身份、
 分支、循环、到达定义和调用点参数契约验证。后续语言安全规则只产生事实并复用同一数据流分析器。
 
-`services/security_analysis` 把语言语法解析、语言语义、规则知识和跨函数路径分开：`LanguageFrontend` 生成通用 `SecurityProgramIR`，`LanguageSemantics` 提供参数绑定等语言语义，分层 `RulePack` 描述安全入口、Source、Sink、Guard 与 Sanitizer，通用规则引擎只消费这些抽象。当前默认注册 Python、Java 与 Go 前端；Java 通过公共 `TreeSitterSecurityFrontend` 接入 Spring Web、Servlet 和首批高价值 API，Go 复用同一模板接入标准库及 `net/http` 注册式入口。未注册语言会明确进入覆盖率与诊断，不能被计为已扫描。
+`services/security_analysis` 把语言语法解析、语言语义、规则知识和跨函数路径分开：`LanguageFrontend` 生成通用 `SecurityProgramIR`，`LanguageSemantics` 提供参数绑定等语言语义，分层 `RulePack` 描述安全入口、Source、Sink、Guard 与 Sanitizer，通用规则引擎只消费这些抽象。当前默认注册 Python、Java、Go、C/C++、JavaScript/TypeScript 前端；Java 接入 Spring Web/Servlet，Go 接入标准库及 `net/http`，C/C++ 共用标准库/POSIX/SQLite 规则，JS/TS 共用浏览器 DOM、Node.js 与 Express 首批规则。除 Python AST 前端外均复用 `TreeSitterSecurityFrontend`；普通位置参数绑定复用 `PositionalLanguageSemantics`，JS/TS 对 spread 保守降级。未注册语言（目前 Rust）明确进入覆盖率与诊断，不能计为已扫描。
 
-`SecurityEvidencePack 2.3` 使用顶层 `entrypoints`、`facts`、`call_edges`、`dataflows` 和 `snippets` 注册表，候选项只保存 ID 引用，避免重复保存路径和片段。证据包保存精确位置、不确定性、规则包版本、覆盖率和分析局限，但不包含完整依赖图、Repo Map、自然语言架构概述或系统生成命令。生产安全数据流已统一使用 `program_graph` 的公共 CFG、到达定义和变量感知 `value_flow` Overlay，并能沿已解析调用执行有限深度的实参到形参及直接返回值传播；语言绑定由 `LanguageSemantics` 提供。全部八种依赖分析语言都已对齐声明/赋值配对、复合赋值、调用实参/接收者和词法访问路径能力，可区分 `obj.field`、`payload["key"][0]`、`values[0]` 等变量身份，但这不代表对象或堆身份敏感分析。安全规则和 `LanguageSemantics` 当前覆盖 Python/FastAPI、Java/Spring/Servlet 与 Go 标准库/net/http，其他五种语言的 ProgramGraph 能力不会被误报为已有安全规则覆盖。对象/字段/容器别名、动态下标元素身份、嵌套调用返回、路径条件、控制依赖和完整对象传播仍属于后续阶段。
+`SecurityEvidencePack 2.3` 使用顶层 `entrypoints`、`facts`、`call_edges`、`dataflows` 和 `snippets` 注册表，候选项只保存 ID 引用，避免重复保存路径和片段。证据包保存精确位置、不确定性、规则包版本、覆盖率和分析局限，不包含完整依赖图、Repo Map、自然语言架构概述或系统生成命令。数据流统一使用 `program_graph` 的公共 CFG、到达定义和变量感知 `value_flow` Overlay，沿已解析调用执行有限深度的实参到形参及直接返回值传播；绑定由 `LanguageSemantics` 提供。八种程序图语言已对齐语法变量路径能力，可区分 `obj.field`、`payload["key"][0]`、`values[0]`，但不代表堆身份敏感分析。安全规则覆盖其中七种语言，Rust 仍报告缺口。JS/TS 的匿名回调、平台 API 遮蔽和属性读写复用公共程序图，异步时序、闭包、复杂解构及堆别名未完整建模。动态下标、嵌套调用返回、路径条件、控制依赖和完整对象传播仍属于后续阶段。
+
+C/C++ 库 API 使用头文件与词法名称过滤，未执行完整预处理或编译器类型绑定；LLM 端点匹配
+置信度为 `medium`，相关局限进入候选和证据头。`system/popen` 是隐式 Shell，`exec` 只匹配
+可执行文件路径，`printf` 系列只匹配格式参数，`sqlite3_exec` 只匹配第二个 SQL 参数。
+缓冲区 Source 显式保存输出实参位置与未建模诊断，不能以读取数量/状态码替代内容传播。
+
+安全功能域的依赖方向保持 `projects → project_analysis → security_analysis`；安全模块复用
+`program_graph` 的 CFG/DFG 和 `semantic_index` 的已解析目标。`syntax_analysis` 保存纯语法共性，
+包括 C/C++ 声明符读取。数据库、产物管理、项目删除、模型请求不进入安全前端或规则包。
 
 `SecurityEvidencePromptBuilder` 将完整产物投影为 `LLMSecurityEvidenceEnvelope 1.2`：按问题、真实数据流、严重性和置信度选择候选，展开 Source/Sink、赋值、调用与返回边界，保持有效 JSON，并通过 `omitted_findings` 显式报告预算省略。普通 Agent 初始上下文使用该格式，也可以通过只读工具分页获取剩余候选。
 

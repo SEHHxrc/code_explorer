@@ -1,4 +1,4 @@
-"""依赖图 A/B 配对实验的 API 与领域契约。"""
+"""静态安全证据 A/B 配对实验的 API 与领域契约。"""
 
 from typing import Literal
 

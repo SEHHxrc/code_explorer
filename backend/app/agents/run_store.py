@@ -55,7 +55,7 @@ class AgentRunStore:
         strategy: AgentStrategy = "default",
     ) -> AgentRunView:
         """在一个事务中创建公开运行记录和待认领队列项。"""
-        if strategy not in {"default", "graph", "baseline"}:
+        if strategy not in {"default", "graph", "baseline", "security_evidence"}:
             raise ValueError("Unsupported agent strategy")
         db = self.session_factory()
         try:
@@ -496,6 +496,8 @@ class AgentRunStore:
         """把数据库策略值收敛为公开契约，未知旧值退回默认策略。"""
         if value == "graph":
             return "graph"
+        if value == "security_evidence":
+            return "security_evidence"
         if value == "baseline":
             return "baseline"
         return "default"

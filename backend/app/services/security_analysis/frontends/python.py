@@ -108,6 +108,7 @@ class _PythonIRVisitor(ast.NodeVisitor):
                 annotation=self._node_text(argument.annotation),
                 default_call=self._qualified_name(default) if isinstance(default, ast.Call) else "",
                 location=self._location(argument),
+                kind=("positional_only" if argument in node.args.posonlyargs else "keyword_only" if argument in node.args.kwonlyargs else "variadic_positional" if argument is node.args.vararg else "variadic_keyword" if argument is node.args.kwarg else "positional_or_keyword"),
             )
             for argument, default in self._parameters_with_defaults(node.args)
         )
@@ -133,6 +134,19 @@ class _PythonIRVisitor(ast.NodeVisitor):
     def visit_Call(self, node: ast.Call) -> None:
         """提取调用名称、参数、关键字、接收者和赋值目标。"""
         receiver = self._node_text(node.func.value) if isinstance(node.func, ast.Attribute) else ""
+        arguments: list[ast.expr] = []
+        for argument in node.args:
+            if isinstance(argument, ast.Starred) and isinstance(argument.value, (ast.List, ast.Tuple)) and not any(isinstance(item, ast.Starred) for item in argument.value.elts):
+                arguments.extend(argument.value.elts)
+            else:
+                arguments.append(argument)
+        keywords: list[tuple[str, IRExpression]] = []
+        for keyword in node.keywords:
+            value = keyword.value
+            if keyword.arg is None and isinstance(value, ast.Dict) and all(isinstance(key, ast.Constant) and isinstance(key.value, str) for key in value.keys):
+                keywords.extend((str(key.value), self._expression(item)) for key, item in zip(value.keys, value.values) if isinstance(key, ast.Constant))
+            else:
+                keywords.append((keyword.arg or "**", self._expression(value)))
         self.calls.append(IRCall(
             qualified_name=self._qualified_name(node.func),
             callsite_id=ProgramIdentity.callsite_id(
@@ -144,11 +158,8 @@ class _PythonIRVisitor(ast.NodeVisitor):
             ),
             symbol=self.symbol,
             location=self._location(node),
-            arguments=tuple(self._expression(arg) for arg in node.args),
-            keywords=tuple(
-                (keyword.arg or "**", self._expression(keyword.value))
-                for keyword in node.keywords
-            ),
+            arguments=tuple(self._expression(arg) for arg in arguments),
+            keywords=tuple(keywords),
             assigned_targets=self.assigned_values.get(id(node), ()),
             receiver=receiver,
         ))

@@ -6,6 +6,9 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from backend.app.services.value_binding import BindingPattern, BindingValue
+from backend.app.services.value_binding.parameters import ParameterKind
+
 ProgramNodeKind = Literal[
     "method_entry", "method_exit", "operation", "assignment", "call",
     "condition", "return", "throw", "break", "continue", "try",
@@ -41,6 +44,12 @@ class ProgramCallSite(BaseModel):
     positional_arguments: list[list[str]] = Field(default_factory=list)
     keyword_arguments: dict[str, list[str]] = Field(default_factory=dict)
     receiver_identifiers: list[str] = Field(default_factory=list)
+    argument_values: list[BindingValue] = Field(default_factory=list)
+    positional_spread_positions: list[int] = Field(default_factory=list)
+    result_targets: list[str] = Field(default_factory=list)
+    positional_argument_locations: list[ProgramGraphLocation] = Field(default_factory=list)
+    keyword_argument_locations: dict[str, ProgramGraphLocation] = Field(default_factory=dict)
+    result_variable: str = ""
 
 
 class ProgramValueTransfer(BaseModel):
@@ -51,6 +60,7 @@ class ProgramValueTransfer(BaseModel):
     transfer_kind: ValueTransferKind
     callsite_ids: list[str] = Field(default_factory=list)
     certainty: EdgeCertainty = "must"
+
     provenance: Literal["observed", "inferred"] = "observed"
 
 
@@ -67,7 +77,9 @@ class ProgramGraphNode(BaseModel):
     uses: list[str] = Field(default_factory=list)
     calls: list[ProgramCallSite] = Field(default_factory=list)
     value_transfers: list[ProgramValueTransfer] = Field(default_factory=list)
-    provenance: Literal["observed", "generated"] = "observed"
+    return_values: list[list[str]] = Field(default_factory=list)
+    provenance: Literal["observed", "inferred", "generated"] = "observed"
+    certainty: EdgeCertainty = "must"
 
 
 class ProgramGraphEdge(BaseModel):
@@ -96,6 +108,8 @@ class FunctionProgramGraph(BaseModel):
     name: str
     location: ProgramGraphLocation
     parameters: list[str] = Field(default_factory=list)
+    parameter_patterns: list[BindingPattern] = Field(default_factory=list)
+    parameter_kinds: dict[str, ParameterKind] = Field(default_factory=dict)
     entry_node_id: str
     exit_node_id: str
     nodes: dict[str, ProgramGraphNode] = Field(default_factory=dict)

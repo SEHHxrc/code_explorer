@@ -102,8 +102,9 @@ class SecurityEvidencePromptBuilder:
             severity=candidate.severity,
             confidence=candidate.confidence,
             confidence_dimensions={
-                "source_rule_match": "high",
-                "sink_rule_match": "high",
+                **({"shared_state_binding": "inferred_may"} if dataflow is not None and dataflow.value_boundary_ids else {}),
+                "source_rule_match": source.metadata.get("rule_match_confidence", "high"),
+                "sink_rule_match": sink.metadata.get("rule_match_confidence", "high"),
                 "data_dependency": (
                     dataflow.confidence if dataflow is not None else "not_analyzed"
                 ),
@@ -157,6 +158,7 @@ class SecurityEvidencePromptBuilder:
                     "languages": pack.languages_analyzed,
                     "control_flow": "cfg_used_without_path_feasibility_proof",
                     "interprocedural": "resolved_call_arguments_to_parameters",
+                    **({"shared_state": "bounded_inferred_may_value_boundaries"} if any(item.value_boundary_ids for item in pack.dataflows.values()) else {}),
                 },
                 "coverage": pack.coverage.model_dump(),
                 "coverage_gaps": coverage_gaps,
@@ -170,7 +172,7 @@ class SecurityEvidencePromptBuilder:
                 "inferred": "确定性静态分析推导出的关系，受解析精度限制",
                 "structural_reachability_only": "仅函数调用结构可达，未证明值传播",
                 "intra_procedural_dataflow": "公共函数图中的变量感知值流已连接 Source 与 Sink 实参",
-                "interprocedural_dataflow": "公共函数图值流和已解析调用边已连接 Source、调用实参、目标形参与 Sink 实参",
+                "interprocedural_dataflow": "公共函数图值流结合已解析调用或有静态依据的有界状态绑定，连接 Source 与 Sink；不证明运行时路径可行",
             },
             findings=[],
         )
@@ -194,6 +196,8 @@ class SecurityEvidencePromptBuilder:
                 for key in (
                     "framework", "route_method", "route_path", "annotation",
                     "shell", "query_shape", "parameter_argument_present", "mode",
+                    "api_resolution", "visible_headers",
+                    "binding_certainty",
                 )
                 if key in fact.metadata
             },

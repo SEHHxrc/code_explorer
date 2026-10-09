@@ -4,11 +4,11 @@
     <template #header>
       <div class="header">
         <div>
-          <span class="title">🧪 依赖图效果盲测</span>
+          <span class="title">🧪 静态安全证据效果盲测</span>
           <span class="subtitle">同一问题、同一模型、同一步骤预算</span>
         </div>
         <el-tag v-if="comparison" :type="completed ? 'success' : 'primary'" size="small">
-          {{ completed ? '等待盲评' : '两组运行中' }}
+          {{ completed ? (comparison.valid_for_review ? '等待盲评' : '运行失败，不计入效果比较') : '两组运行中' }}
         </el-tag>
       </div>
     </template>
@@ -28,11 +28,11 @@
         :rows="3"
         maxlength="8000"
         show-word-limit
-        placeholder="输入用于比较的问题，例如：这个项目的 FastAPI 入口与请求链路是什么？"
+        placeholder="输入安全分析问题，例如：是否存在外部输入到命令执行或 HTML 注入的可利用路径？"
         :disabled="running"
       />
       <div class="setup-actions">
-        <span>展示顺序已随机化；当前队列仍固定先执行无图组，正式实验前需修正顺序混杂。</span>
+        <span>展示和入队顺序均已随机化；两组指令、模型、原始文件工具和步骤预算相同。</span>
         <el-button
           type="primary"
           :loading="running"
@@ -58,32 +58,32 @@
         <dl class="metrics">
           <div><dt>耗时</dt><dd>{{ metric(lane, 'duration_ms', ' ms') }}</dd></div>
           <div>
-            <el-tooltip content="仅按初始静态上下文字符数 ÷ 4 估算，不包含工具 Schema、多轮提示和工具观察">
-              <dt>静态输入估算</dt>
+            <el-tooltip content="累计每轮提示、指令和工具 Schema 字符数 ÷ 4，包含工具观察；不是供应商真实 usage">
+              <dt>累计输入估算</dt>
             </el-tooltip>
             <dd>≈ {{ metric(lane, 'estimated_input_tokens') }}</dd>
           </div>
           <div>
-            <el-tooltip content="仅按最终答案字符数 ÷ 4 估算，不是供应商返回的真实 usage">
-              <dt>答案 Token 估算</dt>
+            <el-tooltip content="累计各轮响应文本与规范化工具调用参数字符数 ÷ 4，不包含隐藏推理，不是供应商真实 usage">
+              <dt>累计输出估算</dt>
             </el-tooltip>
             <dd>≈ {{ metric(lane, 'estimated_output_tokens') }}</dd>
           </div>
           <div><dt>工具调用</dt><dd>{{ metric(lane, 'tool_calls') }}</dd></div>
           <div>
-            <el-tooltip content="按 path、line、symbol 去重后的最终证据条目；不等于漏洞数量或答案引用数量">
+            <el-tooltip content="包含初始静态端点和工具结果，按 path、line、symbol 去重；不等于漏洞数量、模型采纳量或答案正确性">
               <dt>去重证据条目</dt>
             </el-tooltip>
             <dd>{{ metric(lane, 'evidence_count') }}</dd>
           </div>
         </dl>
-        <el-tag v-if="reveal" class="reveal" effect="dark" :type="reveal[lane] === 'graph' ? 'success' : 'warning'">
+        <el-tag v-if="reveal" class="reveal" effect="dark" :type="reveal[lane] === 'security_evidence' ? 'success' : 'warning'">
           {{ strategyLabel(reveal[lane]) }}
         </el-tag>
       </section>
     </div>
 
-    <div v-if="completed && !reveal" class="review">
+    <div v-if="completed && comparison.valid_for_review && !reveal" class="review">
       <h4>揭盲前评分</h4>
       <div class="score-grid">
         <div />
@@ -153,10 +153,10 @@ const runTag = (status) => ({
 
 /**
  * TEMPORARY CONTROL GROUP / 临时对照组：
- * baseline 标签只为实验揭盲展示。确认图增强胜出后，随比较 UI 一起删除。
+ * baseline 标签只为实验揭盲展示。确认安全证据增强更优并结束实验后清理。
  */
 const strategyLabel = (strategy) => (
-  strategy === 'graph' ? '图增强组' : '临时无图对照组'
+  ({ security_evidence: '静态安全证据组', graph: '旧版图实验（不能与新实验混合）', baseline: '临时原始文件对照组' }[strategy] || strategy)
 )
 
 const reset = () => {

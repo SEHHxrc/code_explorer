@@ -8,6 +8,7 @@ from .catalog import (
     extensions_for_language,
 )
 from .literals import StaticIndex, normalize_static_index, parse_static_index_literal
+from .c_family import unwrap_c_declarator
 from .tree_parser import (
     DEFAULT_TREE_SITTER_PARSER_POOL,
     TreeSitterParserPool,
@@ -38,4 +39,5 @@ __all__ = [
     "parse_static_index_literal",
     "split_qualified",
     "text",
+    "unwrap_c_declarator",
 ]

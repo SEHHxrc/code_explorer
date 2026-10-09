@@ -162,16 +162,28 @@ class ProgramArgumentBinder:
         result: list[tuple[str, tuple[str, ...]]] = []
         for binding in semantics.bind_program_arguments(call, target):
             identifiers: list[str] = []
-            if binding.argument_position is not None:
+            if binding.source_identifiers is not None:
+                identifiers = list(binding.source_identifiers)
+            elif binding.argument_position is not None:
                 position = binding.argument_position
                 if 0 <= position < len(call.positional_arguments):
                     identifiers = call.positional_arguments[position]
             elif binding.argument_keyword:
                 identifiers = call.keyword_arguments.get(binding.argument_keyword, [])
             names = tuple(dict.fromkeys(identifiers))
+            if binding.source_identifiers is not None and binding.argument_position is not None:
+                position = binding.argument_position
+                if position < len(call.argument_values) and call.argument_values[position].kind == "opaque":
+                    roots = call.argument_values[position].variables
+                    names = tuple(dict.fromkeys(next((root for root in roots if name.startswith((root + ".", root + "["))), name) for name in names))
             if names:
                 result.append((binding.parameter_name, names))
         return result
+
+    def slot_names(self, call: ProgramCallSite, target: FunctionProgramGraph) -> set[str]:
+        """返回包括安全常量的目标槽位，供私有入口 Overlay 保留兄弟元素隔离。"""
+        semantics = self.semantics.get(target.language) if self.semantics else None
+        return {binding.parameter_name for binding in semantics.bind_program_arguments(call, target)} if semantics else set()
 
     @staticmethod
     def _fallback(

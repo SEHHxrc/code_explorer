@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass, field
+from backend.app.services.value_binding import BindingValue, StructuredBindingResolver
 
 from ..contracts import (
     EdgeCertainty,
@@ -57,7 +58,14 @@ class ControlFlowGraphBuilder:
             method_id=function.method_id,
             location=function.location,
             code=function.name,
-            definitions=list(function.parameters),
+            definitions=list(dict.fromkeys((*function.parameters, *(
+                projection.output
+                for index, pattern in enumerate(function.parameter_patterns)
+                if index < len(function.parameters)
+                for projection in StructuredBindingResolver().resolve(
+                    pattern, BindingValue(variables=(function.parameters[index],))
+                ).projections
+            )))),
             provenance="generated",
         )
         self._nodes[exit_id] = ProgramGraphNode(
@@ -90,6 +98,8 @@ class ControlFlowGraphBuilder:
             name=function.name,
             location=function.location,
             parameters=list(function.parameters),
+            parameter_patterns=list(function.parameter_patterns),
+            parameter_kinds=dict(function.parameter_kinds),
             entry_node_id=entry_id,
             exit_node_id=exit_id,
             nodes=self._nodes,
@@ -253,6 +263,9 @@ class ControlFlowGraphBuilder:
             code=statement.code[:1000],
             definitions=list(statement.definitions),
             uses=list(statement.uses),
+            return_values=[list(value) for value in statement.return_values],
+            certainty=statement.certainty,
+            provenance=statement.provenance,
             calls=[ProgramCallSite(
                 callsite_id=call.callsite_id,
                 name=call.name,
@@ -261,6 +274,11 @@ class ControlFlowGraphBuilder:
                 positional_arguments=[list(item) for item in call.positional_arguments],
                 keyword_arguments={key: list(value) for key, value in call.keyword_arguments},
                 receiver_identifiers=list(call.receiver_identifiers),
+                argument_values=list(call.argument_values),
+                positional_spread_positions=list(call.positional_spread_positions),
+                result_targets=list(call.result_targets),
+                positional_argument_locations=list(call.positional_argument_locations),
+                keyword_argument_locations=dict(call.keyword_argument_locations),
             ) for call in statement.calls],
             value_transfers=[ProgramValueTransfer(
                 output_variable=transfer.output_variable,
@@ -298,7 +316,7 @@ class ControlFlowGraphBuilder:
             target=target,
             kind="cfg",
             branch=branch,
-            certainty="may" if certainty == "may" else "must",
+            certainty="may" if certainty == "may" or self._nodes[source].certainty == "may" or self._nodes[target].certainty == "may" else "must",
         ))
 
     def _required_function(self) -> ControlFunction:
