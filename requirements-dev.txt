@@ -1,0 +1,3 @@
+# 测试依赖与运行时依赖分离；HTTPX 仅用于本地 ASGI 流程测试，不用于模型接入。
+-r requirements.txt
+httpx==0.27.2
