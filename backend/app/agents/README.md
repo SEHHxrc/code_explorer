@@ -30,8 +30,9 @@ POST /api/agent/projects/{project_id}/runs
       └─ 有 tool_calls：ToolRegistry.execute()
            → Pydantic 严格校验参数
            → 只读工具返回内容、证据和截断标记
-           → 作为 TOOL_OBSERVATIONS 进入下一轮
-  → 达到步数上限时 generate() 汇总
+           → 保留 assistant 工具调用与全部对应 tool 结果
+           → 原生消息进入下一轮；预算不足按完整轮次压缩
+  → 达到步数上限时保留消息链、不提供新工具，生成汇总
   → 持久化 run.completed/run.failed 等事件
   → SSE 以事件游标返回前端
 ```
@@ -43,6 +44,9 @@ POST /api/agent/projects/{project_id}/runs
 | `contracts.py` | `AgentRunRequest`、`AgentClaim`、`ContextPacket`、`ToolResult`、`AgentEvent`、`AgentRunView`、历史摘要与快照等边界模型。 |
 | `context_builder.py` / `ProjectContextBuilder` | 验证 Manifest，优先加入按问题筛选的静态安全证据，再加入有界仓库地图。 |
 | `orchestrator.py` / `AgentRunManager` | 执行模型—工具循环、收集证据、输出事件、处理取消与错误。 |
+| `observations.py` | 将完整工具结果投影为预算内的结构化观察窗口；保留证据定位，按完整源码行压缩并报告省略。 |
+| `conversation_window.py` | `ToolRound`/原生消息窗口；调用和全部结果整轮保留或整轮省略，复用观察正文压缩。 |
+| `instructions.py` | 普通 Agent 共用指令，避免上下文构造器与编排器循环导入。 |
 | `run_store.py` / `AgentRunStore` | 保存运行、队列租约、事件和取消状态，并生成不含工具正文的历史快照。 |
 | `worker.py` / `AgentQueueWorker` | 认领队列、续租并调用编排器；`python -m backend.app.agents.worker` 是独立进程入口。 |
 | `policy.py` | 安全解析项目内相对路径，并对读取文本做敏感信息脱敏。 |
@@ -54,10 +58,12 @@ POST /api/agent/projects/{project_id}/runs
 
 前端选择的模型属于单次运行参数，不会修改服务器 `.env`。`AgentRunStore` 先把选择写入运行记录，`AgentQueueWorker` 认领任务后再恢复到 `AgentRunRequest`，因此独立 Worker 或进程重启不会把它替换回默认模型。
 
-上下文由 `CODE_EXPLORER_LLM_MAX_CONTEXT_CHARS` 控制近似字符预算。编排器先扣除系统指令和工具 Schema，再给静态项目事实和多轮工具结果分配空间；工具轮次增长时只保留预算内最近的观察结果。该值不能改变模型自身的 Token 上下文窗口。
+预算统一交给 `llm.budget.BudgetPlanner`，以实际协议请求估算 Token，已知窗口时预留输出和安全余量。`MAX_INPUT_TOKENS` 是应用输入预算；旧 `MAX_CONTEXT_CHARS` 非零时额外生效。完整工具结果仍写入 `tool.completed`，窗口仅收缩模型侧正文，不切碎 JSON 或源码行。没有模型的静态回退不受模型预算影响；实验则始终预检，不允许静态回退充当模型试次。
+
+新窗口版本 `native-tool-rounds-v1` 优先最新工具轮次，旧轮次整体省略。调用与对应结果不可拆开裁剪；最新整轮连定位信息也放不下时，在下一次模型请求前明确失败。压缩复用 `observations.py` 保留全部证据、实际行范围、续读提示和省略标记。Chat 的思考字段、Responses 的原生/加密续接状态仅在内存保留，不属于安全证据。`context.window` 记录省略情况，`model.started` 保存预算快照与估算方法；两组窗口、预算、分词策略不同不可进入严格配对评价，旧记录不回填。
 
 ## 安全保证
 
 系统提示明确把仓库内容、README 和工具输出视为不可信数据。模型不能选择任意 Python 函数或宿主命令，只能按注册表调用工具。工具是只读的，并受路径边界、字节数、行数、文件数、耗时和结果数限制；错误通过公开消息返回，不暴露内部路径或密钥。
 
-实验策略的权限与普通 Agent 不同：`security_evidence/baseline` 使用共同安全指令与仅原始文件的工具注册表；实验组额外接收有界静态安全证据。实验不使用 Manifest、Repo Map 或依赖图工具，并在 Provider 缺失时失败而非静态回退。`model.started/model.completed` 事件记录每轮规范化字符数，用于实验估算，不能当成供应商精确 Token usage。旧图任务拒绝续跑，历史记录不被重写。
+实验策略的权限与普通 Agent 不同：`security_evidence/baseline` 使用共同安全指令与仅原始文件的工具注册表；实验组额外接收有界静态安全证据。实验不使用 Manifest、Repo Map 或依赖图工具，并在 Provider 缺失时失败而非静态回退。`model.completed.metadata` 保存响应 ID、真实返回模型名、终止原因、状态与供应商实际用量（未提供时为空）；`run.completed` 保存运行终止原因和回答完整性。规范化字符数仍用于独立估算，不能当成真实 Token usage。恢复快照保留这些诊断字段和全部去重证据，但不携带工具源码正文。旧图任务拒绝续跑，历史记录不被重写。

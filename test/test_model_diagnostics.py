@@ -96,30 +96,37 @@ class ModelDiagnosticsTests(unittest.TestCase):
         "CODE_EXPLORER_LLM_BASE_URL": "https://api.example.test/v1",
     }
 
+    @staticmethod
+    async def successful_probe(url, payload, headers, **kwargs):
+        """模拟两轮 Responses 协议；随机校验值只能来自工具结果，不预设答案。"""
+        if payload.get("tools"):
+            return {"output": [{"type": "function_call", "call_id": "probe-call",
+                                "name": "agent_compatibility_probe", "arguments": "{}"}]}
+        token = json.loads(payload["input"][-1]["output"])["probe_token"]
+        return {"status": "completed", "output_text": token, "output": []}
+
     def test_probe_reports_success(self) -> None:
         """最小生成成功时应同时确认连接、模型与生成能力。"""
         with patch.dict(os.environ, self.environment, clear=True), patch(
-            "backend.app.llm.diagnostics.post_json",
-            new=AsyncMock(return_value={
-                "output": [{"type": "function_call", "name": "agent_compatibility_probe"}],
-            }),
+            "backend.app.llm.providers.openai_provider.post_json",
+            new=AsyncMock(side_effect=self.successful_probe),
         ) as request:
             result = asyncio.run(probe_model_connection())
         self.assertTrue(result["connected"])
         self.assertTrue(result["model_accessible"])
         self.assertTrue(result["generation_available"])
         self.assertTrue(result["agent_compatible"])
-        self.assertEqual(request.await_args.args[1]["tool_choice"], "required")
+        self.assertEqual(request.await_args_list[0].args[1]["tool_choice"], "required")
+        self.assertEqual(request.await_count, 2)
+        self.assertTrue(result["tool_roundtrip_verified"])
         self.assertEqual(request.await_args.args[2]["Authorization"], "Bearer secret-key")
         self.assertNotIn("secret-key", json.dumps(result))
 
     def test_probe_uses_requested_model_override(self) -> None:
         """智能体页面选择的模型应进入探测请求并出现在安全结果中。"""
         with patch.dict(os.environ, self.environment, clear=True), patch(
-            "backend.app.llm.diagnostics.post_json",
-            new=AsyncMock(return_value={
-                "output": [{"type": "function_call", "name": "agent_compatibility_probe"}],
-            }),
+            "backend.app.llm.providers.openai_provider.post_json",
+            new=AsyncMock(side_effect=self.successful_probe),
         ) as request:
             result = asyncio.run(probe_model_connection("gpt-selected"))
         self.assertEqual(request.await_args.args[1]["model"], "gpt-selected")
@@ -134,7 +141,7 @@ class ModelDiagnosticsTests(unittest.TestCase):
             request_id="req_123",
         )
         with patch.dict(os.environ, self.environment, clear=True), patch(
-            "backend.app.llm.diagnostics.post_json",
+            "backend.app.llm.providers.openai_provider.post_json",
             new=AsyncMock(side_effect=failure),
         ):
             result = asyncio.run(probe_model_connection())
@@ -147,7 +154,7 @@ class ModelDiagnosticsTests(unittest.TestCase):
     def test_probe_warns_when_model_does_not_call_tool(self) -> None:
         """端点接受工具字段但模型不调用工具时，不应误报 Agent 完全可用。"""
         with patch.dict(os.environ, self.environment, clear=True), patch(
-            "backend.app.llm.diagnostics.post_json",
+            "backend.app.llm.providers.openai_provider.post_json",
             new=AsyncMock(return_value={"output_text": "OK", "output": []}),
         ):
             result = asyncio.run(probe_model_connection())
@@ -164,17 +171,23 @@ class ModelDiagnosticsTests(unittest.TestCase):
             "choices": [{
                 "message": {
                     "tool_calls": [{
+                        "id": "probe-call",
                         "function": {"name": "agent_compatibility_probe", "arguments": "{}"},
                     }],
                 },
             }],
         }
+        async def compatible_probe(url, payload, headers, **kwargs):
+            if payload.get("tools"):
+                return response
+            token = json.loads(payload["messages"][-1]["content"])["probe_token"]
+            return {"choices": [{"finish_reason": "stop", "message": {"content": token}}]}
         with patch.dict(os.environ, environment, clear=True), patch(
-            "backend.app.llm.diagnostics.post_json",
-            new=AsyncMock(return_value=response),
+            "backend.app.llm.providers.compatible_provider.post_json",
+            new=AsyncMock(side_effect=compatible_probe),
         ) as request:
             result = asyncio.run(probe_model_connection())
-        payload = request.await_args.args[1]
+        payload = request.await_args_list[0].args[1]
         self.assertEqual(payload["tools"][0]["type"], "function")
         self.assertEqual(payload["tools"][0]["function"]["name"], "agent_compatibility_probe")
         self.assertEqual(payload["tool_choice"], "required")

@@ -20,7 +20,13 @@ pack = SecurityAnalysisService().analyze(
 `interprocedural_dataflow` 通过已解析调用的实参/形参绑定，或显式有界状态值边界连接不同函数，且最终变量进入规则指定的 Sink 实参。CFG 已参与计算，但尚未
 证明具体路径在运行时可行，因此数据流仍保守标记为 `may_reach_sink`。
 
-面向模型的入口是 `SecurityEvidencePromptBuilder.build()/render()`，输出 `LLMSecurityEvidenceEnvelope 1.2`。该投影按问题相关性和风险选择候选，预算不足时整条省略并报告数量，不会截断成无效 JSON。完整设计见 `docs/STATIC_SECURITY_LLM_FORMAT.md`。
+面向模型的入口是 `SecurityEvidencePromptBuilder.build()/render()`，输出 `LLMSecurityEvidenceEnvelope 1.3`（兼容 1.0～1.2）。该投影按问题相关性和风险选择候选，预算不足时整条省略并报告数量，不会截断成无效 JSON。完整设计见 `docs/STATIC_SECURITY_LLM_FORMAT.md`。
+
+无候选不再只提供统计：输入仍可包含真实入口以及未配对的 Source/Sink 观察与精确位置，空间允许时附带脱敏源码片段；这些观察只代表规则匹配，不代表漏洞。先保留各条观察的定位，再分配片段预算。小上下文启用紧凑头部，保留完整计数和实际规则覆盖类别，合并重复解释；明确标记省略与表示方式。完整静态事实、原坐标和规则描述仍保存在产物中，不为适配模型预算改写。
+
+完整候选超预算时，优先提供高风险 Sink 和候选相关 Source 的定位，再考虑入口元数据；不能只因为入口对象较大就把所有安全观察挤掉。紧凑头部保留事实实际留存数、证据体量限制标记、覆盖缺口分类计数与少量完整示例，其余缺口明示省略，完整诊断仍在产物中。
+
+`rule_coverage` 描述本次启用的规则、类别及框架匹配器，而非证明该框架存在或功能全覆盖。`coverage.entrypoints` 是已识别的外部触发函数数，不能代替所有 CLI/脚本/`input()` 入口；Sources/Sinks 是当前规则下的观察数，Candidates 是有界候选数而非漏洞数。零候选只能说明当前规则与扫描范围未产生候选，不能据此判定不存在 RCE 或其他安全问题。历史产物缺少规则描述时标为不可用，不根据新规则猜测历史覆盖。
 
 ## 数据所有权与去重
 
@@ -109,7 +115,7 @@ Spring Web/Servlet、Go 标准库与 `net/http`、C/C++ 标准库/POSIX/SQLite�
 | `rules/go/frameworks/net_http.py` | `http.HandleFunc/Handle` 注册式入口规则。 |
 | `rules/c_family/standard_library.py` | 两语言共用的标准库/POSIX Source、Shell/exec、路径、格式字符串 Sink、比较 Guard 和 SQLite SQL 规则。 |
 | `path_finder.py` | 引用依赖图 calls 边计算有界结构路径。 |
-| `slicer.py` | 提取有界源码片段并遮蔽常见凭据。 |
+| `slicer.py` | 提取有界完整源码行并遮蔽常见凭据；实际显示行与请求行范围分开，超长单行显式省略。 |
 | `knowledge.py` | CWE/RAG 异步 Provider 预留接口；当前默认空实现。 |
 | `llm_contracts.py` | 面向模型的自包含安全候选协议。 |
 | `llm_context.py` | 问题相关排序、路径压缩、预算控制和 JSON 序列化。 |
@@ -156,3 +162,5 @@ lambda、CLI 参数、指针别名和库函数副作用仍有缺口。可见的�
 `security_analysis` 拥有安全角色和证据，`program_graph` 拥有 CFG/DFG，`syntax_analysis` 拥有
 共享纯语法读取，`dependency_analyzer/semantic_index` 拥有跨文件调用解析。Agent 消费证据并验证
 利用条件，不负责在模型对话中重新生成这些静态事实。
+
+注册式入口规则会先按原有名称/后缀条件筛选可能的注册调用，再逐函数执行原匹配逻辑，避免对每个函数重复遍历所有无关调用；保持原调用顺序和首次匹配行为，不增删规则或改变安全结论。

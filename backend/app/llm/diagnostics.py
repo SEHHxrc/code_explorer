@@ -4,17 +4,22 @@ from __future__ import annotations
 
 from typing import Any
 from urllib.parse import urljoin
+import uuid
+
+from backend.app.llm.budget import BudgetPlanner, ModelBudgetError, request_payload
+from backend.app.llm.conversation import ModelMessage
 
 from backend.app.llm.http import (
     ModelEndpointError,
     ModelRequestError,
     get_json,
-    post_json,
 )
 from backend.app.llm.registry import (
     ModelConfiguration,
     get_model_api_key,
     get_model_configuration,
+    create_model_provider,
+    get_model_limits,
 )
 
 PROBE_TIMEOUT_SECONDS = 30.0
@@ -74,7 +79,7 @@ def _error_result(
 
 
 async def probe_model_connection(model: str | None = None) -> dict[str, Any]:
-    """用最小工具请求验证模型生成和 Agent 函数调用协议。"""
+    """最多两次生成验证调用→结果→回答；无项目源码、无重试，不探测最大窗口。"""
     config = get_model_configuration()
     if not config.configured:
         return {
@@ -93,98 +98,82 @@ async def probe_model_connection(model: str | None = None) -> dict[str, Any]:
         }
 
     selected_model = model or config.model
-    probe_name = "agent_compatibility_probe"
-    parameters = {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "additionalProperties": False,
-    }
-    if config.provider == "openai":
-        payload = {
-            "model": selected_model,
-            "instructions": "This is an Agent protocol probe. Call agent_compatibility_probe now.",
-            "input": "Call agent_compatibility_probe with an empty object.",
-            "tools": [{
-                "type": "function",
-                "name": probe_name,
-                "description": "Confirm that function-tool calling is supported.",
-                "parameters": parameters,
-                "strict": True,
-            }],
-            "tool_choice": "required",
-            "parallel_tool_calls": False,
-            "store": False,
-            "max_output_tokens": 64,
-        }
-        endpoint = _endpoint(config, "responses")
-    else:
-        payload = {
-            "model": selected_model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": "This is an Agent protocol probe. Call agent_compatibility_probe now.",
-                },
-                {"role": "user", "content": "Call agent_compatibility_probe with an empty object."},
-            ],
-            "tools": [{
-                "type": "function",
-                "function": {
-                    "name": probe_name,
-                    "description": "Confirm that function-tool calling is supported.",
-                    "parameters": parameters,
-                },
-            }],
-            "tool_choice": "required",
-            "stream": False,
-            "temperature": 0,
-            "max_tokens": 64,
-        }
-        endpoint = _endpoint(config, "chat/completions")
-
     try:
-        response = await post_json(
-            endpoint,
-            payload,
-            _headers(config),
-            PROBE_TIMEOUT_SECONDS,
-            transient_retries=0,
-        )
-    except ModelRequestError as exc:
-        return _error_result(config, exc, selected_model)
-    if config.provider == "openai":
-        tool_called = any(
-            item.get("type") == "function_call" and item.get("name") == probe_name
-            for item in response.get("output", [])
-            if isinstance(item, dict)
-        )
-    else:
-        choices = response.get("choices") or []
-        message = choices[0].get("message", {}) if choices and isinstance(choices[0], dict) else {}
-        tool_called = any(
-            isinstance(call, dict)
-            and (call.get("function") or {}).get("name") == probe_name
-            for call in message.get("tool_calls") or []
-        )
-    return {
-        **_base_result(config, selected_model),
-        "connected": True,
-        "model_accessible": True,
-        "generation_available": True,
-        "agent_compatible": tool_called,
-        "error_type": None,
-        "error_code": None,
-        "status_code": None,
-        "retryable": False,
-        "retry_after": None,
-        "request_id": None,
-        "message": (
-            "模型端点、权限、生成能力和 Agent 工具调用协议均验证成功。"
-            if tool_called
-            else "模型能够生成内容，但没有按要求返回函数工具调用；该模型可能无法完成 Agent 对话。"
-        ),
+        provider = create_model_provider(selected_model)
+    except (ValueError, ImportError):
+        return {**_base_result(config, selected_model), "connected": False, "model_accessible": None,
+                "generation_available": False, "agent_compatible": False, "requests_sent": 0,
+                "error_type": "configuration_error", "error_code": "invalid_model_options",
+                "retryable": False, "message": "模型输出参数或分词配置无效；未发送探测请求。"}
+    assert provider is not None
+    limits = get_model_limits(selected_model)
+    instructions = (
+        "Protocol test. First call agent_compatibility_probe with {}. "
+        "After its result arrives, answer with exactly its probe_token and nothing else."
+    )
+    tools = [{"type": "function", "name": "agent_compatibility_probe",
+              "description": "Return a verification token.", "strict": True,
+              "parameters": {"type": "object", "properties": {}, "required": [], "additionalProperties": False}}]
+    messages = [ModelMessage(role="user", content="Call the verification tool now.")]
+    result: dict[str, Any] = {
+        **_base_result(config, selected_model), "connected": False, "model_accessible": None,
+        "generation_available": False, "agent_compatible": False, "tool_calling_verified": False,
+        "tool_roundtrip_verified": False, "probe_stage": "tool_call", "requests_sent": 0,
+        "usage": [], "error_type": None, "error_code": None, "status_code": None,
+        "retryable": False, "retry_after": None, "request_id": None, "context_capacity_verified": False,
     }
+    try:
+        planner = BudgetPlanner(limits, model=selected_model)
+        output_limit = min(limits.max_output_tokens, 1024)
+        first_payload = request_payload(provider, instructions=instructions, messages=messages, tools=tools,
+                                        max_output_tokens=output_limit, tool_choice="required")
+        planner.require(first_payload)
+        result["requests_sent"] += 1
+        # 通过适配器发送，与正式 Agent 使用完全相同的序列化与响应解析。
+        first = await provider.generate_with_tools(
+            instructions=instructions, messages=messages, tools=tools, tool_choice="required",
+            max_output_tokens=output_limit, transient_retries=0, timeout=PROBE_TIMEOUT_SECONDS,
+        )
+        from dataclasses import asdict
+        result.update(connected=True, model_accessible=True, generation_available=True,
+                      actual_model=first.model)
+        result["usage"].append(asdict(first.metadata))
+        calls = first.tool_calls
+        if len(calls) != 1 or calls[0].name != "agent_compatibility_probe" or calls[0].arguments:
+            result["message"] = "端点能够生成响应，但未返回预期工具调用；尚未验证 Agent 完整流程。"
+            return result
+        result.update(tool_calling_verified=True, probe_stage="tool_result")
+        if first.continuation is None:
+            raise ValueError("Missing native continuation state")
+        token = uuid.uuid4().hex[:12]
+        messages.extend([first.continuation, ModelMessage(role="tool", tool_call_id=calls[0].id,
+                                                         content='{"probe_token":"' + token + '"}')])
+        second_payload = request_payload(provider, instructions=instructions, messages=messages, tools=[],
+                                         max_output_tokens=output_limit)
+        planner.require(second_payload)
+        result["requests_sent"] += 1
+        final = await provider.generate_with_tools(
+            instructions=instructions, messages=messages, tools=[], max_output_tokens=output_limit,
+            transient_retries=0, timeout=PROBE_TIMEOUT_SECONDS,
+        )
+        result["usage"].append(asdict(final.metadata))
+        returned = final.text.strip() == token and not final.tool_calls
+        complete = final.metadata.finish_reason == "stop" or final.metadata.response_status == "completed"
+        compatible = returned and complete and not final.metadata.refused and not final.metadata.incomplete_reason
+        result.update(tool_roundtrip_verified=compatible, agent_compatible=compatible, probe_stage="completed",
+                      actual_model=final.model,
+                      message="已验证工具调用、结果回传和完整回答；未验证平台最大上下文容量。" if compatible
+                      else "工具调用成功，但结果回传后的回答未通过完整性或内容验证；请检查输出/思考预算及平台协议。")
+        return result
+    except ModelRequestError as exc:
+        failure = _error_result(config, exc, selected_model)
+        if result["generation_available"]:
+            failure.update(connected=True, model_accessible=True, generation_available=True)
+        return {**result, **failure}
+    except (ModelBudgetError, ValueError):
+        result.update(error_type="budget_or_protocol_error", error_code="probe_not_verified",
+                      message="当前输入预算或工具消息格式无法完成探测；未验证 Agent 完整流程。")
+        return result
 
 
 async def list_available_models() -> dict[str, Any]:
@@ -224,6 +213,10 @@ async def list_available_models() -> dict[str, Any]:
         **_base_result(config),
         "connected": True,
         "models": identifiers[:MAX_VISIBLE_MODELS],
+        "model_metadata": {item["id"]: {
+            key: item[key] for key in ("context_window", "context_length", "max_input_tokens", "max_output_tokens")
+            if isinstance(item.get(key), int) and not isinstance(item.get(key), bool) and item[key] > 0
+        } for item in payload.get("data", []) if isinstance(item, dict) and item.get("id") in identifiers[:MAX_VISIBLE_MODELS]},
         "truncated": truncated,
         "error_type": None,
         "error_code": None,

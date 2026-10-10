@@ -5,7 +5,8 @@ import re
 from typing import Any, Protocol
 
 from backend.app.agents.contracts import AgentEvidence, ContextPacket
-from backend.app.llm.registry import get_model_limits
+from backend.app.llm.registry import create_model_provider, get_model_configuration, get_model_limits
+from backend.app.llm.budget import BudgetPlanner, initial_message, request_payload
 from backend.app.schemas.manifest import ProjectManifest
 from backend.app.services.security_analysis import SecurityEvidencePromptBuilder
 
@@ -19,6 +20,8 @@ class ContextBuilder(Protocol):
         project_id: str,
         question: str,
         artifact: dict[str, Any],
+        model: str | None = None,
+        budgeted: bool = True,
     ) -> ContextPacket:
         """返回给智能体编排器使用的上下文包。"""
         ...
@@ -31,7 +34,7 @@ class ProjectContextBuilder:
         """注入静态安全证据投影器。"""
         self.security_builder = security_builder or SecurityEvidencePromptBuilder()
 
-    def build(self, *, project_id: str, question: str, artifact: dict[str, Any]) -> ContextPacket:
+    def build(self, *, project_id: str, question: str, artifact: dict[str, Any], model: str | None = None, budgeted: bool = True) -> ContextPacket:
         """构建项目上下文。
 
         Args:
@@ -42,6 +45,25 @@ class ProjectContextBuilder:
         Returns:
             可直接交给编排器的 :class:`ContextPacket`。
         """
+        from backend.app.agents.instructions import AGENT_INSTRUCTIONS
+        from backend.app.agents.tools import create_project_tool_registry
+        limits = get_model_limits(model)
+        if not budgeted:
+            return self._render(project_id=project_id, question=question, artifact=artifact,
+                                max_chars=limits.max_context_chars or 18000)
+        config = get_model_configuration()
+        provider = create_model_provider(model)
+        schemas = create_project_tool_registry().schemas()
+        selected_model = model or config.model
+        return BudgetPlanner(limits, model=selected_model).build_initial_context(
+            lambda ceiling: self._render(project_id=project_id, question=question, artifact=artifact, max_chars=ceiling),
+            lambda packet: request_payload(provider, instructions=AGENT_INSTRUCTIONS,
+                                           messages=[initial_message(question, packet.prompt_context)], tools=schemas,
+                                           model=selected_model, max_output_tokens=limits.max_output_tokens),
+        )
+
+    def _render(self, *, project_id: str, question: str, artifact: dict[str, Any], max_chars: int) -> ContextPacket:
+        """保留完整 Manifest/安全 JSON 和 Repo Map 行，不做任意字符硬截断。"""
         manifest = ProjectManifest.model_validate(artifact.get("manifest") or {})
         repo_map = str(artifact.get("repo_map") or "")
         selected_map = self._select_repo_map(repo_map, question)
@@ -54,14 +76,13 @@ class ProjectContextBuilder:
             )
             for item in manifest.entrypoints[:20]
         ]
-        max_chars = get_model_limits().max_context_chars
         manifest_text = json.dumps(
             manifest.model_dump(), ensure_ascii=False, separators=(",", ":"),
         )
         security_text, security_evidence = self._security_context(
             artifact,
             question,
-            max_chars=max(2_000, int(max_chars * 0.55)),
+            max_chars=max(256, int(max_chars * 0.55)),
         )
         evidence.extend(security_evidence)
         prefix = "PROJECT_MANIFEST\n" + manifest_text
@@ -69,7 +90,12 @@ class ProjectContextBuilder:
             prefix += "\n\nSTATIC_SECURITY_EVIDENCE\n" + security_text
         repo_header = "\n\nRELEVANT_REPO_MAP\n"
         remaining = max(0, max_chars - len(prefix) - len(repo_header))
-        prompt_context = prefix + repo_header + selected_map[:remaining]
+        map_lines: list[str] = []
+        for line in selected_map.splitlines():
+            if len("\n".join([*map_lines, line])) > remaining:
+                break
+            map_lines.append(line)
+        prompt_context = prefix + repo_header + "\n".join(map_lines)
         return ContextPacket(
             project_id=project_id,
             project_name=manifest.project_name,
@@ -108,6 +134,10 @@ class ProjectContextBuilder:
             for finding in envelope.findings
             for endpoint in (finding.source, finding.sink)
         ]
+        items.extend(AgentEvidence(
+            path=item.location.path, line=item.location.line, symbol=item.symbol,
+            detail=f"static {item.kind} rule match; not a vulnerability",
+        ) for item in envelope.observations)
         text = json.dumps(
             envelope.model_dump(exclude_none=True),
             ensure_ascii=False,

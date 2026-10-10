@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import uuid
+from typing import Any
+from dataclasses import replace
 
 from backend.app.llm.base import (
     ModelProvider,
@@ -11,6 +13,9 @@ from backend.app.llm.base import (
     ToolCall,
 )
 from backend.app.llm.http import post_json
+from backend.app.llm.response_metadata import response_metadata
+from backend.app.llm.conversation import ModelMessage
+from backend.app.llm.budget import validate_provider_request
 
 
 class OpenAICompatibleProvider(ModelProvider):
@@ -28,6 +33,8 @@ class OpenAICompatibleProvider(ModelProvider):
         model: str,
         api_key: str = "",
         max_output_tokens: int = 2400,
+        output_token_parameter: str = "max_tokens",
+        reasoning_effort: str | None = None,
     ) -> None:
         """保存连接配置，不在构造阶段发起网络请求。"""
         self.name = provider_name
@@ -35,62 +42,53 @@ class OpenAICompatibleProvider(ModelProvider):
         self.model = model
         self.api_key = api_key
         self.max_output_tokens = max_output_tokens
+        if output_token_parameter not in {"max_tokens", "max_completion_tokens"}:
+            raise ValueError("Unsupported output token parameter")
+        self.output_token_parameter = output_token_parameter
+        self.reasoning_effort = reasoning_effort
+        from backend.app.llm.settings import get_model_limits
+        self.model_limits = replace(get_model_limits(model), max_output_tokens=max_output_tokens)
 
     async def generate(self, *, instructions: str, prompt: str) -> ModelResult:
         """调用 ``/chat/completions`` 生成文本并输出规范化结果。"""
-        headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        payload = await post_json(
-            f"{self.base_url}/chat/completions",
-            {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": instructions},
-                    {"role": "user", "content": prompt},
-                ],
-                "stream": False,
-                "temperature": 0.1,
-                "max_tokens": self.max_output_tokens,
-            },
-            headers,
-            timeout=180.0,
+        turn = await self.generate_with_tools(instructions=instructions, prompt=prompt, tools=[])
+        return ModelResult(
+            text=turn.text, provider=turn.provider, model=turn.model, metadata=turn.metadata,
         )
-        choices = payload.get("choices") or []
-        text = choices[0].get("message", {}).get("content", "") if choices else ""
-        if not text:
-            raise RuntimeError("Compatible model response did not contain message content")
-        return ModelResult(text=text, provider=self.name, model=self.model)
 
     def capabilities(self) -> ProviderCapabilities:
         """输出该适配器声明的工具调用能力。"""
         return ProviderCapabilities(streaming=False, tool_calling=True, structured_output=False)
 
-    async def generate_with_tools(self, *, instructions: str, prompt: str, tools: list[dict]) -> ModelTurn:
+    def request_payload(
+        self, *, instructions: str, messages: list[ModelMessage], tools: list[dict[str, Any]],
+        tool_choice: str = "auto", max_output_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        """构造原生会话请求；输出参数和思考强度按显式配置选择，不猜测模型别名。"""
+        payload = super().request_payload(instructions=instructions, messages=messages, tools=tools,
+                                          tool_choice=tool_choice, max_output_tokens=max_output_tokens)
+        payload[self.output_token_parameter] = payload.pop("max_tokens")
+        if self.reasoning_effort:
+            payload["reasoning_effort"] = self.reasoning_effort
+        return payload
+
+    async def generate_with_tools(
+        self, *, instructions: str, prompt: str = "", tools: list[dict[str, Any]],
+        messages: list[ModelMessage] | None = None, tool_choice: str = "auto",
+        max_output_tokens: int | None = None, transient_retries: int = 2,
+        timeout: float | None = None,
+    ) -> ModelTurn:
         """将严格工具 schema 转为 Chat Completions 格式并输出规范化工具轮次。"""
         headers = {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
-        compatible_tools = [{
-            "type": "function",
-            "function": {
-                "name": tool["name"],
-                "description": tool.get("description", ""),
-                "parameters": tool.get("parameters", {"type": "object", "properties": {}}),
-            },
-        } for tool in tools]
+        conversation = messages if messages is not None else [ModelMessage(role="user", content=prompt)]
+        request = self.request_payload(instructions=instructions, messages=conversation, tools=tools,
+                                       tool_choice=tool_choice, max_output_tokens=max_output_tokens)
+        validate_provider_request(self, request)
         payload = await post_json(
             f"{self.base_url}/chat/completions",
-            {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": instructions},
-                    {"role": "user", "content": prompt},
-                ],
-                "tools": compatible_tools,
-                "tool_choice": "auto",
-                "stream": False,
-                "temperature": 0.1,
-                "max_tokens": self.max_output_tokens,
-            },
+            request,
             headers,
-            timeout=180.0,
+            timeout=timeout or 180.0, transient_retries=transient_retries,
         )
         choices = payload.get("choices") or []
         message = choices[0].get("message", {}) if choices else {}
@@ -110,9 +108,18 @@ class OpenAICompatibleProvider(ModelProvider):
         content = message.get("content") or ""
         if isinstance(content, list):
             content = "".join(item.get("text", "") for item in content if isinstance(item, dict))
+        continuation = ModelMessage(role="assistant", content=content or None)
+        if calls:
+            continuation["tool_calls"] = [{"id": call.id, "type": "function", "function": {
+                "name": call.name, "arguments": json.dumps(call.arguments, ensure_ascii=False),
+            }} for call in calls]
+        if isinstance(message.get("reasoning_content"), str):
+            continuation["reasoning_content"] = message["reasoning_content"]
         return ModelTurn(
             text=content,
             provider=self.name,
-            model=self.model,
+            model=payload.get("model") or self.model,
             tool_calls=tuple(calls),
+            metadata=response_metadata(payload, responses_api=False),
+            continuation=continuation,
         )

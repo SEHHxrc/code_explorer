@@ -54,12 +54,18 @@
         <el-tag v-if="modelCatalog?.connected" size="small" type="info" effect="plain">
           当前凭据可见 {{ modelCatalog.models.length }} 个
         </el-tag>
-        <el-tag v-if="modelStatus.max_context_chars" size="small" type="info" effect="plain">
-          输入 ≤ {{ Number(modelStatus.max_context_chars).toLocaleString() }} 字符 · 输出 ≤ {{ Number(modelStatus.max_output_tokens).toLocaleString() }} tokens
+        <el-tag v-if="modelStatus.max_input_tokens" size="small" type="info" effect="plain">
+          应用输入预算 {{ Number(modelStatus.max_input_tokens).toLocaleString() }} tokens · 单次输出上限 {{ Number(modelStatus.max_output_tokens).toLocaleString() }} tokens
+        </el-tag>
+        <el-tag v-if="modelStatus.max_context_chars" size="small" type="warning" effect="plain">
+          旧字符保护 {{ Number(modelStatus.max_context_chars).toLocaleString() }} 字符
+        </el-tag>
+        <el-tag v-if="modelStatus.configured" size="small" type="info" effect="plain">
+          {{ modelStatus.context_window_tokens && (!selectedModel || selectedModel === modelStatus.model) ? `窗口配置 ${Number(modelStatus.context_window_tokens).toLocaleString()} tokens` : '平台窗口未知 · 本地输入为估算' }}
         </el-tag>
       </div>
       <div class="model-actions">
-        <el-tooltip content="针对当前模型发起一次最小函数工具请求，验证 Agent 协议，可能产生少量费用" placement="bottom">
+        <el-tooltip content="针对当前模型验证工具调用、结果回传和最终回答，最多两次生成请求，可能产生少量费用" placement="bottom">
           <span>
             <el-button
               size="small"
@@ -77,6 +83,13 @@
         >查看可用模型</el-button>
       </div>
     </section>
+    <el-alert
+      v-if="modelStatus.configured && modelStatus.provider === 'compatible' && modelStatus.transport_secure === false"
+      title="当前兼容模型端点使用 HTTP。远程平台建议使用 HTTPS，避免密钥和项目内容以明文传输。"
+      type="warning"
+      :closable="false"
+      show-icon
+    />
     <el-alert
       v-if="modelProbe"
       class="model-diagnostic"
@@ -324,7 +337,9 @@ const handleEvent = (event) => {
     case 'model.started':
       pushStep(
         `模型推理 · 第 ${payload.step} 步`,
-        payload.request_chars
+        payload.input_token_estimate
+          ? `输入估算 ${Number(payload.input_token_estimate.tokens).toLocaleString()} tokens（${payload.input_token_estimate.method}）· ${payload.tool_count || 0} 个工具 · 输出上限 ${Number(payload.max_output_tokens || 0).toLocaleString()} tokens`
+          : payload.request_chars
           ? `请求约 ${Number(payload.request_chars).toLocaleString()} 字符 · ${payload.tool_count || 0} 个工具 · 输出上限 ${Number(payload.max_output_tokens || 0).toLocaleString()} tokens`
           : '',
         'primary',

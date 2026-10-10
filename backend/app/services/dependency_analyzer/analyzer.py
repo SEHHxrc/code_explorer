@@ -106,6 +106,7 @@ class UnifiedCodeAnalyzer(
         self.parsed_files_count = 0
         self.total_files_count = 0
         self._progress_lock = threading.Lock()
+        self._progress_stage = "扫描源码文件"
         self._diagnostics_lock = threading.Lock()
         self._parser_pool = DEFAULT_TREE_SITTER_PARSER_POOL
 
@@ -121,7 +122,9 @@ class UnifiedCodeAnalyzer(
     def run_full_analysis(self) -> dict:
         """扫描项目并执行收集、索引和关系解析，输出符号表、依赖图与统计。"""
         target_files = self._collect_files()
-        self.total_files_count = len(target_files)
+        with self._progress_lock:
+            self.total_files_count = len(target_files)
+            self._progress_stage = "解析源码文件（包含失败或跳过的尝试）"
         if not target_files:
             return {
                 "file_symbols": {},
@@ -151,15 +154,20 @@ class UnifiedCodeAnalyzer(
                 except Exception as exc:
                     print(f"[Error] analysis task failed for {path}: {exc}")
 
+        self._set_progress_stage("合并符号和建立索引")
         self._merge_contexts(contexts)
         self._build_indexes()
+        self._set_progress_stage("解析导入和继承关系")
         self._resolve_imports()
         self._resolve_inheritance()
+        self._set_progress_stage("构建节点和定义关系")
         self._build_graph_nodes()
         self._link_definitions()
         self._resolve_overrides()
+        self._set_progress_stage("解析调用、引用和派发关系")
         self._resolve_references()
 
+        self._set_progress_stage("生成依赖图和语义索引产物")
         return {
             "file_symbols": self.file_symbols_map,
             "dependency_graph": nx.node_link_data(self.global_graph),
@@ -200,5 +208,15 @@ class UnifiedCodeAnalyzer(
         }
 
     def get_progress(self) -> dict:
-        """输出总文件数和已解析文件数的线程安全进度快照。"""
-        return {"total_files": self.total_files_count, "parsed_files": self.parsed_files_count}
+        """输出线程安全的文件尝试计数及阶段；文件 100% 不表示关系解析完成。"""
+        with self._progress_lock:
+            return {
+                "total_files": self.total_files_count,
+                "parsed_files": self.parsed_files_count,
+                "stage_label": self._progress_stage,
+            }
+
+    def _set_progress_stage(self, label: str) -> None:
+        """输入不含源码路径的阶段标签，供 get_progress 查询。"""
+        with self._progress_lock:
+            self._progress_stage = label

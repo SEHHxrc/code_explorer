@@ -38,6 +38,10 @@ class SecurityEvidenceTool(AgentTool):
             for finding in envelope.findings
             for endpoint in (finding.source, finding.sink)
         ]
+        evidence.extend(AgentEvidence(
+            path=item.location.path, line=item.location.line, symbol=item.symbol,
+            detail=f"static {item.kind} rule match; not a vulnerability",
+        ) for item in envelope.observations)
         return ToolResult(
             content=envelope.model_dump(exclude_none=True),
             evidence=evidence,

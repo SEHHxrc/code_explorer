@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import uuid
+from typing import Any
+from dataclasses import replace
 
 from backend.app.llm.base import (
     ModelProvider,
@@ -11,6 +13,9 @@ from backend.app.llm.base import (
     ToolCall,
 )
 from backend.app.llm.http import post_json
+from backend.app.llm.response_metadata import response_metadata
+from backend.app.llm.conversation import ModelMessage, response_items
+from backend.app.llm.budget import validate_provider_request
 
 
 class OpenAIResponsesProvider(ModelProvider):
@@ -34,46 +39,52 @@ class OpenAIResponsesProvider(ModelProvider):
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.max_output_tokens = max_output_tokens
+        from backend.app.llm.settings import get_model_limits
+        self.model_limits = replace(get_model_limits(model), max_output_tokens=max_output_tokens)
 
     async def generate(self, *, instructions: str, prompt: str) -> ModelResult:
         """调用 Responses API 生成文本并输出规范化结果。"""
-        payload = await post_json(
-            f"{self.base_url}/responses",
-            {
-                "model": self.model,
-                "instructions": instructions,
-                "input": prompt,
-                "store": False,
-                "max_output_tokens": self.max_output_tokens,
-            },
-            {"Authorization": f"Bearer {self.api_key}"},
-            timeout=120.0,
+        turn = await self.generate_with_tools(instructions=instructions, prompt=prompt, tools=[])
+        return ModelResult(
+            text=turn.text, provider=turn.provider, model=turn.model, metadata=turn.metadata,
         )
-        text = payload.get("output_text") or self._extract_output_text(payload)
-        if not text:
-            raise RuntimeError("Model response did not contain output text")
-        return ModelResult(text=text, provider=self.name, model=self.model)
 
     def capabilities(self) -> ProviderCapabilities:
         """输出 Responses API 的工具调用和结构化输出能力。"""
         return ProviderCapabilities(streaming=False, tool_calling=True, structured_output=True)
 
-    async def generate_with_tools(self, *, instructions: str, prompt: str, tools: list[dict]) -> ModelTurn:
+    def request_payload(
+        self, *, instructions: str, messages: list[ModelMessage], tools: list[dict[str, Any]],
+        tool_choice: str = "auto", max_output_tokens: int | None = None,
+    ) -> dict[str, Any]:
+        """序列化完整 Responses 会话；无服务端会话存储，申请加密推理续接状态。"""
+        payload = {
+            "model": self.model, "instructions": instructions, "input": response_items(messages),
+            "store": False, "include": ["reasoning.encrypted_content"],
+            "max_output_tokens": max_output_tokens or self.max_output_tokens,
+        }
+        if tools:
+            payload.update(tools=tools, tool_choice=tool_choice, parallel_tool_calls=False)
+        return payload
+
+    async def generate_with_tools(
+        self, *, instructions: str, prompt: str = "", tools: list[dict[str, Any]],
+        messages: list[ModelMessage] | None = None, tool_choice: str = "auto",
+        max_output_tokens: int | None = None, transient_retries: int = 2,
+        timeout: float | None = None,
+    ) -> ModelTurn:
         """调用带函数工具的 Responses API 并输出文本及规范化工具调用。"""
+        request = self.request_payload(
+            instructions=instructions,
+            messages=messages if messages is not None else [ModelMessage(role="user", content=prompt)],
+            tools=tools, tool_choice=tool_choice, max_output_tokens=max_output_tokens,
+        )
+        validate_provider_request(self, request)
         payload = await post_json(
             f"{self.base_url}/responses",
-            {
-                "model": self.model,
-                "instructions": instructions,
-                "input": prompt,
-                "tools": tools,
-                "tool_choice": "auto",
-                "parallel_tool_calls": False,
-                "store": False,
-                "max_output_tokens": self.max_output_tokens,
-            },
+            request,
             {"Authorization": f"Bearer {self.api_key}"},
-            timeout=120.0,
+            timeout=timeout or 120.0, transient_retries=transient_retries,
         )
         calls: list[ToolCall] = []
         for item in payload.get("output", []):
@@ -91,12 +102,18 @@ class OpenAIResponsesProvider(ModelProvider):
         return ModelTurn(
             text=payload.get("output_text") or self._extract_output_text(payload),
             provider=self.name,
-            model=self.model,
+            model=payload.get("model") or self.model,
             tool_calls=tuple(calls),
+            metadata=response_metadata(payload, responses_api=True),
+            continuation=ModelMessage(role="assistant", content=payload.get("output_text") or self._extract_output_text(payload),
+                                      provider_items=[item for item in payload.get("output", []) if isinstance(item, dict)],
+                                      tool_calls=[{"id": call.id, "type": "function", "function": {
+                                          "name": call.name, "arguments": json.dumps(call.arguments, ensure_ascii=False),
+                                      }} for call in calls]),
         )
 
     @staticmethod
-    def _extract_output_text(payload: dict) -> str:
+    def _extract_output_text(payload: dict[str, Any]) -> str:
         """输入原始 Responses 载荷，输出所有消息文本片段的合并结果。"""
         chunks = [
             content["text"]

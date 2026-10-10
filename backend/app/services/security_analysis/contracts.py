@@ -85,6 +85,8 @@ class CodeSnippet(BaseModel):
     end_line: int = Field(ge=1)
     text: str
     truncated: bool = False
+    requested_start_line: int | None = None
+    requested_end_line: int | None = None
 
 
 class FlowStepEvidence(BaseModel):
@@ -177,6 +179,7 @@ class SecurityEvidencePack(BaseModel):
     ir_version: Literal["1.2", "1.3"] = "1.3"
     analysis_kind: Literal["static_security_evidence"] = "static_security_evidence"
     rule_packs: list[str] = Field(default_factory=list)
+    rule_coverage: list[dict[str, Any]] = Field(default_factory=list)
     languages_analyzed: list[str] = Field(default_factory=list)
     unsupported_languages: list[str] = Field(default_factory=list)
     completed: bool = True

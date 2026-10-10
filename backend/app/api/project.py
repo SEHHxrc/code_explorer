@@ -20,6 +20,7 @@ from backend.app.services.projects import (
     ProjectRepository,
     ProjectSource,
 )
+from backend.app.services.projects.progress import ImportProgressStore
 from backend.app.services.project_overview import generate_project_overview
 from backend.app.services.reports.overview_report import render_deterministic_overview
 
@@ -29,6 +30,32 @@ project_deletion_service = ProjectDeletionService()
 project_query_service = ProjectQueryService()
 project_repository = ProjectRepository()
 project_artifacts = ProjectArtifactRepository()
+import_progress = ImportProgressStore()
+
+
+@router.post("/analysis-progress")
+async def create_analysis_progress(
+    current_user: dict[str, str] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """上传前登记当前用户的进度任务；不创建项目或启动分析。"""
+    try:
+        request_id = import_progress.create(current_user["user_id"])
+    except ProjectAnalysisError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.public_message) from exc
+    return {"code": 200, "data": {"request_id": request_id}}
+
+
+@router.get("/analysis-progress/{request_id}")
+async def get_analysis_progress(
+    request_id: str,
+    current_user: dict[str, str] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """读取本人任务的阶段和真实文件进度；不能读取其他用户的任务。"""
+    try:
+        data = import_progress.snapshot(request_id, current_user["user_id"])
+    except ProjectAnalysisError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.public_message) from exc
+    return {"code": 200, "data": data}
 
 
 @router.get("")
@@ -45,6 +72,7 @@ async def list_projects(current_user: dict[str, str] = Depends(get_current_user)
 async def analyze_project(
     repo_url: str | None = Form(default=None),
     file: UploadFile | None = File(default=None),
+    request_id: str | None = Form(default=None, max_length=64),
     current_user: dict[str, str] = Depends(get_current_user),
 ) -> dict[str, Any]:
     """校验 HTTP 输入并委托应用服务完成一次完整项目分析。"""
@@ -60,8 +88,10 @@ async def analyze_project(
             raise HTTPException(status_code=400, detail="ZIP file is required.")
         source = ProjectSource.zip(file.file, file.filename)
     try:
+        progress = import_progress.claim(request_id, current_user["user_id"]) if request_id else None
         result = await project_import_service.import_project(
-            AnalyzeProjectCommand(user_id=current_user["user_id"], source=source)
+            AnalyzeProjectCommand(user_id=current_user["user_id"], source=source),
+            **({"progress": progress} if progress is not None else {}),
         )
     except ProjectAnalysisError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.public_message) from exc

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from backend.app.services.program_graph import ProgramGraphService
+from backend.app.services.project_analysis.progress import AnalysisProgressReporter, report_progress
 from backend.app.services.semantic_index import (
     ProgramGraphSemanticProvider,
     SemanticIndexArtifact,
@@ -93,11 +94,14 @@ class SecurityAnalysisService:
         dependency_graph: dict[str, Any],
         analysis_diagnostics: dict[str, Any] | None = None,
         semantic_index: dict[str, Any] | None = None,
+        progress: AnalysisProgressReporter | None = None,
     ) -> tuple[SecurityEvidencePack, dict[str, Any]]:
         """生成安全证据，并返回经 ProgramGraph 补充后的语义索引。"""
         enriched_index = SemanticIndexArtifact.model_validate(semantic_index or {})
+        report_progress(progress, "security_scan")
         scan = self.scanner.scan(project_root, dependency_graph=dependency_graph)
         try:
+            report_progress(progress, "program_graph")
             program_graph = self.program_graph_service.analyze(
                 project_root,
                 dependency_graph=dependency_graph,
@@ -107,6 +111,7 @@ class SecurityAnalysisService:
                 enriched_index,
                 program_graph=program_graph,
             )
+            report_progress(progress, "dataflow")
             scan.dataflows = self.flow_analyzer.analyze(
                 program_graph,
                 sources=scan.sources,
@@ -121,6 +126,7 @@ class SecurityAnalysisService:
                 "reason": "program_graph_dataflow_error",
                 "detail": type(exc).__name__,
             })
+        report_progress(progress, "evidence")
         entrypoints = self._sorted_entrypoints(scan.entrypoints)
         sources = self._sorted(scan.sources)
         sinks = self._sorted(scan.sinks)
@@ -246,8 +252,15 @@ class SecurityAnalysisService:
         retained_facts = (
             retained_sources + retained_sinks + retained_guards + retained_sanitizers
         )
+        # 即使没有 Source→Sink 候选，也保存已观察输入/危险 API 的位置与脱敏片段。
+        for fact in retained_sources + retained_sinks:
+            snippet = slicer.slice_fact(fact, "source" if fact.fact_kind == "source" else "sink")
+            if snippet is not None:
+                snippets.setdefault(snippet.snippet_id, snippet)
+                fact.metadata["snippet_id"] = snippet.snippet_id
         evidence = SecurityEvidencePack(
             rule_packs=scan.rule_packs,
+            rule_coverage=scan.rule_coverage,
             languages_analyzed=scan.languages_analyzed,
             unsupported_languages=scan.unsupported_languages,
             entrypoints={item.entrypoint_id: item for item in entrypoints},

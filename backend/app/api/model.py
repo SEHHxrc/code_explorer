@@ -61,6 +61,11 @@ async def get_model_status(
             "live_checked": False,
             "max_context_chars": limits.max_context_chars,
             "max_output_tokens": limits.max_output_tokens,
+            "max_input_tokens": limits.max_input_tokens,
+            "context_window_tokens": limits.context_window_tokens,
+            "capacity_source": "operator_configured" if limits.context_window_tokens else "unknown",
+            "tokenizer": limits.tokenizer,
+            "transport_secure": config.base_url.startswith("https://") if config.configured else None,
         },
     }
 

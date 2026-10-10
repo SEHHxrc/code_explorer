@@ -26,13 +26,17 @@ from backend.app.models import (
 
 ACTIVE_STATUSES = ("queued", "running")
 _HISTORY_EVENT_FIELDS = {
-    "run.started": {"project_id"},
+    "run.started": {"project_id", "instrumentation_version", "report_version", "observation_window_version"},
     "context.ready": {"project_name", "characters", "evidence"},
-    "model.started": {"step", "prompt_chars", "tool_count", "request_chars", "max_output_tokens"},
+    "model.started": {"step", "prompt_chars", "tool_count", "request_chars", "max_output_tokens",
+                      "input_token_estimate", "input_token_budget", "context_window_tokens", "capacity_source",
+                      "max_context_chars", "safety_margin_tokens", "budget_version", "output_token_parameter", "reasoning_effort"},
+    "model.completed": {"step", "response_chars", "metadata", "actual_model"},
+    "context.window": {"step", "total_observations", "included_observations", "compacted_observations", "omitted_observations", "conversation_version"},
     "tool.requested": {"step", "call_id", "name", "arguments"},
-    "tool.completed": {"step", "call_id", "name"},
+    "tool.completed": {"step", "call_id", "name", "evidence"},
     "tool.failed": {"step", "call_id", "name", "error"},
-    "run.completed": {"provider", "model", "evidence"},
+    "run.completed": {"provider", "model", "evidence", "termination_reason", "final_response_metadata", "answer_completeness"},
     "run.failed": {"error", "error_type", "retryable", "status_code", "error_code", "retry_after", "request_id"},
     "run.cancelled": set(),
 }
@@ -459,7 +463,7 @@ class AgentRunStore:
                 if key not in seen:
                     seen.add(key)
                     evidence.append(item)
-        return evidence[:80]
+        return evidence
 
     @staticmethod
     def _history_event(row: AgentEventModel) -> AgentEvent | None:

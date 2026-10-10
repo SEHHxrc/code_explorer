@@ -51,9 +51,13 @@ class ReadFileTool(AgentTool):
                 "start_line": start,
                 "end_line": start + max(len(selected) - 1, 0),
                 "text": redact_secrets(numbered),
+                "file_total_lines": len(lines),
+                "requested_end_line": arguments.end_line,
+                "has_more_lines": end < len(lines),
+                "next_start_line": end + 1 if end < len(lines) else None,
             },
             evidence=[AgentEvidence(path=arguments.path, line=start, detail="source excerpt")],
-            truncated=end < len(lines),
+            truncated=end < min(arguments.end_line, len(lines)),
         )
 
 
@@ -104,8 +108,10 @@ class SearchProjectTextTool(AgentTool):
                 for line_number, line in enumerate(raw.decode("utf-8", errors="replace").splitlines(), 1):
                     if query not in line.casefold():
                         continue
-                    preview = redact_secrets(line.strip())[:500]
-                    hits.append({"path": relative, "line": line_number, "text": preview})
+                    redacted = redact_secrets(line.strip())
+                    preview = redacted[:500]
+                    hits.append({"path": relative, "line": line_number, "text": preview,
+                                 "text_truncated": len(redacted) > 500})
                     evidence.append(AgentEvidence(path=relative, line=line_number, detail="text match"))
                     if len(hits) >= arguments.limit:
                         return ToolResult(content=hits, evidence=evidence, truncated=True)

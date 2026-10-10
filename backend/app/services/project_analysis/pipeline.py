@@ -17,6 +17,7 @@ from backend.app.services.reports.overview_report import render_deterministic_ov
 from backend.app.services.security_analysis import SecurityAnalysisService, SecurityEvidencePack
 
 from .graph_exchange import GraphExchangeNormalizer
+from .progress import AnalysisProgressReporter, report_progress
 
 logger = logging.getLogger(__name__)
 
@@ -57,9 +58,12 @@ class ProjectAnalysisPipeline:
         self._graph_normalizer = graph_normalizer or GraphExchangeNormalizer()
         self._security_analysis = security_analysis_service or SecurityAnalysisService()
 
-    def analyze(self, project_root: str, max_workers: int = 4) -> ProjectAnalysisBundle:
+    def analyze(
+        self, project_root: str, max_workers: int = 4, *,
+        progress: AnalysisProgressReporter | None = None,
+    ) -> ProjectAnalysisBundle:
         """分析已存在的源码目录并返回不含持久化副作用的完整结果。"""
-        analysis = self._run_dependency_analysis(project_root, max_workers)
+        analysis = self._run_dependency_analysis(project_root, max_workers, progress=progress)
         raw_graph = analysis["dependency_graph"]
         file_symbols = analysis["file_symbols"]
         semantic_index = analysis["semantic_index"]
@@ -68,7 +72,9 @@ class ProjectAnalysisPipeline:
             dependency_graph=raw_graph,
             diagnostics=analysis["diagnostics"],
             semantic_index=semantic_index,
+            progress=progress,
         )
+        report_progress(progress, "projection")
         file_tree = build_file_tree_with_symbols(project_root, file_symbols)
         manifest = ProjectManifestBuilder(project_root).build(raw_graph)
         repo_map = build_repo_map(manifest, file_symbols)
@@ -91,6 +97,7 @@ class ProjectAnalysisPipeline:
         self,
         project_root: str,
         max_workers: int,
+        *, progress: AnalysisProgressReporter | None = None,
     ) -> dict[str, Any]:
         """运行依赖分析并校验图、符号、统计和诊断契约。"""
         try:
@@ -98,6 +105,7 @@ class ProjectAnalysisPipeline:
                 project_root,
                 max_workers=max(1, min(max_workers, 16)),
             )
+            report_progress(progress, "dependency", getattr(analyzer, "get_progress", None))
             result = analyzer.run_full_analysis()
             raw_graph = result.get("dependency_graph")
             file_symbols = result.get("file_symbols")
@@ -126,14 +134,17 @@ class ProjectAnalysisPipeline:
         dependency_graph: dict[str, Any],
         diagnostics: dict[str, Any],
         semantic_index: dict[str, Any],
+        progress: AnalysisProgressReporter | None = None,
     ) -> tuple[SecurityEvidencePack, dict[str, Any]]:
         """生成安全证据；失败时显式返回未完成状态而不伪造成功。"""
         try:
+            report_progress(progress, "security_scan")
             return self._security_analysis.analyze_with_semantic_index(
                 project_root=project_root,
                 dependency_graph=dependency_graph,
                 analysis_diagnostics=diagnostics,
                 semantic_index=semantic_index,
+                **({"progress": progress} if progress is not None else {}),
             )
         except Exception:
             logger.exception("Security structural evidence generation failed")

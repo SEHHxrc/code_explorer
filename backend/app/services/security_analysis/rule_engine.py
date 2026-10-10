@@ -42,12 +42,14 @@ class SecurityScanResult:
     languages_analyzed: list[str] = field(default_factory=list)
     unsupported_languages: list[str] = field(default_factory=list)
     rule_packs: list[str] = field(default_factory=list)
+    rule_coverage: list[dict[str, Any]] = field(default_factory=list)
     dataflows: list[DataFlowEvidence] = field(default_factory=list)
     value_boundaries: list[IRValueBoundary] = field(default_factory=list)
 
     def merge(self, other: SecurityScanResult) -> None:
         """合并另一语言扫描结果并保持列表去重。"""
         self.entrypoints.extend(other.entrypoints)
+        self.rule_coverage.extend(other.rule_coverage)
         self.sources.extend(other.sources)
         self.sinks.extend(other.sinks)
         self.guards.extend(other.guards)
@@ -85,6 +87,7 @@ class SecurityRuleEngine:
             failures=list(program.failures),
             languages_analyzed=[program.language],
             rule_packs=[pack.identifier for pack in applicable],
+            rule_coverage=[pack.coverage_descriptor(program.language) for pack in applicable],
             value_boundaries=list(program.value_boundaries),
         )
         fact_ids: set[str] = set()
@@ -210,6 +213,12 @@ class SecurityRuleEngine:
             if call.qualified_name in rule.factory_names
             for target in call.assigned_targets
         }
+        # 同一规则先筛选注册调用；保留原顺序与原匹配条件，避免每个函数重扫全部调用。
+        registration_calls = [
+            call for call in program.calls
+            if any(call.qualified_name == name or call.qualified_name.endswith(f".{name}")
+                   for name, _method in rule.registration_call_methods)
+        ] if rule.registration_call_methods else []
         for function in program.functions:
             route = self._decorated_entrypoint(function.decorators, instances, rule)
             if route is None:
@@ -221,7 +230,7 @@ class SecurityRuleEngine:
             if route is None:
                 route = self._registered_function_entrypoint(
                     function,
-                    program.calls,
+                    registration_calls,
                     rule,
                 )
             if route is None:

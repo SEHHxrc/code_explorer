@@ -14,6 +14,7 @@ from backend.app.services.project_analysis.pipeline import (
     ProjectAnalysisPipeline,
     ProjectAnalysisPipelineError,
 )
+from backend.app.services.project_analysis.progress import report_progress
 from backend.app.services.project_workspace import ProjectWorkspaceService
 from backend.app.services.project_workspace.exceptions import WorkspaceError
 from backend.app.services.security_analysis import SecurityAnalysisService
@@ -26,6 +27,7 @@ from .errors import (
     ProjectAnalysisError,
     ProjectPersistenceError,
 )
+from .progress import ImportProgressTracker
 from .repository import ProjectRepository
 from .transaction import ProjectImportTransaction
 
@@ -56,19 +58,41 @@ class ProjectImportService:
             security_analysis_service=security_analysis_service,
         )
 
-    async def import_project(self, command: AnalyzeProjectCommand) -> ProjectAnalysisResult:
+    async def import_project(
+        self, command: AnalyzeProjectCommand, *, progress: ImportProgressTracker | None = None,
+    ) -> ProjectAnalysisResult:
         """在线程池执行阻塞导入和静态分析。"""
-        return await asyncio.to_thread(self._import_sync, command)
+        return await asyncio.to_thread(self._tracked_import_sync, command, progress)
 
-    def _import_sync(self, command: AnalyzeProjectCommand) -> ProjectAnalysisResult:
+    def _tracked_import_sync(
+        self, command: AnalyzeProjectCommand, progress: ImportProgressTracker | None,
+    ) -> ProjectAnalysisResult:
+        """在线程内记录事务终态；浏览器断连不把仍在运行的任务误标为取消。"""
+        try:
+            result = self._import_sync(command, progress=progress)
+        except ProjectAnalysisError as exc:
+            if progress is not None:
+                progress.fail(exc.public_message)
+            raise
+        if progress is not None:
+            progress.complete(result.project_id)
+        return result
+
+    def _import_sync(
+        self, command: AnalyzeProjectCommand, *, progress: ImportProgressTracker | None = None,
+    ) -> ProjectAnalysisResult:
         """同步执行项目导入、分析、发布和持久化事务。"""
         transaction = ProjectImportTransaction(self._workspace, self._artifacts)
         try:
             with transaction:
+                report_progress(progress, "preparing")
                 operation = transaction.begin(command.user_id)
                 prepared = self._workspace.prepare(operation, command.source)
                 transaction.transition("analyzing")
-                bundle = self._analysis.analyze(str(operation.source_root), command.max_workers)
+                bundle = self._analysis.analyze(
+                    str(operation.source_root), command.max_workers,
+                    **({"progress": progress} if progress is not None else {}),
+                )
                 result = ProjectAnalysisResult(
                     project_id=operation.project_id,
                     sanitize_report=prepared.sanitize_report.to_dict(),
@@ -77,10 +101,12 @@ class ProjectImportService:
                     project_manifest=bundle.manifest,
                     deterministic_overview=bundle.overview,
                 )
+                report_progress(progress, "publishing")
                 transaction.track_published_workspace()
                 final_path = self._workspace.publish(prepared)
                 transaction.track_artifact()
                 transaction.transition("persisting")
+                report_progress(progress, "persisting")
                 self._save_artifact(operation.project_id, bundle)
                 try:
                     self._projects.create(

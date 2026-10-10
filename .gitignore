@@ -1,0 +1,21 @@
+# 本机配置、密钥与虚拟环境；配置示例仍应纳入版本管理。
+.env
+.env.*
+!.env.example
+.venv/
+
+# Python 缓存与工具缓存。
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.pytest_cache/
+
+# 前端依赖与可重新生成的构建输出。
+node_modules/
+/frontend/dist/
+
+# 本机数据库、导入项目与实验结果；仅忽略，不删除历史数据。
+/database.sqlite
+/database.sqlite-*
+/backend/storage/
+/test/experiment_results/

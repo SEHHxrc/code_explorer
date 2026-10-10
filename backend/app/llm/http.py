@@ -18,8 +18,14 @@ _NON_RETRYABLE_LIMIT_CODES = {
     "organization_spend_limit_exceeded",
     "project_spend_limit_exceeded",
     "organization_usage_limit_exceeded",
+    "context_length_exceeded",
+    "max_tokens_exceeded",
+    "prompt_too_long",
 }
 _PUBLIC_ERROR_MESSAGES = {
+    "context_length_exceeded": "模型平台报告上下文超限，请核对实际模型窗口、输入和输出预算。",
+    "max_tokens_exceeded": "模型平台报告 Token 上限超限，请核对平台输出参数和预算。",
+    "prompt_too_long": "模型平台报告输入过长，请核对输入预算和平台限制。",
     "credit_balance_exhausted": "模型 API 余额不足，请在供应商控制台补充余额后重试。",
     "organization_spend_limit_exceeded": "模型 API 组织消费上限已达到，请调整组织消费限制。",
     "project_spend_limit_exceeded": "模型 API 项目消费上限已达到，请调整项目消费限制。",
@@ -66,6 +72,8 @@ class ModelEndpointError(ModelRequestError):
 
     def _is_retryable(self) -> bool:
         """将临时限流和网关级上游故障标记为可重试。"""
+        if self.error_code in _NON_RETRYABLE_LIMIT_CODES:
+            return False
         if self.status_code in _TRANSIENT_UPSTREAM_STATUSES:
             return True
         if (
@@ -181,7 +189,8 @@ def _request_json_sync(
     data = None
     if payload is not None:
         request_headers["Content-Type"] = "application/json"
-        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        # 与 BudgetPlanner/TokenCounter 使用同一紧凑 JSON 表示，避免估算和发送不一致。
+        data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     request = Request(url, data=data, headers=request_headers, method=method)
     try:
         with urlopen(request, timeout=timeout) as response:

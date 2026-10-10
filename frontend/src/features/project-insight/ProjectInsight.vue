@@ -3,6 +3,7 @@
     <ProjectImportPanel
       v-if="!analysis.hasProject.value"
       :importing="analysis.importing.value"
+      :progress="analysis.importProgress.value"
       :deleting="false"
       :has-project="false"
       @analyze-git="handleGit"

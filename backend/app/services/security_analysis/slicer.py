@@ -66,7 +66,28 @@ class SourceSlicer:
         text = self._redact(numbered)
         truncated = len(text) > self.max_snippet_chars
         if truncated:
-            text = text[:self.max_snippet_chars] + "\n...[SNIPPET_TRUNCATED]"
+            original_start, original_end = start, end
+            focus = min(max(line, start), end)
+            selected_lines = [self._redact(f"{focus}: {lines[focus - 1]}")]
+            if len(selected_lines[0]) > self.max_snippet_chars:
+                selected_lines = [f"{focus}: [整行超过片段预算，请按该位置读取原始源码；未展示正文]"]
+            used = len(selected_lines[0])
+            start = end = focus
+            while end < original_end:
+                next_line = self._redact(f"{end + 1}: {lines[end]}")
+                if used + len(next_line) + 1 > self.max_snippet_chars:
+                    break
+                selected_lines.append(next_line)
+                used += len(next_line) + 1
+                end += 1
+            while start > original_start:
+                previous_line = self._redact(f"{start - 1}: {lines[start - 2]}")
+                if used + len(previous_line) + 1 > self.max_snippet_chars:
+                    break
+                selected_lines.insert(0, previous_line)
+                used += len(previous_line) + 1
+                start -= 1
+            text = "\n".join(selected_lines)
         material = f"{identity}\x1f{role}\x1f{start}\x1f{end}"
         snippet_id = "snippet:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
         return CodeSnippet(
@@ -77,6 +98,8 @@ class SourceSlicer:
             end_line=end,
             text=text,
             truncated=truncated,
+            requested_start_line=max(1, line - self.context_lines) if truncated else None,
+            requested_end_line=min(len(lines), requested_end + self.context_lines) if truncated else None,
         )
 
     def _lines(self, relative_path: str) -> list[str] | None:

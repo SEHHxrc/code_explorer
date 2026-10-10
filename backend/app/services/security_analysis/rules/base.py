@@ -119,6 +119,20 @@ class RulePack:
         """返回持久化使用的规则包名称与版本。"""
         return f"{self.name}/{self.version}"
 
+    def coverage_descriptor(self, language: str) -> dict[str, Any]:
+        """记录本次语言实际启用的规则种类；不声称框架被使用或语义覆盖完整。"""
+        calls = [rule for rule in self.call_rules if language in rule.languages]
+        accesses = [rule for rule in self.access_rules if language in rule.languages]
+        entries = [rule for rule in self.entrypoint_rules if language in rule.languages]
+        return {
+            "pack": self.identifier, "language": language,
+            "entrypoint_rules": len(entries), "call_rules": len(calls), "access_rules": len(accesses),
+            "source_categories": sorted({rule.category for rule in [*calls, *accesses] if rule.fact_kind == "source"}),
+            "sink_categories": sorted({rule.category for rule in [*calls, *accesses] if rule.fact_kind == "sink"}),
+            "framework_matchers": sorted({rule.framework for rule in entries}),
+            "semantics": "enabled_matchers_not_framework_detection_or_exhaustive_coverage",
+        }
+
 
 class RulePackProvider(Protocol):
     """允许内置或插件规则包使用统一加载接口。"""

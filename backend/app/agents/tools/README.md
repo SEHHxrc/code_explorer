@@ -30,4 +30,6 @@
 
 工具拿到的 `ToolContext` 包含项目 ID、用户 ID、解析后的项目根目录、静态分析产物和证据索引。`read_file_range` 会拒绝越界路径、过大文件和二进制文件；全文搜索会跳过噪声目录，并限制扫描文件数、字节数、时间和结果数。所有文本结果在返回模型前经过敏感信息脱敏。
 
+`read_file_range` 返回真实 `start_line/end_line`、请求的 `requested_end_line`、`file_total_lines`、`has_more_lines` 和可继续读取的 `next_start_line`。`truncated` 表示请求范围被限制，不因为文件后面还有行就误报为截断。全文搜索的单行预览长度受限时标明 `text_truncated`，精确路径/行号仍可用于重读。编排器完整持久化工具结果，模型观察窗口可能另外压缩或省略，并明确记录；工具分页限制与模型预算限制是两个不同层次。
+
 新增工具需继承 `AgentTool`，声明稳定的 `name`、`description` 和 `arguments_model`，实现异步 `execute()`，再显式加入 `create_project_tool_registry()`。禁止把 Shell、Docker Socket 或任意写文件能力注册为模型工具。

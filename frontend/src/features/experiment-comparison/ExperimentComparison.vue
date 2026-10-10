@@ -1,4 +1,4 @@
-<!-- TEMPORARY CONTROL GROUP / 临时对照组：本盲测 UI 包含无图对照展示，实验结束可整体删除。 -->
+<!-- TEMPORARY CONTROL GROUP / 临时对照组：本盲测 UI 包含仅原始文件的对照展示，实验结束可整体删除。 -->
 <template>
   <el-card class="experiment-card">
     <template #header>
@@ -8,7 +8,7 @@
           <span class="subtitle">同一问题、同一模型、同一步骤预算</span>
         </div>
         <el-tag v-if="comparison" :type="completed ? 'success' : 'primary'" size="small">
-          {{ completed ? (comparison.valid_for_review ? '等待盲评' : '运行失败，不计入效果比较') : '两组运行中' }}
+          {{ completed ? (comparison.valid_for_review ? '等待盲评' : '运行失败或回答完整性未通过') : '两组运行中' }}
         </el-tag>
       </div>
     </template>
@@ -20,6 +20,9 @@
       :closable="false"
       show-icon
     />
+
+    <el-alert v-if="comparison?.quality_warnings?.length" :title="comparison.quality_warnings.join(' ')"
+      type="warning" :closable="false" show-icon />
 
     <div class="setup">
       <el-input
@@ -53,18 +56,25 @@
           </el-tag>
         </div>
         <div class="answer">
-          {{ laneRun(lane)?.answer || laneRun(lane)?.error || (completed ? '没有返回答案' : '正在分析项目证据…') }}
+          {{ displayAnswer(laneRun(lane)?.answer) || laneRun(lane)?.error || (completed ? '没有返回答案' : '正在分析项目证据…') }}
         </div>
         <dl class="metrics">
           <div><dt>耗时</dt><dd>{{ metric(lane, 'duration_ms', ' ms') }}</dd></div>
+          <div><dt>供应商输入 Token</dt><dd>{{ metric(lane, 'actual_input_tokens') }}</dd></div>
+          <div><dt>供应商输出 Token</dt><dd>{{ metric(lane, 'actual_output_tokens') }}</dd></div>
+          <div><dt>供应商总 Token</dt><dd>{{ metric(lane, 'actual_total_tokens') }}</dd></div>
+          <div><dt>其中推理 Token</dt><dd>{{ metric(lane, 'reasoning_tokens') }}</dd></div>
+          <div><dt>用量记录</dt><dd>{{ usageLabel(lane) }}</dd></div>
+          <div><dt>供应商终止原因</dt><dd>{{ finishReasons(lane) }}</dd></div>
+          <div><dt>回答完整性</dt><dd>{{ completenessLabel(lane) }}</dd></div>
           <div>
-            <el-tooltip content="累计每轮提示、指令和工具 Schema 字符数 ÷ 4，包含工具观察；不是供应商真实 usage">
+            <el-tooltip content="新记录按每轮完整请求 JSON 的 UTF-8 字节保守估算，包含指令、工具定义和会话；旧记录沿用其历史估算方式，不是供应商真实 usage">
               <dt>累计输入估算</dt>
             </el-tooltip>
             <dd>≈ {{ metric(lane, 'estimated_input_tokens') }}</dd>
           </div>
           <div>
-            <el-tooltip content="累计各轮响应文本与规范化工具调用参数字符数 ÷ 4，不包含隐藏推理，不是供应商真实 usage">
+            <el-tooltip content="新记录按可见响应和规范化工具调用内容的 UTF-8 字节保守估算；旧记录缺少字节数时采用字符数 ÷ 4。不包含隐藏推理，不是供应商真实 usage">
               <dt>累计输出估算</dt>
             </el-tooltip>
             <dd>≈ {{ metric(lane, 'estimated_output_tokens') }}</dd>
@@ -140,6 +150,11 @@ let controller = null
 
 const completed = computed(() => comparison.value?.status === 'completed')
 const laneRun = (lane) => comparison.value?.lanes?.[lane]?.run
+const displayAnswer = (answer) => (answer || '').replace(/<!-- SECURITY_REPORT_END -->\s*$/, '')
+const laneMetrics = (lane) => comparison.value?.lanes?.[lane]?.metrics || {}
+const usageLabel = (lane) => ({ complete: '全部请求已报告', partial: '仅部分请求/字段，非完整总量', unavailable: '供应商未报告或历史未记录' }[laneMetrics(lane).usage_status] || '未知')
+const completenessLabel = (lane) => ({ complete: '生成及格式完整（非覆盖完整）', incomplete: '未通过', unknown: '未知，不能认定完整' }[laneMetrics(lane).answer_completeness?.status] || '未知')
+const finishReasons = (lane) => laneMetrics(lane).finish_reasons?.join(' / ') || '未记录'
 const metric = (lane, name, suffix = '') => {
   const value = comparison.value?.lanes?.[lane]?.metrics?.[name]
   return value === null || value === undefined ? '—' : String(value) + suffix

@@ -86,6 +86,27 @@ class ModelRegistryTests(unittest.TestCase):
             self.assertEqual(limits.max_context_chars, 200000)
             self.assertEqual(limits.max_output_tokens, 2400)
 
+    def test_operator_window_and_output_do_not_disable_input_protection(self):
+        """524288 是部署窗口声明，不自动提高应用输入或向模型发送 context_length。"""
+        from backend.app.llm.budget import BudgetPlanner
+        from backend.app.llm.conversation import ModelMessage
+        with patch.dict(os.environ, {
+            "CODE_EXPLORER_LLM_PROVIDER": "compatible", "CODE_EXPLORER_LLM_MODEL": "mock",
+            "CODE_EXPLORER_LLM_BASE_URL": "http://mock",
+            "CODE_EXPLORER_LLM_CONTEXT_WINDOW_TOKENS": "524288",
+            "CODE_EXPLORER_LLM_MAX_OUTPUT_TOKENS": "8192",
+            "CODE_EXPLORER_LLM_MAX_CONTEXT_CHARS": "5500",
+        }, clear=True):
+            provider = create_model_provider()
+            limits = get_model_limits()
+            self.assertEqual(524288, limits.context_window_tokens)
+            self.assertEqual(8192, limits.max_output_tokens)
+            self.assertEqual(5500, limits.max_context_chars)
+            self.assertEqual(17488, BudgetPlanner(limits, model="mock").input_limit)
+            payload = provider.request_payload(instructions="safe", messages=[ModelMessage(role="user", content="q")], tools=[])
+            self.assertEqual(8192, payload["max_tokens"])
+            self.assertNotIn("context_length", payload)
+
 
 if __name__ == "__main__":
     unittest.main()
