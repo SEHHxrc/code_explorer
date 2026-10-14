@@ -1,6 +1,7 @@
 """规范化供应商终止状态与真实用量；不推算缺失数据、不保存原始响应正文。"""
 
 from dataclasses import dataclass, field
+import json
 from typing import Any
 
 
@@ -25,6 +26,21 @@ class ModelResponseMetadata:
     incomplete_reason: str | None = None
     refused: bool = False
     usage: ModelUsage = field(default_factory=ModelUsage)
+
+
+def response_channel_sizes(payload: dict[str, Any]) -> dict[str, Any]:
+    """仅计量响应文本通道是否存在与字符数，不保存正文、不推算推理 Token。"""
+    messages = []
+    choices = payload.get("choices")
+    for choice in choices if isinstance(choices, list) else []:
+        message = choice.get("message") if isinstance(choice, dict) else None
+        if not isinstance(message, dict):
+            continue
+        messages.append({"message_utf8_bytes": len(json.dumps(message, ensure_ascii=False).encode("utf-8")),
+                         "fields": {name: {"present": name in message, "characters": len(message[name])
+                               if isinstance(message.get(name), str) else None}
+                         for name in ("content", "reasoning_content", "thinking")}})
+    return {"measurement": "protocol_field_characters_not_token_accounting", "chat_messages": messages}
 
 
 def response_metadata(payload: dict[str, Any], *, responses_api: bool) -> ModelResponseMetadata:

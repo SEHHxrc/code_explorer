@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import socket
 import time
@@ -10,12 +11,15 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from backend.app.models import init_db
+from backend.app.core.logging import LOG_CONTEXT, configure_logging
 from backend.app.services.project_workspace.paths import ProjectWorkspacePaths
 
 from .contracts import ExecutionPlan
 from .docker_executor import DockerExecutor
 from .policy import ExecutionError, ExecutionPolicy, ExecutionSettings
 from .repository import ExecutionRepository
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutionWorker:
@@ -57,6 +61,9 @@ class ExecutionWorker:
             memory_mb=task.memory_mb,
             pids_limit=task.pids_limit,
         )
+        context_token = LOG_CONTEXT.set({**LOG_CONTEXT.get(), "task_id": task.id, "project_id": task.project_id,
+                                         "worker_id": self.worker_id})
+        logger.info("execution.task_started")
         try:
             self.policy.validate_plan(plan)
             project_root = self.paths.project_root(task.user_id, task.project_id)
@@ -76,15 +83,20 @@ class ExecutionWorker:
                 error=result.error,
                 output_truncated=result.output_truncated,
             )
+            logger.info("execution.task_finished", extra={"stage": result.status})
         except ExecutionError as exc:
+            logger.warning("execution.task_rejected", extra={"error_type": type(exc).__name__})
             self.repository.finish(task.id, status="failed", exit_code=None, error=exc.public_message)
         except Exception:
+            logger.exception("execution.worker_failed")
             self.repository.finish(
                 task.id,
                 status="failed",
                 exit_code=None,
                 error="Execution worker failed before the container completed.",
             )
+        finally:
+            LOG_CONTEXT.reset(context_token)
         return True
 
     def run_forever(self, poll_seconds: float = 1.0) -> None:
@@ -116,14 +128,15 @@ def default_worker_id() -> str:
 
 def main() -> None:
     """启动当前模块对应的命令行 Worker 入口。"""
+    configure_logging("execution-worker")
     parser = argparse.ArgumentParser(description="Code Explorer isolated execution worker")
     parser.add_argument("--once", action="store_true", help="Process at most one queued task")
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     arguments = parser.parse_args()
     init_db()
     worker = ExecutionWorker(worker_id=default_worker_id())
-    worker.recover_stale()
     if arguments.once:
+        worker.recover_stale()
         worker.run_once()
     else:
         worker.run_forever(arguments.poll_seconds)

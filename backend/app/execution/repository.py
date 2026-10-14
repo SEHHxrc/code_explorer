@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from typing import Callable
 
 from sqlalchemy.orm import Session
@@ -17,6 +18,8 @@ from .contracts import (
     ExecutionStatus,
     ExecutionTaskView,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutionRepository:
@@ -48,6 +51,7 @@ class ExecutionRepository:
             db.commit()
             db.refresh(row)
             view = self._view(row)
+            logger.info("execution.task_enqueued", extra={"task_id": task_id, "project_id": project_id})
         except Exception:
             db.rollback()
             raise

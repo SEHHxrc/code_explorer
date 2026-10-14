@@ -55,7 +55,7 @@
           当前凭据可见 {{ modelCatalog.models.length }} 个
         </el-tag>
         <el-tag v-if="modelStatus.max_input_tokens" size="small" type="info" effect="plain">
-          应用输入预算 {{ Number(modelStatus.max_input_tokens).toLocaleString() }} tokens · 单次输出上限 {{ Number(modelStatus.max_output_tokens).toLocaleString() }} tokens
+          应用输入预算 {{ Number(modelStatus.max_input_tokens).toLocaleString() }} tokens · {{ formatOutputBudget(modelStatus) }}
         </el-tag>
         <el-tag v-if="modelStatus.max_context_chars" size="small" type="warning" effect="plain">
           旧字符保护 {{ Number(modelStatus.max_context_chars).toLocaleString() }} 字符
@@ -185,7 +185,7 @@ import {
   listProjectAgentRuns,
   streamAgentEvents,
 } from '../services/agentApi'
-import { getAvailableModels, probeModelConnection } from '../services/modelApi.js'
+import { formatOutputBudget, getAvailableModels, probeModelConnection } from '../services/modelApi.js'
 import { apiErrorMessage } from '../services/httpClient.js'
 
 const props = defineProps({
@@ -338,9 +338,9 @@ const handleEvent = (event) => {
       pushStep(
         `模型推理 · 第 ${payload.step} 步`,
         payload.input_token_estimate
-          ? `输入估算 ${Number(payload.input_token_estimate.tokens).toLocaleString()} tokens（${payload.input_token_estimate.method}）· ${payload.tool_count || 0} 个工具 · 输出上限 ${Number(payload.max_output_tokens || 0).toLocaleString()} tokens`
+          ? `输入估算 ${Number(payload.input_token_estimate.tokens).toLocaleString()} tokens（${payload.input_token_estimate.method}）· ${payload.tool_count || 0} 个工具 · ${formatOutputBudget(payload)}`
           : payload.request_chars
-          ? `请求约 ${Number(payload.request_chars).toLocaleString()} 字符 · ${payload.tool_count || 0} 个工具 · 输出上限 ${Number(payload.max_output_tokens || 0).toLocaleString()} tokens`
+          ? `请求约 ${Number(payload.request_chars).toLocaleString()} 字符 · ${payload.tool_count || 0} 个工具 · ${formatOutputBudget(payload)}`
           : '',
         'primary',
         `event-${event.sequence}`,

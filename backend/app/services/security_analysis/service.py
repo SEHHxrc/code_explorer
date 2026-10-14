@@ -391,19 +391,10 @@ class SecurityAnalysisService:
                 line=edge.callsite.line,
                 end_line=edge.callsite.end_line,
                 role="intermediate",
-                identity=edge.edge_id,
             )
             if snippet:
                 snippets.append(snippet)
-        result: list[CodeSnippet] = []
-        seen: set[tuple[str, int, int, str]] = set()
-        for snippet in snippets:
-            key = (snippet.path, snippet.start_line, snippet.end_line, snippet.role)
-            if key in seen:
-                continue
-            seen.add(key)
-            result.append(snippet)
-        return result[:8]
+        return list({snippet.snippet_id: snippet for snippet in snippets}.values())[:8]
 
     @staticmethod
     def _path_confidence(path: StructuralPath) -> Confidence:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import uuid
+from typing import Any
 
 from backend.app.agents.contracts import AgentRunRequest
 from backend.app.agents.run_store import AgentRunStore
@@ -17,6 +18,7 @@ from backend.app.experiments.repository import ComparisonRecord, ExperimentRepos
 from backend.app.llm.registry import get_model_configuration
 from backend.app.experiments.context import SecurityExperimentContextBuilder, prepare_experiment_artifact
 from backend.app.services.projects import ProjectArtifactRepository, ProjectRepository
+from .audit import AuditError
 
 TERMINAL_STATUSES = {"completed", "failed", "cancelled"}
 
@@ -51,6 +53,10 @@ class ExperimentComparisonService:
             raise ExperimentError("Project analysis artifact is missing.", 409)
         if not artifact.get("security_evidence"):
             raise ExperimentError("Re-import this project to generate static security evidence before comparing.", 409)
+        if (artifact.get("analysis_diagnostics") or {}).get("parse_failures") and not (
+            artifact.get("analysis_statistics") or {}
+        ).get("files_parsed"):
+            raise ExperimentError("该项目原分析中源码解析全部失败，静态证据不可用于实验。请重启后端并重新导入项目，再创建新的配对；旧记录不会修改。", 409)
         # 在任何入队/模型请求前，必须验证两组都能构造完整输入，不能只消费对照组资源。
         try:
             for with_evidence in (False, True):
@@ -82,7 +88,12 @@ class ExperimentComparisonService:
             blind_order=blind_order,
             execution_order=strategies,
         )
-        self.repository.create_pair(record, agent_request)
+        try:
+            self.repository.create_pair(record, agent_request)
+        except AuditError as exc:
+            raise ExperimentError(str(exc), 409) from exc
+        except ValueError as exc:
+            raise ExperimentError("实验运行配置无效，请检查最终报告模式；未创建配对。", 409) from exc
         return self.get(comparison_id, user_id)
 
     def get(self, comparison_id: str, user_id: str) -> dict:
@@ -105,6 +116,12 @@ class ExperimentComparisonService:
         valid = terminal and all(item == "completed" for item in statuses)
         quality_warnings = []
         for lane, value in lanes.items():
+            if terminal and value["run"]:
+                from .audit import AuditRepository
+                expected = AuditRepository(self.run_store.session_factory).contract(value["run"]["id"], user_id)
+                if expected and expected != value["metrics"].get("contract_hash"):
+                    quality_warnings.append(f"{lane} 的实际提示词/工具契约与创建配对时不同，不计入正式比较。")
+                    valid = False
             if terminal and value["metrics"].get("answer_completeness", {}).get("status") != "complete":
                 quality_warnings.append(f"{lane} 的回答完整性未确认或未通过，不计入正式效果比较。")
                 valid = False
@@ -121,12 +138,17 @@ class ExperimentComparisonService:
                 quality_warnings.append("两组预算/分词策略不同或运行中发生变化，不计入正式同条件比较。")
                 valid = False
             returned_models = [item.get("actual_models") for item in metrics]
+            policies = [item.get("execution_policy") for item in metrics]
+            if any(policies) and policies[0] != policies[1]:
+                quality_warnings.append("两组调查轮次、阶段协议或最终报告模式不同，不计入正式同条件比较。")
+                valid = False
             if all(returned_models) and (returned_models[0] != returned_models[1] or any(len(items) != 1 for items in returned_models)):
                 quality_warnings.append("供应商返回的实际模型不一致或运行中切换模型，不计入正式同条件比较。")
                 valid = False
         status = "completed" if terminal else "running"
         return {
             "id": record.comparison_id,
+            "created_at": record.created_at,
             "project_id": record.project_id,
             "question": record.question,
             "status": status,
@@ -134,13 +156,37 @@ class ExperimentComparisonService:
             "quality_warnings": quality_warnings,
             "report_version": next((value["metrics"].get("answer_completeness", {}).get("report_version") for value in lanes.values() if value["metrics"].get("answer_completeness", {}).get("report_version")), None),
             "protocol": (
-                "static-security-v2" if any(value["metrics"].get("answer_completeness", {}).get("report_version") for value in lanes.values())
+                "static-security-v6" if any(value["metrics"].get("experiment_protocol") == "static-security-v6" for value in lanes.values())
+                else "static-security-v5" if any(value["metrics"].get("experiment_protocol") == "static-security-v5" for value in lanes.values())
+                else "static-security-v4" if any(value["metrics"].get("experiment_protocol") == "static-security-v4" for value in lanes.values())
+                else "static-security-v3" if any(value["metrics"].get("answer_completeness", {}).get("report_version") == "concise-security-v2" for value in lanes.values())
+                else "static-security-v2" if any(value["metrics"].get("answer_completeness", {}).get("report_version") for value in lanes.values())
                 else "static-security-v1" if "security_evidence" in record.execution_order else "legacy-graph"
             ),
             "lanes": lanes,
             "reviewed": self.repository.has_review(comparison_id, user_id),
             "events_url": f"/api/experiments/comparisons/{comparison_id}/events",
         }
+
+    def history(self, project_id: str, user_id: str, *, offset: int = 0, limit: int = 20) -> dict[str, Any]:
+        """验证项目所有权后列出全部试次；分页有界，不因失败或旧协议排除历史。"""
+        if self.projects.get_owned(project_id, user_id) is None:
+            raise ExperimentError("Project not found or unauthorized.", 404)
+        if offset < 0 or not 1 <= limit <= 50:
+            raise ExperimentError("历史分页参数无效。", 422)
+        return self.repository.list_for_project(project_id, user_id, offset=offset, limit=limit)
+
+    def history_detail(self, comparison_id: str, user_id: str) -> dict[str, Any]:
+        """复用原结果查询，追加当时的指令/条件和已保存评审；不按当前代码重建旧提示词。"""
+        from .audit import AuditRepository
+        view = self.get(comparison_id, user_id)
+        audit = AuditRepository(self.repository.session_factory)
+        for lane in view["lanes"].values():
+            run = lane.get("run")
+            lane["prompt_snapshot"] = audit.prompt_snapshot(run["id"], user_id) if run else {"status": "unavailable"}
+        view["review"] = self.repository.get_review(comparison_id, user_id)
+        view["reveal"] = self.reveal(comparison_id, user_id) if view["review"] else None
+        return view
 
     def review(self, comparison_id: str, user_id: str, review: BlindReviewRequest) -> dict:
         """校验并保存配对实验的盲评结果。"""

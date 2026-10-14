@@ -14,6 +14,7 @@ from backend.app.agents.tools.base import AgentTool, ToolContext, ToolRegistry
 from backend.app.agents.tools.source import (
     ReadFileTool,
     SearchProjectTextTool,
+    SearchProjectTextManyTool,
     MAX_SEARCH_FILES,
     MAX_SEARCH_SECONDS,
 )
@@ -77,5 +78,5 @@ class ListProjectFilesTool(AgentTool):
 def create_experiment_tool_registry() -> ToolRegistry:
     """两组使用完全相同的列文件、读文件和文本搜索权限及预算。"""
     return ToolRegistry(
-        [ListProjectFilesTool(), ReadFileTool(), SearchProjectTextTool()]
+        [ListProjectFilesTool(), ReadFileTool(), SearchProjectTextTool(), SearchProjectTextManyTool()]
     )

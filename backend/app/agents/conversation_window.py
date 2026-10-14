@@ -10,7 +10,7 @@ from backend.app.llm.base import ModelTurn
 from backend.app.llm.budget import BudgetPlanner, ModelBudgetError, request_payload
 from backend.app.llm.conversation import ModelMessage
 
-CONVERSATION_VERSION = "native-tool-rounds-v1"
+CONVERSATION_VERSION = "native-tool-rounds-v2"
 
 
 @dataclass(frozen=True)
@@ -47,6 +47,7 @@ def round_messages(round_: ToolRound, *, max_chars: int | None = None) -> list[M
 def render_conversation_window(
     rounds: list[ToolRound], *, initial: ModelMessage, instructions: str, tools: list[dict[str, Any]],
     planner: BudgetPlanner, provider: Any,
+    tail_messages: list[ModelMessage] | None = None, tool_choice: str = "auto",
 ) -> tuple[list[ModelMessage], dict[str, Any]]:
     """最新轮次优先；过旧轮次整体省略，最新轮次无法配对容纳时安全失败。"""
     kept: list[list[ModelMessage]] = []
@@ -62,9 +63,10 @@ def render_conversation_window(
     def fits(group: list[ModelMessage]) -> bool:
         """按将要实际发送的协议，检查加入候选整轮后的预算。"""
         messages = [initial_with_notice(len(kept) + 1, sum(len(round_.observations) for round_ in rounds)),
-                    *group, *(message for batch in kept for message in batch)]
+                    *group, *(message for batch in kept for message in batch), *(tail_messages or [])]
         return planner.fits(request_payload(provider, instructions=instructions, messages=messages, tools=tools,
-                                            model=provider.model, max_output_tokens=planner.limits.max_output_tokens))
+                                            model=provider.model, max_output_tokens=planner.limits.max_output_tokens,
+                                            tool_choice=tool_choice))
 
     for index, round_ in enumerate(reversed(rounds)):
         group = round_messages(round_)
@@ -89,7 +91,7 @@ def render_conversation_window(
         included += len(round_.observations)
         compacted += len(round_.observations) if was_compacted else 0
     total = sum(len(round_.observations) for round_ in rounds)
-    return [initial_with_notice(len(kept), compacted), *(message for group in kept for message in group)], {
+    return [initial_with_notice(len(kept), compacted), *(message for group in kept for message in group), *(tail_messages or [])], {
         "total_observations": total, "included_observations": included,
         "compacted_observations": compacted, "omitted_observations": total - included,
         "conversation_version": CONVERSATION_VERSION,

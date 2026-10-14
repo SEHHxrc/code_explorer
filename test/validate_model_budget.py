@@ -37,6 +37,8 @@ async def validate() -> bool:
     if provider is None:
         raise ValueError("Model is not configured")
     limits = provider.model_limits
+    if limits.max_output_tokens is None:
+        raise ValueError("预算容量探测必须显式设置有限输出，使用 --output-budget；不进行无上限探测。")
     planner = BudgetPlanner(limits, model=provider.model)
     expected = {key: secrets.token_hex(8) for key in ("first", "middle", "last")}
     instructions = (
@@ -95,6 +97,8 @@ async def validate() -> bool:
 
 async def validate_output(provider: ModelProvider) -> bool:
     """仅用一个短输入请求验证长输出，不依赖长输入或修改思考配置。"""
+    if provider.model_limits.max_output_tokens is None:
+        raise ValueError("长输出探测必须显式设置有限输出；不进行无上限探测。")
     emit({"stage": "long_output_started", "requested_lines": 600,
           "max_output_tokens": provider.model_limits.max_output_tokens})
     output = await provider.generate_with_tools(

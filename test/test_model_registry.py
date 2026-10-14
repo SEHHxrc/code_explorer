@@ -53,6 +53,18 @@ class ModelRegistryTests(unittest.TestCase):
             self.assertEqual(provider.model, "selected-model")
             self.assertEqual(get_model_configuration().model, "default-model")
 
+    def test_factory_supplies_frozen_limits_without_adapter_rereading_environment(self):
+        """工厂与适配器共用同一预算快照，不重复解析配置。"""
+        for name, adapter in (("compatible", "compatible_provider"), ("openai", "openai_provider")):
+            with patch.dict(os.environ, {
+                "CODE_EXPLORER_LLM_PROVIDER": name, "CODE_EXPLORER_LLM_MODEL": "mock",
+                "CODE_EXPLORER_LLM_BASE_URL": "http://mock", "CODE_EXPLORER_LLM_API_KEY": "fake",
+                "CODE_EXPLORER_LLM_MAX_OUTPUT_TOKENS": "8192",
+            }, clear=True), patch(f"backend.app.llm.providers.{adapter}.get_model_limits") as reread:
+                provider = create_model_provider()
+                self.assertEqual(8192, provider.model_limits.max_output_tokens)
+                reread.assert_not_called()
+
     def test_responses_output_text_fallback_parser(self):
         payload = {
             "output": [{
@@ -80,11 +92,15 @@ class ModelRegistryTests(unittest.TestCase):
             self.assertEqual(limits.max_output_tokens, 1024)
         with patch.dict(os.environ, {
             "CODE_EXPLORER_LLM_MAX_CONTEXT_CHARS": "999999999",
-            "CODE_EXPLORER_LLM_MAX_OUTPUT_TOKENS": "invalid",
         }, clear=True):
             limits = get_model_limits()
             self.assertEqual(limits.max_context_chars, 200000)
             self.assertEqual(limits.max_output_tokens, 2400)
+        with patch.dict(os.environ, {
+            "CODE_EXPLORER_LLM_MAX_OUTPUT_TOKENS": "invalid",
+        }, clear=True):
+            with self.assertRaises(ValueError):
+                get_model_limits()
 
     def test_operator_window_and_output_do_not_disable_input_protection(self):
         """524288 是部署窗口声明，不自动提高应用输入或向模型发送 context_length。"""

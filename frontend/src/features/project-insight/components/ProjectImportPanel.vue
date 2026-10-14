@@ -1,34 +1,36 @@
 <template>
-  <el-card class="import-card">
+  <el-card class="import-card" :class="{ 'is-importing': importing }">
     <template #header>
       <div class="card-header">
         <span>🚀 开源项目辅助理解工具 - 导入控制台</span>
         <el-button size="small" plain @click="$emit('manage-data')">后端数据管理</el-button>
       </div>
     </template>
-    <el-form :inline="true">
-      <el-form-item label="Git 仓库链接">
-        <el-input v-model="repoUrl" :disabled="hasProject || importing" placeholder="https://github.com/xxx/xxx" style="width: 300px" clearable />
-      </el-form-item>
-      <el-form-item>
-        <el-button type="primary" :loading="importing" :disabled="hasProject" @click="submitGit">分析 Git 项目</el-button>
-        <el-button v-if="hasProject" type="danger" plain :loading="deleting" @click="$emit('reset')">清空当前项目</el-button>
-      </el-form-item>
-    </el-form>
-    <el-divider>或者本地上传</el-divider>
-    <el-upload
-      ref="uploadRef"
-      drag
-      action="#"
-      :auto-upload="false"
-      :disabled="hasProject || importing"
-      :on-change="selectFile"
-      :limit="1"
-      accept=".zip,application/zip"
-    >
-      <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
-      <div class="el-upload__text">将项目压缩包拖到此处，或 <em>点击上传 (.zip)</em></div>
-    </el-upload>
+    <div v-show="!importing">
+      <el-form :inline="true">
+        <el-form-item label="Git 仓库链接">
+          <el-input v-model="repoUrl" :disabled="hasProject || importing" placeholder="https://github.com/xxx/xxx" style="width: 300px" clearable />
+        </el-form-item>
+        <el-form-item>
+          <el-button type="primary" :loading="importing" :disabled="hasProject" @click="submitGit">分析 Git 项目</el-button>
+          <el-button v-if="hasProject" type="danger" plain :loading="deleting" @click="$emit('reset')">清空当前项目</el-button>
+        </el-form-item>
+      </el-form>
+      <el-divider>或者本地上传</el-divider>
+      <el-upload
+        ref="uploadRef"
+        drag
+        action="#"
+        :auto-upload="false"
+        :disabled="hasProject || importing"
+        :on-change="selectFile"
+        :limit="1"
+        accept=".zip,application/zip"
+      >
+        <el-icon class="el-icon--upload"><UploadFilled /></el-icon>
+        <div class="el-upload__text">将项目压缩包拖到此处，或 <em>点击上传 (.zip)</em></div>
+      </el-upload>
+    </div>
     <section v-if="progress" class="analysis-progress" aria-live="polite" :aria-busy="importing">
       <div class="progress-heading">
         <strong>{{ progress.stage_label }}</strong>
@@ -90,6 +92,7 @@ watch(() => props.hasProject, (hasProject) => {
 .import-card { margin-bottom: 20px; }
 .card-header { display: flex; justify-content: space-between; align-items: center; }
 .analysis-progress { margin-top: 20px; padding: 16px; background: var(--el-fill-color-light); border-radius: 8px; }
+.is-importing .analysis-progress { margin-top: 0; }
 .progress-heading { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
 .analysis-progress p { margin: 10px 0 0; color: var(--el-text-color-secondary); font-size: 13px; overflow-wrap: anywhere; }
 .analysis-progress .progress-error { color: var(--el-color-danger); }

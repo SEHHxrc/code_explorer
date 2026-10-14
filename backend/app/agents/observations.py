@@ -59,6 +59,15 @@ def compact_observation(observation: dict[str, Any], max_chars: int) -> dict[str
     elif isinstance(content, dict):
         # 目录和搜索也必须保留可操作的完整条目，不能压缩成一个无意义的空对象。
         selected_content = dict(locator)
+        resources = content.get("snippets") if content.get("kind") == "static_security_evidence" else None
+        if isinstance(resources, dict):
+            selected_content["snippets"] = {}
+        if "scope" in content:
+            selected_content.update(scope=content["scope"], queries=content.get("queries", []))
+            compact["result"]["content"] = selected_content
+            if len(encoded(compact)) > max_chars:
+                compact["result"]["content"] = {"scope_unavailable": True, "results_complete": False}
+                return compact
         for key, value in content.items():
             if key in selected_content:
                 continue
@@ -71,8 +80,14 @@ def compact_observation(observation: dict[str, Any], max_chars: int) -> dict[str
             selected_content[key] = []
             selected_content[f"omitted_{key}"] = len(value)
             for entry in value:
+                shared = {}
+                if isinstance(resources, dict) and isinstance(entry, dict):
+                    references = entry.get("snippet_ids", []) + ([entry["snippet_id"]] if entry.get("snippet_id") else [])
+                    if any(reference not in resources for reference in references):
+                        continue
+                    shared = {"snippets": {**selected_content["snippets"], **{reference: resources[reference] for reference in references}}}
                 trial = {**selected_content, key: [*selected_content[key], entry],
-                         f"omitted_{key}": len(value) - len(selected_content[key]) - 1}
+                         f"omitted_{key}": len(value) - len(selected_content[key]) - 1, **shared}
                 compact["result"]["content"] = trial
                 if len(encoded(compact)) > max_chars:
                     break

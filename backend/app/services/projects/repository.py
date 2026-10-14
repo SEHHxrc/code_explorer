@@ -17,6 +17,8 @@ from backend.app.models import (
     ExperimentReviewModel,
     ProjectModel,
     SessionLocal,
+    ExperimentAuditSessionModel,
+    ExperimentAuditRecordModel,
 )
 
 from .contracts import ProjectRecord, ProjectUpdate
@@ -201,6 +203,8 @@ class ProjectDeletionRepository:
                 AgentRunModel.user_id == user_id,
             ).all()]
             if run_ids:
+                session.query(ExperimentAuditRecordModel).filter(ExperimentAuditRecordModel.run_id.in_(run_ids)).delete(synchronize_session=False)
+                session.query(ExperimentAuditSessionModel).filter(ExperimentAuditSessionModel.run_id.in_(run_ids)).delete(synchronize_session=False)
                 session.query(AgentEventModel).filter(
                     AgentEventModel.run_id.in_(run_ids),
                 ).delete(synchronize_session=False)

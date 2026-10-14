@@ -138,12 +138,7 @@ class ProjectContextBuilder:
             path=item.location.path, line=item.location.line, symbol=item.symbol,
             detail=f"static {item.kind} rule match; not a vulnerability",
         ) for item in envelope.observations)
-        text = json.dumps(
-            envelope.model_dump(exclude_none=True),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        return text, items
+        return envelope.to_json(), items
 
     @staticmethod
     def _select_repo_map(repo_map: str, question: str, max_lines: int = 140) -> str:

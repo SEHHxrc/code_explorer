@@ -22,6 +22,7 @@ def report_progress(
     reader: ProgressReader | None = None,
 ) -> None:
     """把阶段和计数读取器交给观察者；隔离观测异常，保持原分析语义。"""
+    logger.info("analysis.stage_changed", extra={"stage": stage})
     if reporter is not None:
         try:
             reporter.phase(stage, reader)

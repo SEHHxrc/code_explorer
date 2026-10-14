@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, create_engine
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, create_engine, inspect, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 SQLALCHEMY_DATABASE_URL = "sqlite:///./database.sqlite"
@@ -133,6 +133,30 @@ class ExperimentReviewModel(Base):
         DateTime, default=lambda: datetime.now(timezone.utc)
     )
 
+class ExperimentAuditSessionModel(Base):
+    """新实验专属审计配额与保留状态；不回填旧运行，不向盲评事件传输正文。"""
+    __tablename__ = "experiment_audit_sessions"
+    run_id: Mapped[str] = mapped_column(String, primary_key=True)
+    project_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    user_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    comparison_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    contract_hash: Mapped[str] = mapped_column(String, nullable=False, default="")
+    status: Mapped[str] = mapped_column(String, default="reserved", nullable=False)
+    reserved_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    payload_bytes: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    protected: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class ExperimentAuditRecordModel(Base):
+    """有界、脱敏的实验审计条目；每轮逐条写入，避免反复重写整个会话。"""
+    __tablename__ = "experiment_audit_records"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    kind: Mapped[str] = mapped_column(String, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+
+
 class ExecutionTaskModel(Base):
     """持久化由独立 Worker 认领的隔离容器任务。"""
 
@@ -182,3 +206,7 @@ class ExecutionEventModel(Base):
 def init_db() -> None:
     """创建尚不存在的数据库表；无输入且无返回值。"""
     Base.metadata.create_all(bind=engine)
+    # 仅兼容开发期间可能已创建的新审计表；不更新旧实验、事件或评审记录。
+    if "contract_hash" not in {column["name"] for column in inspect(engine).get_columns("experiment_audit_sessions")}:
+        with engine.begin() as connection:
+            connection.execute(text("ALTER TABLE experiment_audit_sessions ADD COLUMN contract_hash VARCHAR NOT NULL DEFAULT ''"))

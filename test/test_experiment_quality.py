@@ -89,7 +89,7 @@ class ExperimentQualityTests(unittest.TestCase):
             observation = next(item for item in envelope.observations if item.kind == "source")
             self.assertEqual("main.py", observation.location.path)
             self.assertEqual(1, observation.location.line)
-            self.assertIsNotNone(observation.snippet)
+            self.assertIn(observation.snippet_id, envelope.snippets)
             self.assertTrue(envelope.analysis["rule_coverage_available"])
             self.assertEqual(0, pack.coverage.entrypoint_count)
             self.assertEqual(1, pack.coverage.source_count)
@@ -101,7 +101,7 @@ class ExperimentQualityTests(unittest.TestCase):
             Path(directory, "main.py").write_bytes(b"a = input('a')\nb = input('b')\n")
             analysis = UnifiedCodeAnalyzer(directory).run_full_analysis()
             pack = SecurityAnalysisService().analyze(project_root=directory, dependency_graph=analysis["dependency_graph"])
-            with patch("backend.app.experiments.context.get_model_limits", return_value=ModelLimits(5500, 2400)):
+            with patch("backend.app.experiments.context.get_model_limits", return_value=ModelLimits(7500, 2400)):
                 packet = SecurityExperimentContextBuilder().build(project_id="p", question="是否存在 RCE？", artifact={"security_evidence": pack.model_dump()})
             value = json.loads(packet.prompt_context.split("\n", 1)[1])
             self.assertEqual(2, len(value["observations"]))
@@ -125,7 +125,7 @@ class ExperimentQualityTests(unittest.TestCase):
             Path(directory, "main.py").write_text(source, encoding="utf-8")
             analysis = UnifiedCodeAnalyzer(directory).run_full_analysis()
             pack = SecurityAnalysisService().analyze(project_root=directory, dependency_graph=analysis["dependency_graph"])
-            with patch("backend.app.experiments.context.get_model_limits", return_value=ModelLimits(5500, 2400)):
+            with patch("backend.app.experiments.context.get_model_limits", return_value=ModelLimits(7500, 2400)):
                 packet = SecurityExperimentContextBuilder().build(project_id="p", question="是否存在 RCE？", artifact={"security_evidence": pack.model_dump()})
             value = json.loads(packet.prompt_context.split("\n", 1)[1])
             self.assertTrue(value["findings"] or any(item["name"] == "eval" for item in value["observations"]))
@@ -167,7 +167,8 @@ class ExperimentQualityTests(unittest.TestCase):
             header = builder._empty_envelope(pack)
             finding = builder._finding(pack, pack.candidates[0])
             compact = builder._compact_header(header, pack)
-            enough = builder._size(compact.model_copy(update={"findings": [finding]})) + 128
+            enough = builder._size(compact.model_copy(update={"findings": [finding],
+                "snippets": {key: pack.snippets[key] for key in finding.snippet_ids}})) + 128
             larger = max(enough + 1, int(builder._size(header) / 0.65) + 1)
             self.assertTrue(builder.build(pack, max_chars=enough).findings)
             self.assertTrue(builder.build(pack, max_chars=larger).findings)
@@ -192,8 +193,9 @@ class ExperimentQualityTests(unittest.TestCase):
             self.assertTrue(result["evidence"])
             self.assertEqual("completed", store.status)
             messages = provider.generate_with_tools.call_args_list[1].kwargs["messages"]
-            self.assertEqual(["user", "assistant", "tool"], [item["role"] for item in messages])
-            result = json.loads(messages[-1]["content"])
+            self.assertEqual(["user", "assistant", "tool", "user"], [item["role"] for item in messages])
+            self.assertIn("调查阶段", messages[-1]["content"])
+            result = json.loads(messages[-2]["content"])
             self.assertTrue(result["evidence"])
         asyncio.run(scenario())
 

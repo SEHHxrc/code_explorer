@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import uuid
 from typing import Any
 from dataclasses import replace
 
@@ -16,6 +15,7 @@ from backend.app.llm.http import post_json
 from backend.app.llm.response_metadata import response_metadata
 from backend.app.llm.conversation import ModelMessage, response_items
 from backend.app.llm.budget import validate_provider_request
+from backend.app.llm.settings import ModelLimits, get_model_limits, get_model_request_timeout
 
 
 class OpenAIResponsesProvider(ModelProvider):
@@ -32,15 +32,16 @@ class OpenAIResponsesProvider(ModelProvider):
         api_key: str,
         model: str,
         base_url: str = "https://api.openai.com/v1",
-        max_output_tokens: int = 2400,
+        max_output_tokens: int | None = 2400,
+        model_limits: ModelLimits | None = None,
     ) -> None:
         """保存连接配置，不在构造阶段发起网络请求。"""
         self.api_key = api_key
         self.model = model
         self.base_url = base_url.rstrip("/")
         self.max_output_tokens = max_output_tokens
-        from backend.app.llm.settings import get_model_limits
-        self.model_limits = replace(get_model_limits(model), max_output_tokens=max_output_tokens)
+        self.model_limits = replace(model_limits or get_model_limits(model), max_output_tokens=max_output_tokens)
+        self.request_timeout_seconds = get_model_request_timeout()
 
     async def generate(self, *, instructions: str, prompt: str) -> ModelResult:
         """调用 Responses API 生成文本并输出规范化结果。"""
@@ -61,8 +62,10 @@ class OpenAIResponsesProvider(ModelProvider):
         payload = {
             "model": self.model, "instructions": instructions, "input": response_items(messages),
             "store": False, "include": ["reasoning.encrypted_content"],
-            "max_output_tokens": max_output_tokens or self.max_output_tokens,
         }
+        limit = self._output_limit(max_output_tokens)
+        if limit is not None:
+            payload["max_output_tokens"] = limit
         if tools:
             payload.update(tools=tools, tool_choice=tool_choice, parallel_tool_calls=False)
         return payload
@@ -84,28 +87,21 @@ class OpenAIResponsesProvider(ModelProvider):
             f"{self.base_url}/responses",
             request,
             {"Authorization": f"Bearer {self.api_key}"},
-            timeout=timeout or 120.0, transient_retries=transient_retries,
+            timeout=self._request_timeout(timeout), transient_retries=transient_retries,
         )
         calls: list[ToolCall] = []
         for item in payload.get("output", []):
             if item.get("type") != "function_call" or not item.get("name"):
                 continue
-            try:
-                arguments = json.loads(item.get("arguments") or "{}")
-            except json.JSONDecodeError:
-                arguments = {}
-            calls.append(ToolCall(
-                id=item.get("call_id") or item.get("id") or uuid.uuid4().hex,
-                name=item["name"],
-                arguments=arguments if isinstance(arguments, dict) else {},
-            ))
+            calls.append(ToolCall.from_arguments(item["name"], item.get("arguments"), item.get("call_id") or item.get("id")))
+        text = payload.get("output_text") or self._extract_output_text(payload)
         return ModelTurn(
-            text=payload.get("output_text") or self._extract_output_text(payload),
+            text=text,
             provider=self.name,
             model=payload.get("model") or self.model,
             tool_calls=tuple(calls),
             metadata=response_metadata(payload, responses_api=True),
-            continuation=ModelMessage(role="assistant", content=payload.get("output_text") or self._extract_output_text(payload),
+            continuation=ModelMessage(role="assistant", content=text,
                                       provider_items=[item for item in payload.get("output", []) if isinstance(item, dict)],
                                       tool_calls=[{"id": call.id, "type": "function", "function": {
                                           "name": call.name, "arguments": json.dumps(call.arguments, ensure_ascii=False),

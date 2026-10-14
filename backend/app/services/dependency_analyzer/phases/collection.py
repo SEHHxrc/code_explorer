@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-import traceback
+import logging
 
 import tree_sitter
 
@@ -11,6 +11,8 @@ from ..constants import CPP_MARKERS, EXT_MAP, IGNORED_DIRS, SKIP_CHILDREN
 from ..context import FileContext
 from ..handlers import get_handler
 from ..state import DependencyAnalyzerState
+
+logger = logging.getLogger(__name__)
 
 
 class CollectionPhase(DependencyAnalyzerState):
@@ -103,7 +105,7 @@ class CollectionPhase(DependencyAnalyzerState):
                 })
             self._walk(ctx, tree.root_node)
         except Exception as exc:
-            print(f"[Warning] parse error in {rel_path}: {exc}")
+            logger.warning("analysis.parse_failed", extra={"source_file": rel_path, "error_type": type(exc).__name__}, exc_info=True)
             with self._diagnostics_lock:
                 self.diagnostics["parse_failures"].append({
                     "file": rel_path,
@@ -111,8 +113,6 @@ class CollectionPhase(DependencyAnalyzerState):
                     "detail": type(exc).__name__,
                 })
                 self.stats["parse_failures"] += 1
-            if os.environ.get("CODE_EXPLORER_DEBUG"):
-                traceback.print_exc()
         finally:
             with self._progress_lock:
                 self.parsed_files_count += 1
@@ -135,15 +135,14 @@ class CollectionPhase(DependencyAnalyzerState):
                 try:
                     flags = handler(node, ctx) or 0
                 except Exception as exc:
-                    print(f"[Warning] handler {node.type} failed in {ctx.path}:{node.start_point[0] + 1}: {exc}")
+                    logger.warning("analysis.handler_failed", extra={"source_file": ctx.path, "line": node.start_point[0] + 1,
+                        "error_type": type(exc).__name__}, exc_info=True)
                     ctx.diagnostics.append({
                         "file": ctx.path,
                         "line": node.start_point[0] + 1,
                         "reason": "handler_error",
                         "detail": node.type,
                     })
-                    if os.environ.get("CODE_EXPLORER_DEBUG"):
-                        traceback.print_exc()
             pushed = len(ctx.frames) - depth_before
             if flags & SKIP_CHILDREN:
                 for _ in range(pushed):

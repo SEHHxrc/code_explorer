@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections import Counter
 from typing import Any
@@ -36,7 +35,7 @@ class SecurityEvidencePromptBuilder:
         offset: int = 0,
         max_findings: int = 20,
     ) -> LLMSecurityEvidenceEnvelope:
-        """选择并展开候选；预算不足时整条省略而不截断 JSON。"""
+        """选择候选并注册共享片段；预算按去重后的完整 JSON 检查，不留下悬空引用。"""
         pack = (
             raw_pack if isinstance(raw_pack, SecurityEvidencePack)
             else SecurityEvidencePack.model_validate(raw_pack)
@@ -50,18 +49,19 @@ class SecurityEvidencePromptBuilder:
             finding = self._finding(pack, candidate)
             trial = envelope.model_copy(update={
                 "findings": envelope.findings + [finding],
+                "snippets": {**envelope.snippets, **{key: pack.snippets[key] for key in finding.snippet_ids}},
             })
             if self._size(trial) > max(2_000, max_chars):
                 # 不能让详细头部挤掉第一条完整候选，甚至出现预算增加却丢失候选的退化。
                 if not envelope.findings and envelope.analysis.get("representation") != "compact_header_full_counts_and_locations":
                     compact = self._compact_header(envelope, pack)
-                    compact_trial = compact.model_copy(update={"findings": [finding]})
+                    compact_trial = compact.model_copy(update={"findings": [finding], "snippets": trial.snippets})
                     if self._size(compact_trial) <= max(2_000, max_chars):
                         envelope, trial = compact, compact_trial
                 if self._size(trial) > max(2_000, max_chars):
                     envelope.truncated = True
                     continue  # 跳过过大的整条候选，继续尝试排序靠后的完整候选。
-            envelope.findings.append(finding)
+            envelope = trial
         consumed = max(0, offset) + len(envelope.findings)
         envelope.omitted_findings = max(0, len(candidates) - consumed)
         paired = {endpoint.fact_id for finding in envelope.findings for endpoint in (finding.source, finding.sink)}
@@ -89,15 +89,10 @@ class SecurityEvidencePromptBuilder:
                 fact_id=fact.fact_id, kind=fact.fact_kind, rule_id=fact.rule_id,
                 category=fact.category, name=fact.name, symbol=fact.symbol,
                 location=location, provenance=fact.provenance, trust_class=fact.trust_class,
-                snippet=None,
             )
             trial = envelope.model_copy(update={"observations": [*envelope.observations, observation]})
             if self._size(trial) > max(2_000, max_chars) - 128:
-                # 保留完整定位，源码可由两组相同的 read_file_range 读取，绝不切碎片段。
-                observation = observation.model_copy(update={"snippet": None})
-                trial = envelope.model_copy(update={"observations": [*envelope.observations, observation]})
-                if self._size(trial) > max(2_000, max_chars) - 128:
-                    break
+                break  # 定位放不下就停止；该阶段本来没有附加源码，无须重复同一次检查。
             envelope.observations.append(observation)
         entries = sorted(pack.entrypoints.values(), key=lambda item: (item.location.path, item.location.line))
         for entry in entries[:20]:
@@ -113,10 +108,11 @@ class SecurityEvidencePromptBuilder:
             if snippet is None:
                 continue
             trial_items = list(envelope.observations)
-            trial_items[index] = observation.model_copy(update={"snippet": snippet})
-            trial = envelope.model_copy(update={"observations": trial_items})
+            trial_items[index] = observation.model_copy(update={"snippet_id": snippet.snippet_id})
+            trial = envelope.model_copy(update={"observations": trial_items,
+                "snippets": {**envelope.snippets, snippet.snippet_id: snippet}})
             if self._size(trial) <= max(2_000, max_chars) - 128:
-                envelope.observations = trial_items
+                envelope = trial
         envelope.omitted_observations = max(0, len(unpaired) - max(0, offset) - len(envelope.observations))
         envelope.truncated = envelope.truncated or any((
             envelope.omitted_findings, envelope.omitted_entrypoints, envelope.omitted_observations,
@@ -157,6 +153,7 @@ class SecurityEvidencePromptBuilder:
         semantics = {
             "observed": "源码事实", "inferred": "静态推断非运行时证明",
             "rule_match_only": "单点匹配非污点路径，Guard不证明充分校验",
+            "snippet_ids": envelope.claim_semantics["snippet_ids"],
         }
         if pack.candidates:
             semantics["structural_reachability_only"] = "调用可达不证明值传播"
@@ -179,11 +176,7 @@ class SecurityEvidencePromptBuilder:
             offset=offset,
             max_findings=max_findings,
         )
-        return json.dumps(
-            envelope.model_dump(exclude_none=True),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+        return envelope.to_json()
 
     def _finding(
         self,
@@ -234,7 +227,7 @@ class SecurityEvidencePromptBuilder:
             flow=flow,
             guards=self._related(pack, candidate.guard_fact_ids, "guard"),
             sanitizers=self._related(pack, candidate.sanitizer_fact_ids, "sanitizer"),
-            snippets=self._selected_snippets(pack, candidate),
+            snippet_ids=[snippet.snippet_id for snippet in self._selected_snippets(pack, candidate)],
             preconditions=candidate.preconditions,
             unresolved=[
                 self._compact_unresolved(item)
@@ -291,6 +284,7 @@ class SecurityEvidencePromptBuilder:
                 "structural_reachability_only": "仅函数调用结构可达，未证明值传播",
                 "intra_procedural_dataflow": "公共函数图中的变量感知值流已连接 Source 与 Sink 实参",
                 "interprocedural_dataflow": "公共函数图值流结合已解析调用或有静态依据的有界状态绑定，连接 Source 与 Sink；不证明运行时路径可行",
+                "snippet_ids": "候选的 snippet_ids 和观察的 snippet_id 引用本 JSON 内的 snippets 表；每份正文只存一次，角色、位置和截断状态仍保留",
             },
             findings=[],
         )
@@ -475,8 +469,4 @@ class SecurityEvidencePromptBuilder:
     @staticmethod
     def _size(envelope: LLMSecurityEvidenceEnvelope) -> int:
         """计算紧凑 JSON 的字符数。"""
-        return len(json.dumps(
-            envelope.model_dump(exclude_none=True),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        ))
+        return len(envelope.to_json())

@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any
+from backend.app.core.logging import log_context
 
 from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
 from backend.app.services.project_analysis.graph_exchange import GraphExchangeNormalizer
@@ -13,6 +14,7 @@ from backend.app.services.project_analysis.pipeline import (
     ProjectAnalysisBundle,
     ProjectAnalysisPipeline,
     ProjectAnalysisPipelineError,
+    ProjectAnalysisPrerequisiteError,
 )
 from backend.app.services.project_analysis.progress import report_progress
 from backend.app.services.project_workspace import ProjectWorkspaceService
@@ -68,14 +70,17 @@ class ProjectImportService:
         self, command: AnalyzeProjectCommand, progress: ImportProgressTracker | None,
     ) -> ProjectAnalysisResult:
         """在线程内记录事务终态；浏览器断连不把仍在运行的任务误标为取消。"""
+        logger.info("project.import_started")
         try:
             result = self._import_sync(command, progress=progress)
         except ProjectAnalysisError as exc:
+            logger.warning("project.import_failed", extra={"stage": exc.stage, "error_type": type(exc).__name__})
             if progress is not None:
                 progress.fail(exc.public_message)
             raise
         if progress is not None:
             progress.complete(result.project_id)
+        logger.info("project.import_completed", extra={"project_id": result.project_id})
         return result
 
     def _import_sync(
@@ -87,12 +92,15 @@ class ProjectImportService:
             with transaction:
                 report_progress(progress, "preparing")
                 operation = transaction.begin(command.user_id)
+                logger.info("project.import_operation_started", extra={"project_id": operation.project_id,
+                    "operation_id": operation.operation_id})
                 prepared = self._workspace.prepare(operation, command.source)
                 transaction.transition("analyzing")
-                bundle = self._analysis.analyze(
-                    str(operation.source_root), command.max_workers,
-                    **({"progress": progress} if progress is not None else {}),
-                )
+                with log_context(project_id=operation.project_id):
+                    bundle = self._analysis.analyze(
+                        str(operation.source_root), command.max_workers,
+                        **({"progress": progress} if progress is not None else {}),
+                    )
                 result = ProjectAnalysisResult(
                     project_id=operation.project_id,
                     sanitize_report=prepared.sanitize_report.to_dict(),
@@ -126,6 +134,8 @@ class ProjectImportService:
                 stage=exc.stage,
                 status_code=exc.status_code,
             ) from exc
+        except ProjectAnalysisPrerequisiteError as exc:
+            raise ProjectAnalysisError(exc.public_message, stage="analysis", status_code=503) from exc
         except ProjectAnalysisPipelineError as exc:
             raise DependencyAnalysisError() from exc
         except ProjectAnalysisError:

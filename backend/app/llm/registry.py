@@ -28,6 +28,7 @@ def create_model_provider(model: str | None = None) -> ModelProvider | None:
             model=selected_model,
             base_url=config.base_url,
             max_output_tokens=limits.max_output_tokens,
+            model_limits=limits,
         )
     return OpenAICompatibleProvider(
         provider_name=config.provider,
@@ -35,6 +36,7 @@ def create_model_provider(model: str | None = None) -> ModelProvider | None:
         model=selected_model,
         api_key=api_key,
         max_output_tokens=limits.max_output_tokens,
+        model_limits=limits,
         output_token_parameter=environment_value("CODE_EXPLORER_LLM_OUTPUT_TOKEN_PARAMETER", "max_tokens"),
         reasoning_effort=environment_value("CODE_EXPLORER_LLM_REASONING_EFFORT") or None,
     )

@@ -175,7 +175,7 @@ class SecurityCoverage(BaseModel):
 class SecurityEvidencePack(BaseModel):
     """使用 ID 注册表去重且不含完整图和 Repo Map 的安全证据包。"""
 
-    schema_version: Literal["2.1", "2.2", "2.3"] = "2.3"
+    schema_version: Literal["2.1", "2.2", "2.3", "2.4"] = "2.4"
     ir_version: Literal["1.2", "1.3"] = "1.3"
     analysis_kind: Literal["static_security_evidence"] = "static_security_evidence"
     rule_packs: list[str] = Field(default_factory=list)

@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from backend.app.core.deps import get_current_user
 from backend.app.llm.diagnostics import list_available_models, probe_model_connection
 from backend.app.llm.registry import get_model_configuration, get_model_limits
+from backend.app.llm.settings import get_model_request_timeout
 
 router = APIRouter(prefix="/api/models", tags=["Models"])
 MODEL_PROBE_COOLDOWN_SECONDS = 10.0
@@ -60,8 +61,9 @@ async def get_model_status(
             "model": config.model if config.configured else None,
             "live_checked": False,
             "max_context_chars": limits.max_context_chars,
-            "max_output_tokens": limits.max_output_tokens,
+            **limits.output_budget(),
             "max_input_tokens": limits.max_input_tokens,
+            "request_timeout_seconds": get_model_request_timeout(),
             "context_window_tokens": limits.context_window_tokens,
             "capacity_source": "operator_configured" if limits.context_window_tokens else "unknown",
             "tokenizer": limits.tokenizer,

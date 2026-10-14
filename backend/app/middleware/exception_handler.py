@@ -1,9 +1,11 @@
-import traceback
+import logging
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
+
+logger = logging.getLogger(__name__)
 
 
 def setup_exception_handler(app: FastAPI) -> None:
@@ -16,11 +18,9 @@ def setup_exception_handler(app: FastAPI) -> None:
     async def global_exception_middleware(request: Request, call_next: RequestResponseEndpoint) -> Response:
         """输入请求和下游调用器，输出正常响应或脱敏后的统一 500 JSON。"""
         try:
-            response = await call_next(request)
-            return response
+            return await call_next(request)
         except Exception:
-            # 仅在后端服务器控制台打印完整日志，用于排查
-            print(f"[CRITICAL ERROR TRACE]:\n{traceback.format_exc()}")
+            logger.exception("http.unhandled_error")
 
             # 返回格式化、脱敏后的最小化错误信息给前端
             return JSONResponse(

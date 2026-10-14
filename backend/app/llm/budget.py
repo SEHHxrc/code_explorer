@@ -23,14 +23,18 @@ class ModelBudgetError(ValueError):
 
 def request_payload(
     provider: Any, *, instructions: str, messages: list[ModelMessage], tools: list[dict[str, Any]],
-    model: str = "", max_output_tokens: int = 2400, tool_choice: str = "auto",
+    model: str = "", max_output_tokens: int | None = 2400, tool_choice: str = "auto",
 ) -> dict[str, Any]:
     """调用真实适配器的纯序列化器；未配置/测试替身使用标准 Chat 表示。"""
     if isinstance(provider, ModelProvider):
         return provider.request_payload(instructions=instructions, messages=messages, tools=tools,
                                         max_output_tokens=max_output_tokens, tool_choice=tool_choice)
     payload: dict[str, Any] = {"model": model, "messages": chat_messages(instructions, messages),
-                               "stream": False, "max_tokens": max_output_tokens}
+                               "stream": False}
+    if max_output_tokens is not None:
+        if type(max_output_tokens) is not int or max_output_tokens <= 0:
+            raise ValueError("单次输出上限必须为正整数或 None。")
+        payload["max_tokens"] = max_output_tokens
     if tools:
         payload.update(tools=compatible_tools(tools), tool_choice=tool_choice)
     return payload
@@ -44,7 +48,9 @@ def initial_message(question: str, context: str) -> ModelMessage:
 def validate_provider_request(provider: ModelProvider, payload: dict[str, Any]) -> None:
     """适配器最后一道发送前检查，覆盖普通文本生成；使用实例冻结的配置。"""
     output = next((payload[key] for key in ("max_tokens", "max_completion_tokens", "max_output_tokens")
-                   if key in payload), 2400)
+                   if key in payload), None)
+    if any(payload.get(key) is None for key in ("max_tokens", "max_completion_tokens", "max_output_tokens") if key in payload):
+        raise ModelBudgetError("省略输出上限须删除参数，不能发送 null。")
     limits = replace(provider.model_limits, max_output_tokens=output)
     BudgetPlanner(limits, model=provider.model).require(payload)
 
@@ -55,10 +61,13 @@ class BudgetPlanner:
     def __init__(self, limits: ModelLimits, *, model: str = "", counter: RequestTokenCounter | None = None) -> None:
         """注入模型限制和可替换计数器；未知窗口不会伪造为应用预算。"""
         self.limits = limits
+        self.output_reserve = limits.max_output_tokens if limits.max_output_tokens is not None else limits.output_reserve_tokens
+        if type(self.output_reserve) is not int or self.output_reserve <= 0:
+            raise ModelBudgetError("输出上限或本地预留空间必须为正整数。")
         self.counter = counter or get_token_counter(model, limits.tokenizer, limits.tokenizer_path)
         allowed = limits.max_input_tokens
         if limits.context_window_tokens is not None:
-            allowed = min(allowed, limits.context_window_tokens - limits.max_output_tokens)
+            allowed = min(allowed, limits.context_window_tokens - self.output_reserve)
         self.input_limit = allowed - limits.safety_margin_tokens
         if self.input_limit <= 0:
             raise ModelBudgetError("Configured model window cannot reserve output and safety margin")
@@ -85,14 +94,15 @@ class BudgetPlanner:
         return {
             "input_token_estimate": asdict(estimate),
             "input_token_budget": self.input_limit,
-            "max_output_tokens": self.limits.max_output_tokens,
+            **self.limits.output_budget(),
             "context_window_tokens": self.limits.context_window_tokens,
             "capacity_source": "operator_configured" if self.limits.context_window_tokens else "unknown",
             "max_context_chars": self.limits.max_context_chars,
             "safety_margin_tokens": self.limits.safety_margin_tokens,
-            "budget_version": "utf8-token-budget-v2",
+            "budget_version": "utf8-token-budget-v2" if self.limits.max_output_tokens is not None else "utf8-token-budget-v3-provider-default",
             "output_token_parameter": next((key for key in ("max_tokens", "max_completion_tokens", "max_output_tokens") if key in payload), None),
             "reasoning_effort": payload.get("reasoning_effort"),
+            "tool_choice": payload.get("tool_choice"),
         }
 
     def context_char_ceiling(self) -> int:

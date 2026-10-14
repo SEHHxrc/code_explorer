@@ -12,7 +12,6 @@ from backend.app.services.syntax_analysis import field as _field
 from backend.app.services.syntax_analysis import fields as _fields
 from backend.app.services.syntax_analysis import normalize_type as _norm_type
 from backend.app.services.syntax_analysis import parse_static_index_literal
-from backend.app.services.syntax_analysis import text as _text
 from backend.app.services.syntax_analysis.static_sequences import static_sequence_value
 
 from ..ir import (
@@ -20,11 +19,10 @@ from ..ir import (
     IRCondition,
     IRExpression,
     IRFunction,
-    IRLocation,
     IRParameter,
     SecurityProgramIR,
 )
-from .treesitter import TreeSitterSecurityFrontend
+from .treesitter import TreeSitterSecurityFrontend, TreeSitterIRCollector
 
 _FUNCTION_NODES = {"function_declaration", "method_declaration"}
 _CALL_NODES = {"call_expression"}
@@ -57,7 +55,7 @@ class GoSecurityFrontend(TreeSitterSecurityFrontend):
         program.conditions.extend(collector.conditions)
 
 
-class _GoIRCollector:
+class _GoIRCollector(TreeSitterIRCollector):
     """维护 Go 函数/接收者作用域并生成稳定安全 IR 身份。"""
 
     def __init__(self, path: str, source: bytes, root: Any) -> None:
@@ -337,61 +335,3 @@ class _GoIRCollector:
             except ValueError:
                 return raw
         return None
-
-    def _identifiers(self, node: Any | None) -> tuple[str, ...]:
-        """提取表达式中的运行时变量标识符并稳定去重。"""
-        if node is None:
-            return ()
-        return tuple(dict.fromkeys(
-            self._text(item)
-            for item in self._walk(node)
-            if item.type == "identifier" and self._text(item)
-        ))
-
-    def _location(self, node: Any) -> IRLocation:
-        """转换 Tree-sitter 坐标并生成共享位置身份。"""
-        line = int(node.start_point[0]) + 1
-        column = int(node.start_point[1]) + 1
-        end_line = int(node.end_point[0]) + 1
-        end_column = int(node.end_point[1]) + 1
-        return IRLocation(
-            path=self.path,
-            line=line,
-            column=column,
-            end_line=end_line,
-            end_column=end_column,
-            location_id=ProgramIdentity.location_id(
-                self.path, line, column, end_line, end_column,
-            ),
-        )
-
-    @staticmethod
-    def _walk(node: Any) -> list[Any]:
-        """按源码顺序返回包含根节点的具名语法树。"""
-        result: list[Any] = []
-        pending = [node]
-        while pending:
-            current = pending.pop()
-            result.append(current)
-            pending.extend(reversed(current.named_children))
-        return result
-
-    @classmethod
-    def _descendants(
-        cls,
-        node: Any | None,
-        node_types: set[str],
-        *,
-        include_root: bool = False,
-    ) -> list[Any]:
-        """返回指定类型的后代节点。"""
-        if node is None:
-            return []
-        nodes = cls._walk(node)
-        if not include_root:
-            nodes = nodes[1:]
-        return [item for item in nodes if item.type in node_types]
-
-    def _text(self, node: Any | None) -> str:
-        """容错读取节点对应的 UTF-8 文本。"""
-        return _text(node, self.source)

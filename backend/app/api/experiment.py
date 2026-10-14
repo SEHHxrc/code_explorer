@@ -8,10 +8,13 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+import os
+import hmac
+import ipaddress
 from collections.abc import AsyncIterator, Callable
-from typing import Any, TypeVar
+from typing import Any, TypeVar, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Header, Query
 from fastapi.responses import StreamingResponse
 
 from backend.app.agents.worker import agent_queue_worker
@@ -27,6 +30,42 @@ from backend.app.experiments import (
 router = APIRouter(prefix="/api/experiments", tags=["Experiments"])
 T = TypeVar("T")
 comparison_service = ExperimentComparisonService()
+
+
+def require_local_audit_access(request: Request, token: str | None) -> None:
+    """敏感审计默认禁用；仅本机、独立管理员口令和项目所有权共同放行。"""
+    enabled = os.getenv("EXPERIMENT_AUDIT_READ_ENABLED", "0") == "1"
+    secret = os.getenv("EXPERIMENT_AUDIT_READ_TOKEN", "")
+    try:
+        local = request.client is not None and ipaddress.ip_address(request.client.host).is_loopback
+    except ValueError:
+        local = False
+    if not enabled or not local or len(secret) < 32 or not token or not hmac.compare_digest(secret.encode("utf-8"), token.encode("utf-8")):
+        raise HTTPException(status_code=403, detail="完整审计仅允许显式启用的本机管理员访问。")
+
+
+@router.get("/comparisons/{comparison_id}/audit/{lane}")
+async def read_comparison_audit(
+    comparison_id: str, lane: Literal["left", "right"], request: Request,
+    acknowledge_unblind: bool = False,
+    x_audit_token: str | None = Header(default=None),
+    current_user: dict[str, str] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """揭盲后显式读取本人实验的脱敏审计；普通 SSE 和历史快照不携带正文。"""
+    require_local_audit_access(request, x_audit_token)
+    user_id = current_user["user_id"]
+    record = _safe_call(lambda: comparison_service._record(comparison_id, user_id))
+    if not comparison_service.repository.has_review(comparison_id, user_id):
+        view = _safe_call(lambda: comparison_service.get(comparison_id, user_id))
+        if not (acknowledge_unblind and view["status"] == "completed" and not view["valid_for_review"]):
+            raise HTTPException(status_code=409, detail="必须先完成盲评；无效终态实验可显式确认揭盲后诊断。")
+    from backend.app.experiments.audit import AuditRepository
+    strategy = record.blind_order[lane]
+    run_id = record.baseline_run_id if strategy == "baseline" else record.graph_run_id
+    data = await asyncio.to_thread(AuditRepository(comparison_service.repository.session_factory).read, run_id, user_id)
+    if data is None:
+        raise HTTPException(status_code=404, detail="历史运行未启用审计，不会回填。")
+    return {"code": 200, "data": data}
 
 
 def _safe_call(callback: Callable[[], T]) -> T:
@@ -54,6 +93,25 @@ async def get_comparison(comparison_id: str, current_user: dict[str, str] = Depe
     """返回左右盲态运行、当前状态和可比较指标，不提前暴露实验组。"""
     view = _safe_call(lambda: comparison_service.get(comparison_id, current_user["user_id"]))
     return {"code": 200, "data": view}
+
+
+@router.get("/projects/{project_id}/comparisons")
+async def list_comparison_history(
+    project_id: str, offset: int = Query(default=0, ge=0), limit: int = Query(default=20, ge=1, le=50),
+    current_user: dict[str, str] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """分页读取本人项目全部实验摘要；不携带完整审计或提前揭盲。"""
+    return {"code": 200, "data": _safe_call(lambda: comparison_service.history(
+        project_id, current_user["user_id"], offset=offset, limit=limit,
+    ))}
+
+
+@router.get("/comparisons/{comparison_id}/history")
+async def get_comparison_history(
+    comparison_id: str, current_user: dict[str, str] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """读取原始结果及共同提示词快照；完整传输审计仍走独立管理员权限。"""
+    return {"code": 200, "data": _safe_call(lambda: comparison_service.history_detail(comparison_id, current_user["user_id"]))}
 
 
 @router.get("/comparisons/{comparison_id}/events")

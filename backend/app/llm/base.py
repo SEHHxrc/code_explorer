@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+import json
+import math
+import uuid
 from typing import TYPE_CHECKING, Any
 from backend.app.llm.response_metadata import ModelResponseMetadata
 from backend.app.llm.conversation import ModelMessage, chat_messages, compatible_tools
@@ -34,6 +37,15 @@ class ToolCall:
     name: str
     arguments: dict[str, Any] = field(default_factory=dict)
 
+    @classmethod
+    def from_arguments(cls, name: str, arguments: str | None, call_id: str | None = None) -> ToolCall:
+        """归一化两种协议的 JSON 参数和调用 ID；保持非法 JSON/非对象退为空对象的原行为。"""
+        try:
+            parsed = json.loads(arguments or "{}")
+        except json.JSONDecodeError:
+            parsed = {}
+        return cls(call_id or uuid.uuid4().hex, name, parsed if isinstance(parsed, dict) else {})
+
 
 @dataclass(frozen=True)
 class ModelTurn:
@@ -44,6 +56,16 @@ class ModelTurn:
     tool_calls: tuple[ToolCall, ...] = ()
     metadata: ModelResponseMetadata = field(default_factory=ModelResponseMetadata)
     continuation: ModelMessage | None = None
+
+
+class ModelOutputError(RuntimeError):
+    """已收到响应，但不能作为最终回答；不等同于网络或模型平台容量错误。"""
+
+    def __init__(self, code: str, public_message: str) -> None:
+        """保存安全错误码和公开说明，不持有源码、思考正文或原始响应。"""
+        self.code = code
+        self.public_message = public_message
+        super().__init__(public_message)
 
 
 class ModelProvider(ABC):
@@ -69,6 +91,20 @@ class ModelProvider(ABC):
         """返回供应商能力；默认表示不支持扩展能力。"""
         return ProviderCapabilities()
 
+    def _output_limit(self, override: int | None) -> int | None:
+        """None 覆盖值继承实例配置；实例为 None 时省略上限，正数可临时限制探测。"""
+        limit = override if override is not None else getattr(self, "max_output_tokens", 2400)
+        if limit is not None and (type(limit) is not int or limit <= 0):
+            raise ValueError("单次输出上限必须为正整数，或通过实例配置省略。")
+        return limit
+
+    def _request_timeout(self, override: float | None) -> float:
+        """显式探测超时优先，否则继承实例冻结值；非法值拒绝，不能用 or 静默覆盖零。"""
+        value = override if override is not None else getattr(self, "request_timeout_seconds", 300.0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 1 <= value <= 900:
+            raise ValueError("单次请求超时必须为 1～900 秒。")
+        return float(value)
+
     def request_payload(
         self, *, instructions: str, messages: list[ModelMessage], tools: list[dict[str, Any]],
         tool_choice: str = "auto", max_output_tokens: int | None = None,
@@ -76,8 +112,11 @@ class ModelProvider(ABC):
         """构造待发送协议表示，供发送与预算共用；默认采用兼容 Chat 格式。"""
         payload: dict[str, Any] = {
             "model": self.model, "messages": chat_messages(instructions, messages),
-            "stream": False, "max_tokens": max_output_tokens or getattr(self, "max_output_tokens", 2400),
+            "stream": False,
         }
+        limit = self._output_limit(max_output_tokens)
+        if limit is not None:
+            payload["max_tokens"] = limit
         if tools:
             payload.update(tools=compatible_tools(tools), tool_choice=tool_choice)
         return payload

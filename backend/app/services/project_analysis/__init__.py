@@ -15,6 +15,7 @@ if TYPE_CHECKING:
         ProjectAnalysisBundle,
         ProjectAnalysisPipeline,
         ProjectAnalysisPipelineError,
+        ProjectAnalysisPrerequisiteError,
     )
 
 __all__ = [
@@ -22,6 +23,7 @@ __all__ = [
     "ProjectAnalysisBundle",
     "ProjectAnalysisPipeline",
     "ProjectAnalysisPipelineError",
+    "ProjectAnalysisPrerequisiteError",
 ]
 
 
@@ -31,17 +33,20 @@ def __getattr__(name: str) -> Any:
         "ProjectAnalysisBundle",
         "ProjectAnalysisPipeline",
         "ProjectAnalysisPipelineError",
+        "ProjectAnalysisPrerequisiteError",
     }:
         raise AttributeError(name)
     from .pipeline import (
         ProjectAnalysisBundle,
         ProjectAnalysisPipeline,
         ProjectAnalysisPipelineError,
+        ProjectAnalysisPrerequisiteError,
     )
 
     exports = {
         "ProjectAnalysisBundle": ProjectAnalysisBundle,
         "ProjectAnalysisPipeline": ProjectAnalysisPipeline,
         "ProjectAnalysisPipelineError": ProjectAnalysisPipelineError,
+        "ProjectAnalysisPrerequisiteError": ProjectAnalysisPrerequisiteError,
     }
     return exports[name]

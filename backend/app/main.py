@@ -1,11 +1,16 @@
 """FastAPI 应用入口。"""
 
 import os
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from backend.app.core.logging import configure_logging
+
+configure_logging("api")
 
 from backend.app.agents.worker import agent_queue_worker
 from backend.app.api.agent import router as agent_router
@@ -27,6 +32,8 @@ ProjectDeletionJanitor().cleanup_pending()
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """按配置启动嵌入式 Agent Worker；外置部署可显式关闭。"""
     embedded_worker = os.getenv("AGENT_WORKER_EMBEDDED", "1").strip().lower() not in {"0", "false", "no"}
+    logger = logging.getLogger(__name__)
+    logger.info("application.started")
     if embedded_worker:
         agent_queue_worker.start()
     try:
@@ -34,6 +41,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     finally:
         if embedded_worker:
             await agent_queue_worker.stop()
+        logger.info("application.stopped")
 
 
 app = FastAPI(title="AI Code Insight Assistant", version="1.0.0", lifespan=lifespan)

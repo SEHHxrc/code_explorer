@@ -15,9 +15,6 @@ from backend.app.services.syntax_analysis import (
 from backend.app.services.syntax_analysis import (
     field as _field,
 )
-from backend.app.services.syntax_analysis import (
-    text as _text,
-)
 
 from ..ir import (
     IRCall,
@@ -25,11 +22,10 @@ from ..ir import (
     IRDecorator,
     IRExpression,
     IRFunction,
-    IRLocation,
     IRParameter,
     SecurityProgramIR,
 )
-from .treesitter import TreeSitterSecurityFrontend
+from .treesitter import TreeSitterSecurityFrontend, TreeSitterIRCollector
 
 _CLASS_NODES = {
     "class_declaration", "interface_declaration", "enum_declaration",
@@ -68,7 +64,7 @@ class JavaSecurityFrontend(TreeSitterSecurityFrontend):
         program.conditions.extend(collector.conditions)
 
 
-class _JavaIRCollector:
+class _JavaIRCollector(TreeSitterIRCollector):
     """维护 Java 类型作用域，并使安全调用点与 ProgramGraph 身份一致。"""
 
     def __init__(self, path: str, source: bytes, root: Any) -> None:
@@ -367,33 +363,6 @@ class _JavaIRCollector:
                 return raw
         return None
 
-    def _identifiers(self, node: Any | None) -> tuple[str, ...]:
-        """提取表达式中的运行时标识符并按首次出现稳定去重。"""
-        if node is None:
-            return ()
-        return tuple(dict.fromkeys(
-            self._text(item)
-            for item in self._walk(node)
-            if item.type == "identifier" and self._text(item)
-        ))
-
-    def _location(self, node: Any) -> IRLocation:
-        """将 Tree-sitter 零基坐标转换为统一一基位置。"""
-        line = int(node.start_point[0]) + 1
-        column = int(node.start_point[1]) + 1
-        end_line = int(node.end_point[0]) + 1
-        end_column = int(node.end_point[1]) + 1
-        return IRLocation(
-            path=self.path,
-            line=line,
-            column=column,
-            end_line=end_line,
-            end_column=end_column,
-            location_id=ProgramIdentity.location_id(
-                self.path, line, column, end_line, end_column,
-            ),
-        )
-
     @staticmethod
     def _parameter_nodes(node: Any) -> list[Any]:
         """返回普通参数、可变参数和 receiver 参数。"""
@@ -404,32 +373,3 @@ class _JavaIRCollector:
             child for child in parameters.named_children
             if child.type in {"formal_parameter", "spread_parameter", "receiver_parameter"}
         ]
-
-    @staticmethod
-    def _walk(node: Any) -> list[Any]:
-        """以源码顺序返回包含根节点的具名子树节点。"""
-        result: list[Any] = []
-        pending = [node]
-        while pending:
-            current = pending.pop()
-            result.append(current)
-            pending.extend(reversed(current.named_children))
-        return result
-
-    @classmethod
-    def _descendants(
-        cls,
-        node: Any,
-        node_types: set[str],
-        *,
-        include_root: bool = False,
-    ) -> list[Any]:
-        """返回指定类型的后代节点。"""
-        nodes = cls._walk(node)
-        if not include_root:
-            nodes = nodes[1:]
-        return [item for item in nodes if item.type in node_types]
-
-    def _text(self, node: Any | None) -> str:
-        """容错读取节点对应 UTF-8 文本。"""
-        return _text(node, self.source)

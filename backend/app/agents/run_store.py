@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import logging
 from typing import Any, Callable
 
 from sqlalchemy import or_
@@ -25,19 +26,25 @@ from backend.app.models import (
 )
 
 ACTIVE_STATUSES = ("queued", "running")
+logger = logging.getLogger(__name__)
 _HISTORY_EVENT_FIELDS = {
-    "run.started": {"project_id", "instrumentation_version", "report_version", "observation_window_version"},
+    "citations.checked": {"version", "checked", "warnings", "semantic_validation", "semantic_coverage", "actual_requests_recorded"},
+    "audit.completed": {"version", "status", "actual_requests", "planned_requests", "audit_write_ms", "audit_snapshot_ms"},
+    "run.started": {"project_id", "instrumentation_version", "report_version", "observation_window_version", "contract_hash", "execution_policy", "experiment_protocol"},
     "context.ready": {"project_name", "characters", "evidence"},
     "model.started": {"step", "prompt_chars", "tool_count", "request_chars", "max_output_tokens",
+                      "tool_choice", "tool_schema_count", "tool_choice_requested", "phase", "remaining_tool_rounds", "final_report_mode",
                       "input_token_estimate", "input_token_budget", "context_window_tokens", "capacity_source",
-                      "max_context_chars", "safety_margin_tokens", "budget_version", "output_token_parameter", "reasoning_effort"},
-    "model.completed": {"step", "response_chars", "metadata", "actual_model"},
+                      "max_context_chars", "safety_margin_tokens", "budget_version", "output_token_parameter", "reasoning_effort",
+                      "output_limit_mode", "output_reserve_tokens", "output_reserve_basis"},
+    "model.completed": {"step", "response_chars", "response_utf8_bytes", "returned_tool_calls", "metadata", "actual_model"},
     "context.window": {"step", "total_observations", "included_observations", "compacted_observations", "omitted_observations", "conversation_version"},
     "tool.requested": {"step", "call_id", "name", "arguments"},
     "tool.completed": {"step", "call_id", "name", "evidence"},
     "tool.failed": {"step", "call_id", "name", "error"},
     "run.completed": {"provider", "model", "evidence", "termination_reason", "final_response_metadata", "answer_completeness"},
-    "run.failed": {"error", "error_type", "retryable", "status_code", "error_code", "retry_after", "request_id"},
+    "run.failed": {"error", "error_type", "retryable", "status_code", "error_code", "retry_after", "request_id",
+                   "termination_reason", "final_response_metadata", "answer_completeness", "output_diagnostics"},
     "run.cancelled": set(),
 }
 
@@ -77,6 +84,7 @@ class AgentRunStore:
             db.add(AgentJobModel(run_id=run_id, strategy=strategy))
             db.commit()
             db.refresh(row)
+            logger.info("agent.job_enqueued", extra={"run_id": run_id, "project_id": project_id, "stage": strategy})
             return self._view(row)
         except Exception:
             db.rollback()

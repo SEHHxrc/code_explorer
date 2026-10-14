@@ -14,7 +14,6 @@ from backend.app.services.syntax_analysis import (
     fields,
     parse_static_index_literal,
     split_qualified,
-    text,
     unwrap_c_declarator,
 )
 
@@ -23,11 +22,10 @@ from ..ir import (
     IRCondition,
     IRExpression,
     IRFunction,
-    IRLocation,
     IRParameter,
     SecurityProgramIR,
 )
-from .treesitter import TreeSitterSecurityFrontend
+from .treesitter import TreeSitterSecurityFrontend, TreeSitterIRCollector
 
 
 class CSecurityFrontend(TreeSitterSecurityFrontend):
@@ -74,7 +72,7 @@ class CppSecurityFrontend(CSecurityFrontend):
     extensions = extensions_for_language(language)
 
 
-class _CIRCollector:
+class _CIRCollector(TreeSitterIRCollector):
     """收集规则无关语法事实；库名匹配和安全参数角色仍由规则包拥有。"""
 
     def __init__(self, path: str, source: bytes, program: SecurityProgramIR) -> None:
@@ -225,33 +223,9 @@ class _CIRCollector:
             self.path, location.line, location.column, location.end_line, location.end_column,
         )
 
-    def _location(self, node: Any) -> IRLocation:
-        """输入 AST 节点，返回一基坐标和稳定源码位置身份。"""
-        line, column = int(node.start_point[0]) + 1, int(node.start_point[1]) + 1
-        end_line, end_column = int(node.end_point[0]) + 1, int(node.end_point[1]) + 1
-        return IRLocation(
-            path=self.path, line=line, column=column, end_line=end_line, end_column=end_column,
-            location_id=ProgramIdentity.location_id(self.path, line, column, end_line, end_column),
-        )
-
     def _diagnostic(self, node: Any, reason: str) -> None:
         """为尚未建模的语法记录精确位置，使覆盖局限进入持久化证据。"""
         self.program.failures.append({
             "path": self.path, "line": int(node.start_point[0]) + 1,
             "language": self.program.language, "reason": reason,
         })
-
-    def _text(self, node: Any | None) -> str:
-        """读取有界 AST 节点对应源码。"""
-        return text(node, self.source)
-
-    @staticmethod
-    def _walk(node: Any) -> list[Any]:
-        """按源码顺序返回具名节点；只在本次文件收集期间持有 AST。"""
-        result: list[Any] = []
-        pending = [node]
-        while pending:
-            current = pending.pop()
-            result.append(current)
-            pending.extend(reversed(current.named_children))
-        return result

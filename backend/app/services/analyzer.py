@@ -1,5 +1,8 @@
 import os
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def build_file_tree_with_symbols(target_dir: str, file_symbols_map: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -24,8 +27,8 @@ def build_file_tree_with_symbols(target_dir: str, file_symbols_map: dict[str, li
                     # 如果是文件，直接附带该文件的 symbols 列表！
                     node["symbols"] = file_symbols_map.get(rel_path, [])
                 tree.append(node)
-        except Exception as e:
-            print(f"Error reading dir {root_path}: {e}")
+        except Exception:
+            logger.warning("analysis.file_tree_read_failed", exc_info=True)
         return tree
 
     return _scan(target_dir)

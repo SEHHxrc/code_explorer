@@ -19,3 +19,5 @@
 单轮文本接口继续兼容 `prompt`，正式 Agent 使用 `messages`。Chat 保留助手工具调用、全部匹配结果及供应商返回的 `reasoning_content`；Responses 保留原生输出项、加密状态与 `function_call_output`。`ModelTurn.continuation` 只供本次运行内存续接，不写前端事件或实验记录。消息压缩不能产生孤立工具结果。
 
 兼容适配器新增 `output_token_parameter`、`reasoning_effort` 显式参数；未知平台不自动设置 temperature 或关闭思考。探测可传 `max_output_tokens`、`timeout`、`transient_retries=0`，最多两个生成请求，不复用旧字符拼接流程。
+
+两个适配器的实例输出上限可为 `None`，此时省略各自输出参数，不发送 `null`，也不宣称平台无限容量。方法参数 `None` 继承实例配置，正整数覆盖用于有界探测；本地 `output_reserve_tokens` 不进入 HTTP 请求。有限模式的请求字段、报告协议、超时和重试行为不变。

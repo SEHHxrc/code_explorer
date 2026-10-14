@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 import zipfile
@@ -239,7 +240,7 @@ class SecurityExperimentWorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await self.worker.run_once())
         completed = self.comparisons.get(view["id"], "user1")
         self.assertTrue(completed["valid_for_review"])
-        self.assertEqual("static-security-v2", completed["protocol"])
+        self.assertEqual("static-security-v6", completed["protocol"])
         first, second = self.model_calls[0], self.model_calls[2]
         self.assertEqual(SECURITY_EXPERIMENT_INSTRUCTIONS, first["instructions"])
         self.assertEqual(first["instructions"], second["instructions"])
@@ -394,6 +395,19 @@ class SecurityExperimentWorkflowTests(unittest.IsolatedAsyncioTestCase):
                     f"/api/experiments/comparisons/{view['id']}/reveal"
                 )
                 self.assertEqual(409, response.status_code)
+                audit_url = f"/api/experiments/comparisons/{view['id']}/audit/left"
+                # 失败终态不能盲评，只有管理员显式确认揭盲才允许诊断；不绕过所有权。
+                response = await client.get(audit_url, params={"acknowledge_unblind": True})
+                self.assertEqual(403, response.status_code)
+                token = "a" * 40
+                with patch.dict(os.environ, {"EXPERIMENT_AUDIT_READ_ENABLED": "1", "EXPERIMENT_AUDIT_READ_TOKEN": token}):
+                    response = await client.get(audit_url, headers={"X-Audit-Token": token})
+                    self.assertEqual(409, response.status_code)
+                    response = await client.get(audit_url, headers={"X-Audit-Token": token}, params={"acknowledge_unblind": True})
+                    self.assertEqual(200, response.status_code)
+                    app.dependency_overrides[get_current_user] = lambda: {"user_id": "other-user"}
+                    response = await client.get(audit_url, headers={"X-Audit-Token": token}, params={"acknowledge_unblind": True})
+                    self.assertEqual(404, response.status_code)
                 app.dependency_overrides[get_current_user] = lambda: {
                     "user_id": "other-user"
                 }

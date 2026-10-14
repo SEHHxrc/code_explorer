@@ -58,14 +58,16 @@ cd frontend
 npm run build
 ```
 
-`tree-sitter-language-pack` 的语言解析器缓存通常保存在用户目录，单独迁移源码和 `.venv` 不保证包含缓存。新机器应在可访问 GitHub 的网络环境预取本项目所需解析器，避免首次分析时临时下载失败：
+解析器固定缓存在 `backend/storage/runtime/tree-sitter/<版本>/<系统-架构>`，避免 IDE、服务进程和不同用户目录各用一份缓存。安装/迁移时执行下列准备命令，先复用当前版本本机缓存，再下载缺少的语法（含 Vue 模板的 HTML）：
 
 ```powershell
-.\.venv\Scripts\python.exe -c "from tree_sitter_language_pack import prefetch; prefetch(['python', 'java', 'javascript', 'typescript', 'tsx', 'go', 'c', 'cpp', 'rust'])"
+.\.venv\Scripts\python.exe -c "from backend.app.services.syntax_analysis.parser_runtime import prepare_parsers; print(prepare_parsers())"
 ```
 
-离线机器需另行迁移与所装版本、操作系统匹配的解析器缓存。解析器缺失或下载失败属于分析环境不完整，不代表项目没有安全风险；不能将这种运行作为有效实验样本。
+离线机器需迁移与所装版本、操作系统匹配的上述缓存。可通过 `CODE_EXPLORER_PARSER_CACHE_DIR` 指定管理员管理的其他缓存根。项目分析期间不下载安装资源：缺少语法立即失败并回滚，不把空图保存为成功分析；环境不完整不能解释为项目没有安全风险，也不能作为有效实验样本。准备完成后重启后端。
 
 ## 安全边界
+
+后端运行日志采用统一 JSON 格式，API 和两个独立 Worker 共用入口；默认控制台输出并写入 `backend/storage/logs/` 的角色/PID 轮转文件。配置、字段与脱敏边界见 `backend/app/core/README.md`，示例见 `backend/.env.example`。日志不包含源码、模型正文或认证内容，不与实验私有审计混用。模型单次 socket 超时通过 `CODE_EXPLORER_LLM_REQUEST_TIMEOUT_SECONDS` 配置，缺省 300 秒；不是整个 Agent 的时限。修改配置后须重启对应进程。
 
 智能体的分析工具仍保持只读。Docker、命令和安全扫描位于独立 execution 功能域：FastAPI 只写入持久化队列，单独的 Worker 才能访问 Docker。执行功能默认禁用，启用前必须配置精确镜像白名单；容器默认断网、非 root、只读挂载并受到 CPU、内存、PID、超时、输出和用户队列配额限制。运行方式与剩余风险见 docs/EXECUTION.md。

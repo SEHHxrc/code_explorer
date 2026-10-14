@@ -14,13 +14,13 @@ pack = SecurityAnalysisService().analyze(
 新分析产物应传入 `semantic_index`；跨过程数据流优先消费其中的调用目标和解析置信度。为了
 兼容旧产物，索引缺失时才回退到解析依赖图调用边。
 
-`SecurityEvidencePack` 当前使用模式版本 `2.3`、IR 版本 `1.3`，并兼容读取 `2.1/2.2`；固定标记
+`SecurityEvidencePack` 当前使用模式版本 `2.4`、IR 版本 `1.3`，并兼容读取 `2.1/2.2/2.3`；固定标记
 `analysis_kind=static_security_evidence`。`structural_call_path` 只表示 Source 与 Sink
 所在函数结构可达；`intra_procedural_dataflow` 表示单函数到达定义链，
 `interprocedural_dataflow` 通过已解析调用的实参/形参绑定，或显式有界状态值边界连接不同函数，且最终变量进入规则指定的 Sink 实参。CFG 已参与计算，但尚未
 证明具体路径在运行时可行，因此数据流仍保守标记为 `may_reach_sink`。
 
-面向模型的入口是 `SecurityEvidencePromptBuilder.build()/render()`，输出 `LLMSecurityEvidenceEnvelope 1.3`（兼容 1.0～1.2）。该投影按问题相关性和风险选择候选，预算不足时整条省略并报告数量，不会截断成无效 JSON。完整设计见 `docs/STATIC_SECURITY_LLM_FORMAT.md`。
+面向模型的入口是 `SecurityEvidencePromptBuilder.build()/render()`，输出 `LLMSecurityEvidenceEnvelope 1.4`。候选的 `snippet_ids` 和观察的 `snippet_id` 引用同页 `snippets` 表；端点、路径、角色、位置、置信度与局限不删减。预算直接按共享后的完整表示计算，分页不会留下悬空引用。`to_json()` 是唯一紧凑序列化实现，供模型上下文和预算计量共用；工具通过同一模型输出字典。旧 1.0～1.3 审计正文原样保留，不按新协议校验或回填。完整设计见 `docs/STATIC_SECURITY_LLM_FORMAT.md`。
 
 无候选不再只提供统计：输入仍可包含真实入口以及未配对的 Source/Sink 观察与精确位置，空间允许时附带脱敏源码片段；这些观察只代表规则匹配，不代表漏洞。先保留各条观察的定位，再分配片段预算。小上下文启用紧凑头部，保留完整计数和实际规则覆盖类别，合并重复解释；明确标记省略与表示方式。完整静态事实、原坐标和规则描述仍保存在产物中，不为适配模型预算改写。
 
@@ -39,7 +39,7 @@ program_index/ProgramIdentity
 
 依赖图调用边和 `IRCall` 使用相同 `callsite_id`。一个动态调用点可以拥有多个目标 `edge_id`，但只拥有一个调用点身份。安全数据流层不得再创建 caller-to-callee 结构边，只能引用 `callsite_id` 和已有 `edge_id`。
 
-证据包 2.3 使用顶层注册表：
+证据包 2.4 使用顶层注册表：
 
 - `entrypoints[id]`；
 - `facts[fact_id]`；
@@ -48,6 +48,7 @@ program_index/ProgramIdentity
 - `dataflows[flow_id]`。
 
 候选只保存这些实体的 ID，避免相同 Source、Sink、调用边和源码片段在多个候选中重复持久化。
+片段 ID 基于实际路径、范围、正文、角色和截断/请求范围元数据，不再绑定某个事实 ID；同一物理资源可复用，不同角色/截断信息不能合并。`SourceSlicer` 在本次扫描内缓存已构造片段，避免每条候选及未配对事实重复切片；缓存与源码行缓存均不跨扫描。静态切片使用 `core.redaction`，不再独立维护一套脱敏。
 `DataFlowEvidence.value_boundary_ids` 是可选的状态绑定证据标识，旧产物缺省为空列表；
 不会混入真正的 `call_edge_ids`。状态绑定保持 inferred/may，并将未解析原因和局限传入模型。
 
@@ -68,7 +69,7 @@ ProgramGraphService → CFG → ReachingDefinitions → ValueFlow
             ↓
 StructuralCallPathFinder + SourceSlicer
             ↓
-SecurityEvidencePack 2.3
+SecurityEvidencePack 2.4
 ```
 
 当前默认注册 Python、Java、Go、C/C++、JavaScript/TypeScript 前端。规则覆盖 Python 核心/FastAPI、Java 核心高价值 API、

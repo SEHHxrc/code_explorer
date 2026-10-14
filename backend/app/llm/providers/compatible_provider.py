@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import uuid
 from typing import Any
 from dataclasses import replace
 
@@ -16,6 +15,7 @@ from backend.app.llm.http import post_json
 from backend.app.llm.response_metadata import response_metadata
 from backend.app.llm.conversation import ModelMessage
 from backend.app.llm.budget import validate_provider_request
+from backend.app.llm.settings import ModelLimits, get_model_limits, get_model_request_timeout
 
 
 class OpenAICompatibleProvider(ModelProvider):
@@ -32,9 +32,10 @@ class OpenAICompatibleProvider(ModelProvider):
         base_url: str,
         model: str,
         api_key: str = "",
-        max_output_tokens: int = 2400,
+        max_output_tokens: int | None = 2400,
         output_token_parameter: str = "max_tokens",
         reasoning_effort: str | None = None,
+        model_limits: ModelLimits | None = None,
     ) -> None:
         """保存连接配置，不在构造阶段发起网络请求。"""
         self.name = provider_name
@@ -46,8 +47,8 @@ class OpenAICompatibleProvider(ModelProvider):
             raise ValueError("Unsupported output token parameter")
         self.output_token_parameter = output_token_parameter
         self.reasoning_effort = reasoning_effort
-        from backend.app.llm.settings import get_model_limits
-        self.model_limits = replace(get_model_limits(model), max_output_tokens=max_output_tokens)
+        self.model_limits = replace(model_limits or get_model_limits(model), max_output_tokens=max_output_tokens)
+        self.request_timeout_seconds = get_model_request_timeout()
 
     async def generate(self, *, instructions: str, prompt: str) -> ModelResult:
         """调用 ``/chat/completions`` 生成文本并输出规范化结果。"""
@@ -67,7 +68,8 @@ class OpenAICompatibleProvider(ModelProvider):
         """构造原生会话请求；输出参数和思考强度按显式配置选择，不猜测模型别名。"""
         payload = super().request_payload(instructions=instructions, messages=messages, tools=tools,
                                           tool_choice=tool_choice, max_output_tokens=max_output_tokens)
-        payload[self.output_token_parameter] = payload.pop("max_tokens")
+        if "max_tokens" in payload:
+            payload[self.output_token_parameter] = payload.pop("max_tokens")
         if self.reasoning_effort:
             payload["reasoning_effort"] = self.reasoning_effort
         return payload
@@ -88,23 +90,15 @@ class OpenAICompatibleProvider(ModelProvider):
             f"{self.base_url}/chat/completions",
             request,
             headers,
-            timeout=timeout or 180.0, transient_retries=transient_retries,
+            timeout=self._request_timeout(timeout), transient_retries=transient_retries,
         )
         choices = payload.get("choices") or []
         message = choices[0].get("message", {}) if choices else {}
         calls: list[ToolCall] = []
         for call in message.get("tool_calls") or []:
             function = call.get("function") or {}
-            try:
-                arguments = json.loads(function.get("arguments") or "{}")
-            except json.JSONDecodeError:
-                arguments = {}
             if function.get("name"):
-                calls.append(ToolCall(
-                    id=call.get("id") or uuid.uuid4().hex,
-                    name=function["name"],
-                    arguments=arguments if isinstance(arguments, dict) else {},
-                ))
+                calls.append(ToolCall.from_arguments(function["name"], function.get("arguments"), call.get("id")))
         content = message.get("content") or ""
         if isinstance(content, list):
             content = "".join(item.get("text", "") for item in content if isinstance(item, dict))

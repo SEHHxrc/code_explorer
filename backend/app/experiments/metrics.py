@@ -7,7 +7,7 @@ from typing import Callable
 
 from sqlalchemy.orm import Session
 
-from backend.app.models import AgentEventModel, AgentRunModel, SessionLocal
+from backend.app.models import AgentEventModel, AgentRunModel, ExperimentAuditSessionModel, SessionLocal
 
 
 def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[[], Session] = SessionLocal) -> dict:
@@ -39,8 +39,18 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
         observation_window_version = None
         input_estimates = []
         budget_configurations = []
+        citation_check = None
+        audit_summary = {"status": "unavailable"}
+        contract_hash = None
+        execution_policy = None
+        experiment_protocol = None
+        last_model_payload = {}
         for event in events:
             payload = event.payload or {}
+            if event.event_type == "citations.checked":
+                citation_check = payload
+            elif event.event_type == "audit.completed":
+                audit_summary = payload
             # 失败/取消的运行同样可能已有证据；读取原事件，不回写历史记录。
             result = payload.get("result")
             candidates = list(payload.get("evidence") or [])
@@ -62,8 +72,10 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
                     budget_configurations.append({key: payload.get(key) for key in (
                         "input_token_budget", "max_output_tokens", "context_window_tokens", "capacity_source",
                         "max_context_chars", "safety_margin_tokens", "budget_version", "output_token_parameter", "reasoning_effort",
+                        "output_limit_mode", "output_reserve_tokens", "output_reserve_basis",
                     )} | {"token_count_method": payload["input_token_estimate"].get("method")})
             elif event.event_type == "model.completed":
+                last_model_payload = payload
                 response_chars += int((event.payload or {}).get("response_chars") or 0)
                 if isinstance(payload.get("response_utf8_bytes"), int):
                     output_estimates.append(payload["response_utf8_bytes"])
@@ -77,9 +89,12 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
                         if isinstance(evidence, dict):
                             tool_evidence.add((evidence.get("path"), evidence.get("line"), evidence.get("symbol")))
             elif event.event_type == "run.started":
+                contract_hash = payload.get("contract_hash")
+                execution_policy = payload.get("execution_policy")
+                experiment_protocol = payload.get("experiment_protocol")
                 started_at = event.created_at
                 observation_window_version = (event.payload or {}).get("observation_window_version")
-            elif event.event_type == "run.completed":
+            elif event.event_type in {"run.completed", "run.failed"}:
                 completion = event.payload or {}
             if event.event_type in {"run.completed", "run.failed", "run.cancelled"}:
                 finished_at = event.created_at
@@ -89,6 +104,11 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
             duration_ms = max(0, round((finished_at - started_at).total_seconds() * 1000, 2))
         if started_at and run.created_at:
             queue_duration_ms = max(0, round((started_at - run.created_at).total_seconds() * 1000, 2))
+        # 保留原事件，只覆盖实时存储状态，避免过期正文仍被显示为“已保存”。
+        audit_owner = session.query(ExperimentAuditSessionModel).filter_by(run_id=run_id, user_id=user_id).first()
+        if audit_owner is not None:
+            audit_summary = {**audit_summary, "status": audit_owner.status,
+                             "payload_bytes": audit_owner.payload_bytes, "protected": audit_owner.protected}
         answer_chars = len(run.answer or "")
         model_requests = sum(event.event_type == "model.started" for event in events)
         usage_rows = [metadata.get("usage") or {} for metadata in metadata_rows]
@@ -99,13 +119,33 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
         usage_status = "complete" if model_requests and measured == model_requests else (
             "partial" if any(any(value is not None for value in usage.values()) for usage in usage_rows) else "unavailable"
         )
+        # 逻辑轮次成功不代表重试尝试已报告用量；只读派生，不回写旧事件或补计费。
+        http_attempts = audit_summary.get("actual_requests")
+        unreported_http_attempts = max(0, http_attempts - measured) if isinstance(http_attempts, int) else None
+        if unreported_http_attempts and usage_status == "complete":
+            usage_status = "partial"
 
         def usage_total(key: str) -> int | None:
             """累计供应商确实报告的字段；未知值不当作零，不与字符估算混加。"""
             values = [usage[key] for usage in usage_rows if usage.get(key) is not None]
             return sum(values) if values else None
 
+        # 只读派生诊断：旧版将空工具结束标记误归为实际调用时，不回写原错误或供应商状态。
+        failure_diagnosis = None
+        if run.status == "failed" and last_model_payload.get("returned_tool_calls") == 0 and (
+            (last_model_payload.get("metadata") or {}).get("finish_reason") in {"tool_calls", "function_call"}
+        ):
+            failure_diagnosis = {"code": "tool_finish_without_payload", "source": "derived_from_original_events",
+                "message": "本轮实际工具调用载荷为 0，但供应商结束原因为工具调用；不能据此认定再次请求了工具。原错误与结束状态保持不变。"}
         return {
+            "failure_diagnosis": failure_diagnosis,
+            "citation_check": citation_check,
+            "audit": audit_summary,
+            "contract_hash": contract_hash,
+            "execution_policy": execution_policy,
+            "experiment_protocol": experiment_protocol,
+            "output_diagnostics": completion.get("output_diagnostics"),
+            "max_request_input_estimate": max((item["tokens"] for item in input_estimates), default=None),
             "duration_ms": duration_ms,
             "queue_duration_ms": queue_duration_ms,
             "context_characters": context_chars,
@@ -123,6 +163,9 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
             "budget_configurations": budget_configurations[:1],
             "budget_changed_during_run": any(item != budget_configurations[0] for item in budget_configurations[1:]),
             "usage_status": usage_status,
+            "usage_accounting_scope": "reported_responses_not_provider_invoice",
+            "http_attempts": http_attempts,
+            "unreported_http_attempts": unreported_http_attempts,
             "usage_measured_requests": measured,
             "actual_input_tokens": usage_total("input_tokens"),
             "actual_output_tokens": usage_total("output_tokens"),

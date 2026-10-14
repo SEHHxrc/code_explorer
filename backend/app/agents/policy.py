@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import re
 from pathlib import Path
+from backend.app.core.redaction import redact_secrets as redact_secrets
 
 MAX_SOURCE_BYTES = 1024 * 1024
 MAX_READ_LINES = 200
@@ -16,12 +16,6 @@ TEXT_SUFFIXES = {
     ".html", ".css", ".scss", ".vue", ".svelte", ".gradle", ".properties",
 }
 
-SECRET_PATTERNS = [
-    re.compile(r"(?i)(api[_-]?key|secret|token|password)\s*[:=]\s*(['\"]?)[^\s,'\"]+\2"),
-    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
-]
-
-
 def resolve_project_path(project_root: str | Path, relative_path: str) -> Path:
     """安全解析项目内路径。
 
@@ -35,11 +29,3 @@ def resolve_project_path(project_root: str | Path, relative_path: str) -> Path:
     except ValueError as exc:
         raise ValueError("Path escapes the project workspace") from exc
     return candidate
-
-
-def redact_secrets(text: str) -> str:
-    """遮盖上下文中的常见令牌、密码和私钥标记，输出脱敏文本。"""
-    redacted = text
-    for pattern in SECRET_PATTERNS:
-        redacted = pattern.sub("[REDACTED]", redacted)
-    return redacted

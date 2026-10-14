@@ -11,10 +11,46 @@ from backend.app.services.syntax_analysis import (
     TreeSitterParserPool,
 )
 
-from ..ir import SecurityProgramIR
+from ..ir import SecurityProgramIR, IRLocation
+from backend.app.services.program_index import ProgramIdentity
+from backend.app.services.syntax_analysis import text, walk_named
 from backend.app.services.syntax_analysis.javascript import parser_for_file
 from backend.app.services.syntax_analysis.source_units import SourceUnit, source_unit
 from .base import LanguageFrontend
+
+
+class TreeSitterIRCollector:
+    """文件级收集器共用纯节点操作；不合并语言声明、字面量或调用绑定语义。"""
+
+    path: str
+    source: bytes
+    _walk = staticmethod(walk_named)
+
+    def _text(self, node: Any | None) -> str:
+        """读取当前文件节点对应的 UTF-8 文本，无节点时返回空字符串。"""
+        return text(node, self.source)
+
+    def _identifiers(self, node: Any | None) -> tuple[str, ...]:
+        """按具名节点源码顺序提取 identifier 并稳定去重，不扩大语言标识符范围。"""
+        if node is None:
+            return ()
+        return tuple(dict.fromkeys(name for item in self._walk(node)
+                                   if item.type == "identifier" and (name := self._text(item))))
+
+    def _location(self, node: Any) -> IRLocation:
+        """把零基 AST 坐标转换为同一项目位置身份，保持四个坐标与文件路径。"""
+        line, column = int(node.start_point[0]) + 1, int(node.start_point[1]) + 1
+        end_line, end_column = int(node.end_point[0]) + 1, int(node.end_point[1]) + 1
+        return IRLocation(path=self.path, line=line, column=column, end_line=end_line, end_column=end_column,
+                          location_id=ProgramIdentity.location_id(self.path, line, column, end_line, end_column))
+
+    @classmethod
+    def _descendants(cls, node: Any | None, node_types: set[str], *, include_root: bool = False) -> list[Any]:
+        """按原始源码顺序选择指定类型后代；缺省不包含根，不改变遍历或作用域规则。"""
+        if node is None:
+            return []
+        nodes = cls._walk(node)
+        return [item for item in (nodes if include_root else nodes[1:]) if item.type in node_types]
 
 
 class TreeSitterSecurityFrontend(LanguageFrontend):

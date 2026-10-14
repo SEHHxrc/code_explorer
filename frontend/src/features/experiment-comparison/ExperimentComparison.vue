@@ -8,7 +8,7 @@
           <span class="subtitle">同一问题、同一模型、同一步骤预算</span>
         </div>
         <el-tag v-if="comparison" :type="completed ? 'success' : 'primary'" size="small">
-          {{ completed ? (comparison.valid_for_review ? '等待盲评' : '运行失败或回答完整性未通过') : '两组运行中' }}
+          {{ completed ? (comparison.reviewed ? '已保存盲评' : comparison.valid_for_review ? '等待盲评' : '运行失败或回答完整性未通过') : '两组运行中' }}
         </el-tag>
       </div>
     </template>
@@ -23,6 +23,8 @@
 
     <el-alert v-if="comparison?.quality_warnings?.length" :title="comparison.quality_warnings.join(' ')"
       type="warning" :closable="false" show-icon />
+
+    <ExperimentHistory :project-id="projectId" :refresh-key="historyRefresh" @open="openHistory" />
 
     <div class="setup">
       <el-input
@@ -67,6 +69,14 @@
           <div><dt>用量记录</dt><dd>{{ usageLabel(lane) }}</dd></div>
           <div><dt>供应商终止原因</dt><dd>{{ finishReasons(lane) }}</dd></div>
           <div><dt>回答完整性</dt><dd>{{ completenessLabel(lane) }}</dd></div>
+          <div><dt>调查轮次上限</dt><dd>{{ laneMetrics(lane).execution_policy?.max_tool_rounds ?? '—' }}</dd></div>
+          <div><dt>最终报告模式</dt><dd>{{ reportModeLabel(lane) }}</dd></div>
+          <div>
+            <el-tooltip content="所有请求中最大的单次完整请求估算；下方累计值是多轮之和，不是单次上下文大小">
+              <dt>最大单次输入估算</dt>
+            </el-tooltip>
+            <dd>≈ {{ metric(lane, 'max_request_input_estimate') }}</dd>
+          </div>
           <div>
             <el-tooltip content="新记录按每轮完整请求 JSON 的 UTF-8 字节保守估算，包含指令、工具定义和会话；旧记录沿用其历史估算方式，不是供应商真实 usage">
               <dt>累计输入估算</dt>
@@ -87,11 +97,32 @@
             <dd>{{ metric(lane, 'evidence_count') }}</dd>
           </div>
         </dl>
+        <p class="audit-note">审计：{{ auditLabel(lane) }}。引用检查仅做机械核对，不代表结论正确。</p>
+        <p v-if="laneMetrics(lane).failure_diagnosis" class="audit-note">当前诊断：{{ laneMetrics(lane).failure_diagnosis.message }}</p>
+        <ul v-if="laneMetrics(lane).citation_check?.warnings?.length" class="citation-warnings">
+          <li v-for="(warning, index) in laneMetrics(lane).citation_check.warnings" :key="index">
+            {{ warning.path }}<template v-if="warning.start_line != null">:{{ warning.start_line }}–{{ warning.end_line }}</template>：{{ citationReason(warning.reason) }}<template v-if="warning.resolved_path">（核对提示：{{ warning.resolved_path }}，未改写原文）</template>
+          </li>
+        </ul>
+        <el-button v-if="reveal || (completed && !comparison.valid_for_review)" size="small" plain @click="inspectAudit(lane)">
+          查看脱敏审计（管理员）
+        </el-button>
         <el-tag v-if="reveal" class="reveal" effect="dark" :type="reveal[lane] === 'security_evidence' ? 'success' : 'warning'">
           {{ strategyLabel(reveal[lane]) }}
         </el-tag>
       </section>
     </div>
+    <el-dialog v-model="auditVisible" title="实验审计：仅可见内容，非语义验证" width="85%" @closed="auditText = ''">
+      <pre class="audit-body">{{ auditText }}</pre>
+    </el-dialog>
+    <details v-if="comparison?.lanes?.left?.prompt_snapshot" class="audit-note">
+      <summary>历史提示词与运行条件（原快照，不是当前设置）</summary>
+      <section v-for="lane in laneNames" :key="lane">
+        <strong>{{ lane === 'left' ? '左侧' : '右侧' }}</strong>
+        <pre class="audit-body">{{ comparison.lanes[lane].prompt_snapshot?.instructions || '提示词未记录或审计已过期。' }}</pre>
+        <pre class="audit-body">{{ JSON.stringify(historyConditions(comparison.lanes[lane]), null, 2) }}</pre>
+      </section>
+    </details>
 
     <div v-if="completed && comparison.valid_for_review && !reveal" class="review">
       <h4>揭盲前评分</h4>
@@ -121,12 +152,16 @@
 
 <script setup>
 import { computed, onUnmounted, reactive, ref, watch } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiErrorMessage } from '../../services/httpClient.js'
+import ExperimentHistory from './ExperimentHistory.vue'
+import { historyConditions } from './history.js'
 import {
   createExperimentComparison,
   reviewExperimentComparison,
   streamExperimentComparison,
+  readExperimentAudit,
+  readExperimentHistory,
 } from '../../services/experimentApi.js'
 
 const props = defineProps({
@@ -140,6 +175,8 @@ const comparison = ref(null)
 const reveal = ref(null)
 const running = ref(false)
 const reviewing = ref(false)
+const auditVisible = ref(false)
+const auditText = ref('')
 const preferredLane = ref('tie')
 const notes = ref('')
 const scores = reactive({
@@ -147,6 +184,8 @@ const scores = reactive({
   right: { correctness: 3, completeness: 3, evidence: 3, hallucination_control: 3 },
 })
 let controller = null
+let generation = 0
+const historyRefresh = ref(0)
 
 const completed = computed(() => comparison.value?.status === 'completed')
 const laneRun = (lane) => comparison.value?.lanes?.[lane]?.run
@@ -155,6 +194,28 @@ const laneMetrics = (lane) => comparison.value?.lanes?.[lane]?.metrics || {}
 const usageLabel = (lane) => ({ complete: '全部请求已报告', partial: '仅部分请求/字段，非完整总量', unavailable: '供应商未报告或历史未记录' }[laneMetrics(lane).usage_status] || '未知')
 const completenessLabel = (lane) => ({ complete: '生成及格式完整（非覆盖完整）', incomplete: '未通过', unknown: '未知，不能认定完整' }[laneMetrics(lane).answer_completeness?.status] || '未知')
 const finishReasons = (lane) => laneMetrics(lane).finish_reasons?.join(' / ') || '未记录'
+const reportModeLabel = (lane) => ({ tools_none: '保留定义，禁用新工具', history_no_tools: '无工具定义，保留有效历史' }[laneMetrics(lane).execution_policy?.final_report_mode] || '历史未记录')
+const auditLabel = (lane) => ({ complete: '可见传输记录已保存', incomplete: '审计不完整', expired: '正文已按保留策略过期清理', reserved: '已预留，等待运行', recording: '正在记录', unavailable: '历史未记录' }[laneMetrics(lane).audit?.status] || '历史未记录')
+const citationReason = (reason) => ({ path_outside_snapshot: '路径不在允许范围', path_not_in_snapshot: '快照中无此文件',
+  citation_syntax_invalid: '引用格式不规范，未认定为虚构证据', path_abbreviation_resolved: '路径简称可唯一对应，但不符合完整路径规范',
+  path_ambiguous: '同名/简称对应多个文件，不能自动猜测',
+  invalid_line_range: '行范围无效', line_count_unavailable: '无法核对行数', line_out_of_range: '行号超出文件',
+  source_not_shown: '未确认对应源码已展示', seen_earlier_not_in_final_request: '曾展示，但最终请求中已省略' }[reason] || reason)
+
+const inspectAudit = async (lane) => {
+  const comparisonId = comparison.value?.id
+  if (!comparisonId) return
+  try {
+    const { value } = await ElMessageBox.prompt('完整审计可能暴露组别。请输入本机管理员审计口令；口令仅用于本次请求，不会保存。', '显式读取审计', { inputType: 'password' })
+    if (comparison.value?.id !== comparisonId) return
+    const result = await readExperimentAudit(comparisonId, lane, value, !reveal.value)
+    if (comparison.value?.id !== comparisonId) return
+    auditText.value = JSON.stringify(result, null, 2)
+    auditVisible.value = true
+  } catch (error) {
+    if (error !== 'cancel' && error !== 'close') ElMessage.error(apiErrorMessage(error, '无法读取审计'))
+  }
+}
 const metric = (lane, name, suffix = '') => {
   const value = comparison.value?.lanes?.[lane]?.metrics?.[name]
   return value === null || value === undefined ? '—' : String(value) + suffix
@@ -175,36 +236,76 @@ const strategyLabel = (strategy) => (
 )
 
 const reset = () => {
+  generation++
   controller?.abort()
   controller = null
   comparison.value = null
   reveal.value = null
   running.value = false
+  auditVisible.value = false
+  auditText.value = ''
+  reviewing.value = false
+  preferredLane.value = 'tie'
+  notes.value = ''
+  for (const lane of laneNames) Object.assign(scores[lane], { correctness: 3, completeness: 3, evidence: 3, hallucination_control: 3 })
 }
 watch(() => props.projectId, reset)
+
+const openHistory = async (comparisonId) => {
+  reset()
+  const ticket = generation
+  const stream = new AbortController()
+  controller = stream
+  running.value = true
+  try {
+    const result = await readExperimentHistory(comparisonId)
+    if (ticket !== generation) return
+    comparison.value = result
+    question.value = result.question
+    reveal.value = result.reveal
+    if (result.review) {
+      preferredLane.value = result.review.preferred_lane
+      notes.value = result.review.notes || ''
+      for (const lane of laneNames) Object.assign(scores[lane], result.review.scores[lane])
+    }
+    if (result.status !== 'completed') await streamExperimentComparison(result.events_url, (snapshot) => {
+      if (ticket === generation) comparison.value = snapshot
+    }, stream.signal)
+  } catch (error) {
+    if (ticket === generation && error.name !== 'AbortError') ElMessage.error(apiErrorMessage(error, '读取历史实验失败'))
+  } finally {
+    if (ticket === generation) { running.value = false; controller = null; historyRefresh.value++ }
+  }
+}
 
 const start = async () => {
   const text = question.value.trim()
   if (!text || running.value) return
   reset()
+  const ticket = generation
+  const projectId = props.projectId
   running.value = true
-  controller = new AbortController()
+  const stream = new AbortController()
+  controller = stream
   try {
-    comparison.value = await createExperimentComparison(props.projectId, { question: text, max_steps: 4 })
+    const result = await createExperimentComparison(projectId, { question: text, max_steps: 4 })
+    if (ticket !== generation) return
+    comparison.value = result
+    historyRefresh.value++
     await streamExperimentComparison(comparison.value.events_url, (snapshot) => {
-      comparison.value = snapshot
-    }, controller.signal)
+      if (ticket === generation) comparison.value = snapshot
+    }, stream.signal)
   } catch (error) {
-    if (error.name !== 'AbortError') ElMessage.error(apiErrorMessage(error, '无法启动配对实验'))
+    if (ticket === generation && error.name !== 'AbortError') ElMessage.error(apiErrorMessage(error, '无法启动配对实验'))
   } finally {
-    running.value = false
-    controller = null
+    if (ticket === generation) { running.value = false; controller = null; historyRefresh.value++ }
   }
 }
 
 const submitReview = async () => {
   if (!comparison.value || reviewing.value) return
   reviewing.value = true
+  const ticket = generation
   try {
     const result = await reviewExperimentComparison(comparison.value.id, {
       preferred_lane: preferredLane.value,
@@ -212,16 +313,19 @@ const submitReview = async () => {
       right: { ...scores.right },
       notes: notes.value,
     })
+    if (ticket !== generation) return
     reveal.value = result.reveal
+    comparison.value.reviewed = true
+    historyRefresh.value++
     ElMessage.success('评分已保存，实验组身份已揭示。')
   } catch (error) {
-    ElMessage.error(apiErrorMessage(error, '保存盲评失败'))
+    if (ticket === generation) ElMessage.error(apiErrorMessage(error, '保存盲评失败'))
   } finally {
-    reviewing.value = false
+    if (ticket === generation) reviewing.value = false
   }
 }
 
-onUnmounted(() => controller?.abort())
+onUnmounted(reset)
 </script>
 
 <style scoped>
@@ -239,6 +343,8 @@ onUnmounted(() => controller?.abort())
 .metrics dt { color: #909399; font-size: 10px; }
 .metrics dd { margin: 3px 0 0; color: #303133; font-size: 12px; }
 .reveal { margin-top: 12px; }
+.audit-note, .citation-warnings { font-size: 12px; color: #909399; overflow-wrap: anywhere; }
+.audit-body { max-height: 65vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .review { margin-top: 18px; padding-top: 14px; border-top: 1px solid #ebeef5; }
 .review h4 { margin: 0 0 12px; }
 .score-grid { display: grid; grid-template-columns: 80px repeat(4, minmax(130px, 1fr)); align-items: center; gap: 9px; overflow-x: auto; }

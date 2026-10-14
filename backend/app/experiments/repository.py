@@ -5,9 +5,9 @@ TEMPORARY CONTROL GROUP / 临时对照组：baseline 字段只为实验存在，
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Callable
+from typing import Any, Callable
 
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from backend.app.agents.contracts import AgentRunRequest
 
@@ -18,7 +18,12 @@ from backend.app.models import (
     AgentJobModel,
     ExperimentReviewModel,
     SessionLocal,
+    ExperimentAuditSessionModel,
 )
+from .audit.repository import AuditRepository, lock_writes
+from .audit.policy import contract_digest
+from backend.app.agents.reporting import execution_policy
+from backend.app.llm.settings import get_final_report_mode
 
 
 @dataclass(frozen=True)
@@ -33,6 +38,7 @@ class ComparisonRecord:
     graph_run_id: str
     blind_order: dict[str, str]
     execution_order: list[str]
+    created_at: datetime | None = None
 
 
 class ExperimentRepository:
@@ -66,7 +72,16 @@ class ExperimentRepository:
         """同一数据库事务创建随机排序的两个运行、队列项和配对，失败整体回滚。"""
         session = self.session_factory()
         try:
+            from .context import SECURITY_EXPERIMENT_INSTRUCTIONS
+            from .report import REPORT_VERSION
+            from .tools import create_experiment_tool_registry
+            lock_writes(session)
             identifiers = {"baseline": record.baseline_run_id, "security_evidence": record.graph_run_id}
+            contract = contract_digest(SECURITY_EXPERIMENT_INSTRUCTIONS,
+                                       create_experiment_tool_registry().schemas(), REPORT_VERSION,
+                                       execution_policy(request.max_steps, get_final_report_mode()))
+            AuditRepository(self.session_factory).reserve_pair(session, record.comparison_id, record.project_id,
+                                                               record.user_id, list(identifiers.values()), contract)
             now = datetime.now(timezone.utc)
             for index, strategy in enumerate(record.execution_order):
                 run_id = identifiers[strategy]
@@ -108,9 +123,45 @@ class ExperimentRepository:
                 graph_run_id=row.graph_run_id,
                 blind_order=dict(row.blind_order),
                 execution_order=list(row.execution_order),
+                created_at=row.created_at,
             )
         finally:
             session.close()
+
+    def list_for_project(self, project_id: str, user_id: str, *, offset: int = 0, limit: int = 20) -> dict[str, Any]:
+        """分页返回项目的盲态摘要，包含所有终态；不加载回答、事件、工具或审计正文。"""
+        baseline, security = aliased(AgentRunModel), aliased(AgentRunModel)
+        with self.session_factory() as session:
+            query = session.query(ExperimentComparisonModel).filter_by(project_id=project_id, user_id=user_id)
+            total = query.count()
+            reviewed = session.query(ExperimentReviewModel.id).filter(
+                ExperimentReviewModel.comparison_id == ExperimentComparisonModel.id,
+                ExperimentReviewModel.user_id == user_id,
+            ).exists()
+            rows = query.with_entities(
+                ExperimentComparisonModel.id, ExperimentComparisonModel.created_at,
+                ExperimentComparisonModel.question, ExperimentComparisonModel.blind_order,
+                baseline.status, baseline.model, baseline.max_steps,
+                security.status, security.model, security.max_steps, reviewed,
+            ).outerjoin(baseline, (baseline.id == ExperimentComparisonModel.baseline_run_id) & (baseline.user_id == user_id)).outerjoin(
+                security, (security.id == ExperimentComparisonModel.graph_run_id) & (security.user_id == user_id),
+            ).order_by(ExperimentComparisonModel.created_at.desc(), ExperimentComparisonModel.id.desc()).offset(offset).limit(limit).all()
+            items = []
+            for row in rows:
+                runs = {"baseline": {"status": row[4], "model": row[5], "max_steps": row[6]},
+                        "security_evidence": {"status": row[7], "model": row[8], "max_steps": row[9]}}
+                runs["graph"] = runs["security_evidence"]  # 仅为读取旧记录，不创建旧图实验。
+                items.append({"id": row[0], "created_at": row[1], "question_preview": row[2][:240],
+                              "lanes": {lane: runs.get(strategy, {}) for lane, strategy in row[3].items()},
+                              "reviewed": bool(row[10])})
+            return {"items": items, "total": total, "offset": offset, "limit": limit,
+                    "has_more": offset + len(items) < total}
+
+    def get_review(self, comparison_id: str, user_id: str) -> dict[str, Any] | None:
+        """读取已保存的评分和备注；不保存新的评审或改变揭盲状态。"""
+        with self.session_factory() as session:
+            row = session.query(ExperimentReviewModel).filter_by(comparison_id=comparison_id, user_id=user_id).first()
+            return {"preferred_lane": row.preferred_lane, "scores": row.scores, "notes": row.notes} if row else None
 
     def save_review(self, comparison_id: str, user_id: str, review: BlindReviewRequest) -> None:
         """新增或更新当前用户提交的盲评结果。"""
@@ -134,6 +185,9 @@ class ExperimentRepository:
                     user_id=user_id,
                     **values,
                 ))
+            session.query(ExperimentAuditSessionModel).filter_by(comparison_id=comparison_id, user_id=user_id).update(
+                {"protected": True}, synchronize_session=False,
+            )
             session.commit()
         except Exception:
             session.rollback()

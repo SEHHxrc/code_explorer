@@ -142,6 +142,9 @@ class ProjectImportTransaction:
                 self.workspace.mark_rollback_failed(operation)
             except Exception:
                 logger.exception("Unable to persist rollback failure state")
+        logger.log(logging.WARNING if failed else logging.INFO, "project.import_rollback", extra={
+            "project_id": operation.project_id, "operation_id": operation.operation_id,
+            "stage": "partial_failure" if failed else "rolled_back", "count": len(removed)})
         return RollbackResult(removed_resources=removed, failed_resources=failed)
 
     def _require_operation(self) -> WorkspaceOperation:

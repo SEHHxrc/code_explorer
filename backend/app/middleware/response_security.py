@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import re
 import time
 import uuid
@@ -11,6 +12,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
+from backend.app.core.logging import log_context
+
+logger = logging.getLogger(__name__)
 
 _REQUEST_ID = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 _DEFAULT_MAX_REQUEST_BYTES = 220 * 1024 * 1024
@@ -50,9 +54,17 @@ def setup_response_security(app: FastAPI) -> None:
                         "data": None,
                     },
                 )
+                logger.warning("http.response_started", extra={"request_id": request_id, "method": request.method,
+                    "route": "<body_limit>", "status_code": 413, "duration_ms": (time.perf_counter() - started_at) * 1000})
                 return _secure(response, request_id, started_at, request.url.path)
 
-        response = await call_next(request)
+        with log_context(request_id=request_id):
+            response = await call_next(request)
+            route = getattr(request.scope.get("route"), "path", "<unmatched>")
+            # GET 轮询/健康检查只记 DEBUG，避免进度查询挤满 INFO；失败仍记录。
+            level = logging.WARNING if response.status_code >= 400 else (logging.DEBUG if request.method == "GET" else logging.INFO)
+            logger.log(level, "http.response_started", extra={"method": request.method, "route": route,
+                "status_code": response.status_code, "duration_ms": (time.perf_counter() - started_at) * 1000})
         return _secure(response, request_id, started_at, request.url.path)
 
 

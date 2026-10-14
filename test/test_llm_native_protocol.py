@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 from backend.app.agents.conversation_window import ToolRound, render_conversation_window
 from backend.app.llm.budget import BudgetPlanner, ModelBudgetError, request_payload
+from backend.app.llm.base import ToolCall
 from backend.app.llm.conversation import ModelMessage, validate_messages
 from backend.app.llm.diagnostics import probe_model_connection
 from backend.app.llm.providers.compatible_provider import OpenAICompatibleProvider
@@ -30,6 +31,14 @@ def sample_round(call_id: str = "c1", text: str = "1: value = input()") -> ToolR
 
 class NativeProtocolTests(unittest.TestCase):
     """校验协议与窗口的公共安全不变量。"""
+
+    def test_shared_argument_parser_preserves_protocol_behavior(self) -> None:
+        """两种适配器共用解析后，错误 JSON、非对象、缺失 ID 行为不变。"""
+        for raw, expected in ((None, {}), ("", {}), ("broken", {}), ("null", {}),
+                              ("[]", {}), ('{"path":"main.py"}', {"path": "main.py"})):
+            call = ToolCall.from_arguments("read", raw, "call1")
+            self.assertEqual(("call1", "read", expected), (call.id, call.name, call.arguments))
+        self.assertTrue(ToolCall.from_arguments("read", "{}").id)
 
     def test_rejects_orphan_duplicate_and_missing_results(self) -> None:
         """不能让压缩产生孤立工具结果、重复调用或无结果调用。"""

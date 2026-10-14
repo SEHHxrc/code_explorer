@@ -111,6 +111,8 @@ class ProjectDeletionService:
                 self.journal.transition(operation, "cleanup_pending")
             except Exception:
                 logger.exception("Unable to mark project deletion cleanup pending")
+        logger.info("project.deletion_completed", extra={"project_id": project_id,
+            "stage": "cleanup_pending" if warnings else "deleted", "count": len(warnings)})
         return ProjectDeletionResult(project_id=project_id, warnings=warnings)
 
     def _restore(

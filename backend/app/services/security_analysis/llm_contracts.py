@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 from .contracts import CodeSnippet, EvidenceLocation, SecurityEntrypoint
 
+LLM_SECURITY_SCHEMA_VERSION: Literal["1.4"] = "1.4"
+
 
 class LLMSecurityEndpoint(BaseModel):
     """LLM 判断漏洞所需的 Source 或 Sink 端点。"""
@@ -53,7 +55,7 @@ class LLMRelatedFact(BaseModel):
 
 
 class LLMSecurityFinding(BaseModel):
-    """供模型独立判断的一条自包含安全候选档案。"""
+    """安全候选；端点/路径自包含，片段正文引用同页共享表，不依赖外部查询。"""
 
     finding_id: str
     fingerprint: str
@@ -74,7 +76,7 @@ class LLMSecurityFinding(BaseModel):
     flow: list[LLMFlowStep] = Field(default_factory=list)
     guards: list[LLMRelatedFact] = Field(default_factory=list)
     sanitizers: list[LLMRelatedFact] = Field(default_factory=list)
-    snippets: list[CodeSnippet] = Field(default_factory=list)
+    snippet_ids: list[str] = Field(default_factory=list)
     preconditions: list[str] = Field(default_factory=list)
     unresolved: list[dict[str, Any]] = Field(default_factory=list)
     limitations: list[str] = Field(default_factory=list)
@@ -94,13 +96,13 @@ class LLMSecurityObservation(BaseModel):
     provenance: Literal["observed", "inferred"]
     trust_class: str
     claim: Literal["rule_match_only"] = "rule_match_only"
-    snippet: CodeSnippet | None = None
+    snippet_id: str | None = None
 
 
 class LLMSecurityEvidenceEnvelope(BaseModel):
     """不含完整依赖图、Repo Map 或系统生成推断的 LLM 输入。"""
 
-    schema_version: Literal["1.0", "1.1", "1.2", "1.3"] = "1.3"
+    schema_version: Literal["1.4"] = LLM_SECURITY_SCHEMA_VERSION
     kind: Literal["static_security_evidence"] = "static_security_evidence"
     source_schema_version: str
     analysis: dict[str, Any]
@@ -108,7 +110,12 @@ class LLMSecurityEvidenceEnvelope(BaseModel):
     findings: list[LLMSecurityFinding] = Field(default_factory=list)
     entrypoints: list[SecurityEntrypoint] = Field(default_factory=list)
     observations: list[LLMSecurityObservation] = Field(default_factory=list)
+    snippets: dict[str, CodeSnippet] = Field(default_factory=dict)
     omitted_entrypoints: int = Field(default=0, ge=0)
     omitted_observations: int = Field(default=0, ge=0)
     omitted_findings: int = Field(default=0, ge=0)
     truncated: bool = False
+
+    def to_json(self) -> str:
+        """所有模型输入入口共用的紧凑序列化；完整保留已选片段及其引用。"""
+        return self.model_dump_json(exclude_none=True)

@@ -19,6 +19,7 @@ from .tree_parser import (
     normalize_type,
     split_qualified,
     text,
+    walk_named,
 )
 
 __all__ = [
@@ -40,4 +41,5 @@ __all__ = [
     "split_qualified",
     "text",
     "unwrap_c_declarator",
+    "walk_named",
 ]

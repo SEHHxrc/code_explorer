@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -15,6 +16,7 @@ from backend.app.services.code_intelligence.repo_map_builder import build_repo_m
 from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
 from backend.app.services.reports.overview_report import render_deterministic_overview
 from backend.app.services.security_analysis import SecurityAnalysisService, SecurityEvidencePack
+from backend.app.services.syntax_analysis.parser_runtime import ParserUnavailableError
 
 from .graph_exchange import GraphExchangeNormalizer
 from .progress import AnalysisProgressReporter, report_progress
@@ -24,6 +26,15 @@ logger = logging.getLogger(__name__)
 
 class ProjectAnalysisPipelineError(Exception):
     """纯项目分析流水线无法产生可信结果。"""
+
+
+class ProjectAnalysisPrerequisiteError(ProjectAnalysisPipelineError):
+    """分析资源不可用；消息由受信运行设施构造，可以安全展示。"""
+
+    def __init__(self, public_message: str) -> None:
+        """保存不含源码或内部路径的环境诊断。"""
+        self.public_message = public_message
+        super().__init__(public_message)
 
 
 @dataclass(frozen=True)
@@ -63,6 +74,7 @@ class ProjectAnalysisPipeline:
         progress: AnalysisProgressReporter | None = None,
     ) -> ProjectAnalysisBundle:
         """分析已存在的源码目录并返回不含持久化副作用的完整结果。"""
+        started = time.monotonic()
         analysis = self._run_dependency_analysis(project_root, max_workers, progress=progress)
         raw_graph = analysis["dependency_graph"]
         file_symbols = analysis["file_symbols"]
@@ -79,6 +91,9 @@ class ProjectAnalysisPipeline:
         manifest = ProjectManifestBuilder(project_root).build(raw_graph)
         repo_map = build_repo_map(manifest, file_symbols)
         overview = render_deterministic_overview(manifest)
+        logger.info("analysis.completed", extra={"duration_ms": round((time.monotonic() - started) * 1000, 2),
+            "file_count": len(file_symbols), "node_count": len(raw_graph.get("nodes", [])),
+            "stage": "completed" if security_evidence.completed else "partial_security_analysis"})
         return ProjectAnalysisBundle(
             raw_graph=raw_graph,
             file_symbols=file_symbols,
@@ -123,6 +138,8 @@ class ProjectAnalysisPipeline:
                 "stats": stats,
                 "diagnostics": diagnostics,
             }
+        except ParserUnavailableError as exc:
+            raise ProjectAnalysisPrerequisiteError(exc.public_message) from exc
         except Exception as exc:
             logger.exception("Dependency analysis failed for imported project")
             raise ProjectAnalysisPipelineError("Project analysis pipeline failed") from exc
@@ -163,4 +180,5 @@ __all__ = [
     "ProjectAnalysisBundle",
     "ProjectAnalysisPipeline",
     "ProjectAnalysisPipelineError",
+    "ProjectAnalysisPrerequisiteError",
 ]

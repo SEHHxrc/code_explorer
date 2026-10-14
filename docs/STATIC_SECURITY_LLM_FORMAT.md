@@ -4,8 +4,8 @@
 
 本项目不把完整依赖图、完整 AST、完整 SARIF 或全部源码直接交给模型，而使用两层协议：
 
-1. `SecurityEvidencePack 2.3` 是服务器内部的完整、规范化、可恢复产物，并兼容读取 2.1/2.2；
-2. `LLMSecurityEvidenceEnvelope 1.3` 是按问题、风险和字符预算生成的模型输入（兼容 1.0～1.2）。
+1. `SecurityEvidencePack 2.4` 是服务器内部的完整、规范化、可恢复产物，并兼容读取 2.1/2.2/2.3；
+2. `LLMSecurityEvidenceEnvelope 1.4` 是按问题、风险和字符预算生成的模型输入；历史 1.0～1.3 正文原样保存，不按新协议回填。
 
 这种分层避免为了节省 Prompt 而删除原始静态分析信息，也避免把内部分析数据库原样发送给模型。
 
@@ -53,7 +53,7 @@ CFG 会参与到达定义计算，但当前不求解路径条件，也不证明�
 ### 信息密度
 
 - 持久化层通过 ID 注册表去重；
-- LLM 层按候选解引用，避免要求模型在多个注册表之间自行联结；
+- LLM 层直接呈现 Source/Sink、路径和安全语义，仅片段正文引用同页 `snippets` 表，不要求外部查询或跨页联结；
 - Source 和 Sink 独立呈现，中间流只保留必要赋值或调用步骤；
 - 长路径均匀采样且保留首尾，最多十个中间步骤；
 - 使用紧凑但仍具语义的 JSON 字段名，不使用难以理解的单字母缩写；
@@ -62,13 +62,15 @@ CFG 会参与到达定义计算，但当前不求解路径条件，也不证明�
 
 前三项优先于体积。如果删除字段会造成证据语义、位置、局限或利用前提缺失，则保留字段并减少候选数量。
 
+重复的根因是旧版在每条候选中重新嵌入已去重的片段，不是 Source/Sink 路径本身冗余。1.4 在构造候选时同步注册片段，预算按唯一资源检查，省略候选不会留下未使用正文；观察压缩也必须一起保留引用所需资源。不同角色、路径、截断/请求范围不得只因文本相同而合并；重叠但不相同的片段不自动拼接。资源 ID 在切片生成处按完整资源内容定义，并在单次扫描内复用切片。原始事实/规则/候选与旧实验记录不修改。
+
 ## 4. LLM 输入示例
 
 ```json
 {
-  "schema_version": "1.3",
+  "schema_version": "1.4",
   "kind": "static_security_evidence",
-  "source_schema_version": "2.3",
+  "source_schema_version": "2.4",
   "analysis": {
     "dataflow_scope": {
       "kind": "cfg_value_flow_with_bounded_calls",
@@ -117,8 +119,13 @@ CFG 会参与到达定义计算，但当前不求解路径条件，也不证明�
       "provenance": "inferred"
     }],
     "preconditions": [],
+    "snippet_ids": ["snippet:source", "snippet:sink"],
     "limitations": ["CFG 未证明路径条件可满足；跨过程返回仅覆盖局部变量直接接收的调用结果。"]
   }],
+  "snippets": {
+    "snippet:source": {"snippet_id": "snippet:source", "role": "source", "path": "app.py", "start_line": 12, "end_line": 12, "text": "12: def run(command: str):", "truncated": false},
+    "snippet:sink": {"snippet_id": "snippet:sink", "role": "sink", "path": "app.py", "start_line": 15, "end_line": 15, "text": "15:     subprocess.run(command, shell=True)", "truncated": false}
+  },
   "omitted_findings": 0,
   "truncated": false
 }

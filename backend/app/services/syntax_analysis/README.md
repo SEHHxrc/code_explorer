@@ -6,10 +6,12 @@
 当前公共入口包括：
 
 - `TreeSitterParserPool`：按线程和语言复用 Parser；
+- `parser_runtime.py`：`prepare_parsers()` 是安装/迁移入口，固定并准备服务端解析器缓存；正常分析通过 `require_local_grammars()` 只使用本地资源，缺少资源立即失败，不逐文件联网重试。依赖图在分析前检查资源，单文件前端也使用同一运行约束。
 - `SOURCE_LANGUAGE_BY_EXTENSION/extensions_for_language()`：所有分析器共用的语言扩展名目录；
 - `IGNORED_SOURCE_DIRECTORIES`：回退源码发现的统一忽略目录；
 - `text/field/fields`：容错读取节点源码和命名字段；
 - `first_of/descend_for`：有界节点查找；
+- `walk_named`：含根的源码顺序具名子树遍历；安全 IR 文件收集器复用，避免各语言复制相同循环；不涉及值传播或作用域判定。
 - `normalize_type/split_qualified`：跨语言类型和限定名称文本归一化。
 - `javascript.py`：JS/TS 函数名称、参数语法和按扩展名选择 TSX grammar 的共同入口；依赖图、安全前端与公共程序图复用匿名函数身份，三种静态分析复用 parser 选择。
 - `javascript_bindings.py`：将对象/数组、默认值、rest 和静态计算键转换为公共绑定 IR，安全前端与程序图共同消费；函数值保持不透明，不把函数体当立即执行的表达式。

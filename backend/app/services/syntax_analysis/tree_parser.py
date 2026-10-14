@@ -10,6 +10,8 @@ from typing import Any, cast
 import tree_sitter
 from tree_sitter_language_pack import get_parser
 
+from .parser_runtime import ParserUnavailableError, require_local_grammars
+
 
 class TreeSitterParserPool:
     """在线程本地缓存语言解析器，避免跨线程共享可变 Parser。"""
@@ -17,6 +19,14 @@ class TreeSitterParserPool:
     def __init__(self) -> None:
         """初始化线程本地解析器容器。"""
         self._local = threading.local()
+        self._load_lock = threading.Lock()
+        self._failures: set[str] = set()
+
+    def ensure_available(self, languages: set[str]) -> None:
+        """分析前加载所有实际需要的语法；资源失败不进入逐文件扫描。"""
+        require_local_grammars(languages)
+        for language in sorted(languages):
+            self.get(language)
 
     def get(self, language: str) -> tree_sitter.Parser:
         """返回当前线程指定语言的解析器，不存在时按需创建。"""
@@ -26,7 +36,15 @@ class TreeSitterParserPool:
             self._local.parsers = parsers
         parser = parsers.get(language)
         if parser is None:
-            parser = get_parser(cast(Any, language))
+            with self._load_lock:
+                if language in self._failures:
+                    raise ParserUnavailableError({language})
+                require_local_grammars({language})
+                try:
+                    parser = get_parser(cast(Any, language))
+                except Exception as exc:
+                    self._failures.add(language)
+                    raise ParserUnavailableError({language}) from exc
             parsers[language] = parser
         return parser
 
@@ -73,6 +91,17 @@ def first_of(
         (child for child in node.named_children if child.type in node_types),
         None,
     )
+
+
+def walk_named(node: tree_sitter.Node) -> list[tree_sitter.Node]:
+    """按源码顺序遍历含根的具名子树；语言前端共用，不引入规则或图语义。"""
+    result = []
+    pending = [node]
+    while pending:
+        current = pending.pop()
+        result.append(current)
+        pending.extend(reversed(current.named_children))
+    return result
 
 
 def descend_for(

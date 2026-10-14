@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urljoin
 import uuid
+from dataclasses import asdict, replace
 
 from backend.app.llm.budget import BudgetPlanner, ModelBudgetError, request_payload
 from backend.app.llm.conversation import ModelMessage
@@ -104,7 +105,7 @@ async def probe_model_connection(model: str | None = None) -> dict[str, Any]:
         return {**_base_result(config, selected_model), "connected": False, "model_accessible": None,
                 "generation_available": False, "agent_compatible": False, "requests_sent": 0,
                 "error_type": "configuration_error", "error_code": "invalid_model_options",
-                "retryable": False, "message": "模型输出参数或分词配置无效；未发送探测请求。"}
+                "retryable": False, "message": "模型输出参数、请求超时或分词配置无效；未发送探测请求。"}
     assert provider is not None
     limits = get_model_limits(selected_model)
     instructions = (
@@ -123,8 +124,8 @@ async def probe_model_connection(model: str | None = None) -> dict[str, Any]:
         "retryable": False, "retry_after": None, "request_id": None, "context_capacity_verified": False,
     }
     try:
-        planner = BudgetPlanner(limits, model=selected_model)
-        output_limit = min(limits.max_output_tokens, 1024)
+        output_limit = min(limits.max_output_tokens, 1024) if limits.max_output_tokens is not None else 1024
+        planner = BudgetPlanner(replace(limits, max_output_tokens=output_limit), model=selected_model)
         first_payload = request_payload(provider, instructions=instructions, messages=messages, tools=tools,
                                         max_output_tokens=output_limit, tool_choice="required")
         planner.require(first_payload)
@@ -134,7 +135,6 @@ async def probe_model_connection(model: str | None = None) -> dict[str, Any]:
             instructions=instructions, messages=messages, tools=tools, tool_choice="required",
             max_output_tokens=output_limit, transient_retries=0, timeout=PROBE_TIMEOUT_SECONDS,
         )
-        from dataclasses import asdict
         result.update(connected=True, model_accessible=True, generation_available=True,
                       actual_model=first.model)
         result["usage"].append(asdict(first.metadata))

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import logging
 import threading
+from contextvars import copy_context
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -14,9 +16,12 @@ from backend.app.services.semantic_index import (
     SemanticIndexProvider,
 )
 from backend.app.services.syntax_analysis import DEFAULT_TREE_SITTER_PARSER_POOL
+from backend.app.services.syntax_analysis.javascript import parser_for_file
 
 from .constants import EXT_MAP
 from .models import Definition, ImportRec, Reference
+
+logger = logging.getLogger(__name__)
 from .phases import (
     CollectionPhase,
     GraphResolutionPhase,
@@ -134,25 +139,33 @@ class UnifiedCodeAnalyzer(
                 "diagnostics": self._diagnostics_snapshot(),
             }
 
+        self._set_progress_stage("检查本地语法解析器（不联网）")
+        self._parser_pool.ensure_available({
+            parser_for_file(language, path)
+            for path in target_files
+            if (language := self._detect_lang(path)) is not None
+        })
+        self._set_progress_stage("解析源码文件（包含失败或跳过的尝试）")
+
         contexts = []
         if self.max_workers > 1 and len(target_files) > 1:
             with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = {executor.submit(self._analyze_file, path): path for path in target_files}
+                futures = {executor.submit(copy_context().run, self._analyze_file, path): path for path in target_files}
                 for future in as_completed(futures):
                     try:
                         ctx = future.result()
                         if ctx is not None:
                             contexts.append(ctx)
-                    except Exception as exc:            # 单文件失败不影响整体
-                        print(f"[Error] analysis task failed for {futures[future]}: {exc}")
+                    except Exception:            # 单文件失败不影响整体
+                        logger.warning("analysis.file_task_failed", extra={"source_file": os.path.relpath(futures[future], self.project_root)}, exc_info=True)
         else:
             for path in target_files:
                 try:
                     ctx = self._analyze_file(path)
                     if ctx is not None:
                         contexts.append(ctx)
-                except Exception as exc:
-                    print(f"[Error] analysis task failed for {path}: {exc}")
+                except Exception:
+                    logger.warning("analysis.file_task_failed", extra={"source_file": os.path.relpath(path, self.project_root)}, exc_info=True)
 
         self._set_progress_stage("合并符号和建立索引")
         self._merge_contexts(contexts)

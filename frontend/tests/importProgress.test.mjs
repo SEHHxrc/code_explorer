@@ -1,7 +1,22 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
+import { parse } from '@vue/compiler-sfc'
+import { baseParse } from '@vue/compiler-dom'
 import { setTimeout as delay } from 'node:timers/promises'
 import { fileProgressPercent, pollImportProgress } from '../src/features/project-insight/utils/importProgress.js'
+
+test('import controls hide inside a native wrapper while progress remains visible', () => {
+  const source = readFileSync(new URL('../src/features/project-insight/components/ProjectImportPanel.vue', import.meta.url), 'utf8')
+  const { descriptor } = parse(source)
+  const card = baseParse(descriptor.template.content).children.find((node) => node.tag === 'el-card')
+  const controls = card.children.find((node) => node.tag === 'div'
+    && node.props.some((prop) => prop.name === 'show' && prop.exp?.content === '!importing'))
+  assert.ok(controls)
+  assert.ok(controls.children.some((node) => node.tag === 'el-upload'))
+  assert.ok(card.children.some((node) => node.tag === 'section'
+    && node.props.some((prop) => prop.name === 'if' && prop.exp?.content === 'progress')))
+})
 
 test('file percent is bounded and unknown totals do not claim completion', () => {
   assert.equal(fileProgressPercent({ total_files: 0 }), null)

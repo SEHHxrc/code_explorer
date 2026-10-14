@@ -27,6 +27,12 @@ class ReadFileArguments(StrictArguments):
     end_line: int = Field(default=120, ge=1)
 
 
+class SearchManyArguments(StrictArguments):
+    """一次原始文本遍历的多个字面查询，共享全部资源与命中预算。"""
+    queries: list[str] = Field(min_length=1, max_length=8)
+    limit: int = Field(default=20, ge=1, le=50)
+
+
 class DependencyArguments(StrictArguments):
     """定义依赖邻居查询工具的输入参数。"""
     node_id: str = Field(min_length=1, max_length=1000)

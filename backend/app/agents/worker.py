@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import asyncio
 from contextlib import suppress
 import os
@@ -20,7 +21,10 @@ from backend.app.experiments.context import (
 )
 from backend.app.experiments.tools import create_experiment_tool_registry
 from backend.app.models import init_db
+from backend.app.core.logging import LOG_CONTEXT, configure_logging
 from backend.app.services.projects import ProjectArtifactRepository, ProjectRepository
+
+logger = logging.getLogger(__name__)
 
 
 class AgentQueueWorker:
@@ -68,6 +72,8 @@ class AgentQueueWorker:
     async def recover_stale(self) -> list[str]:
         """补建旧队列项并终结租约过期的运行。"""
         await asyncio.to_thread(self.store.ensure_jobs)
+        from backend.app.experiments.audit import AuditRepository
+        await asyncio.to_thread(AuditRepository(self.store.session_factory).cleanup_expired)
         cutoff = datetime.now(timezone.utc) - timedelta(seconds=self.lease_seconds)
         return await asyncio.to_thread(self.store.recover_stale, cutoff)
 
@@ -76,6 +82,9 @@ class AgentQueueWorker:
         claim = await asyncio.to_thread(self.store.claim_next, self.worker_id)
         if claim is None:
             return False
+        context_token = LOG_CONTEXT.set({**LOG_CONTEXT.get(), "run_id": claim.run_id,
+                                         "project_id": claim.project_id, "worker_id": self.worker_id})
+        logger.info("agent.job_claimed")
         try:
             project = await asyncio.to_thread(
                 self.projects.get_owned, claim.project_id, claim.user_id,
@@ -88,6 +97,13 @@ class AgentQueueWorker:
                 )
                 return True
             manager, prepared_artifact = self._manager_for(claim.strategy, artifact)
+            if claim.strategy in {"baseline", "security_evidence"}:
+                from backend.app.experiments.audit import AuditRepository
+                from backend.app.experiments.audit.recorder import AuditRecorder
+                audit_repository = AuditRepository(self.store.session_factory)
+                if await asyncio.to_thread(audit_repository.exists, claim.run_id, claim.user_id):
+                    manager.audit = AuditRecorder(audit_repository, claim.run_id, claim.user_id)
+                    manager.audit_artifact = artifact  # 仅供哈希；绝不加入 baseline 模型上下文。
             request = AgentRunRequest(
                 question=claim.question,
                 use_model=claim.use_model,
@@ -112,9 +128,13 @@ class AgentQueueWorker:
                     execution.cancel()
             await execution
         except Exception:
+            logger.exception("agent.worker_failed")
             self.store.fail_claim(claim.run_id, "Agent worker failed before analysis completed.")
         finally:
-            await asyncio.to_thread(self.store.finish_job, claim.run_id, self.worker_id)
+            try:
+                await asyncio.to_thread(self.store.finish_job, claim.run_id, self.worker_id)
+            finally:
+                LOG_CONTEXT.reset(context_token)
         return True
 
     async def run_forever(self) -> None:
@@ -191,8 +211,8 @@ async def _main(arguments: argparse.Namespace) -> None:
         poll_seconds=arguments.poll_seconds,
         lease_seconds=arguments.lease_seconds,
     )
-    await worker.recover_stale()
     if arguments.once:
+        await worker.recover_stale()
         await worker.run_once()
     else:
         await worker.run_forever()
@@ -200,6 +220,7 @@ async def _main(arguments: argparse.Namespace) -> None:
 
 def main() -> None:
     """启动当前模块对应的命令行 Worker 入口。"""
+    configure_logging("agent-worker")
     parser = argparse.ArgumentParser(description="Code Explorer persistent agent worker")
     parser.add_argument("--once", action="store_true", help="Process at most one queued run")
     parser.add_argument("--poll-seconds", type=float, default=0.5)

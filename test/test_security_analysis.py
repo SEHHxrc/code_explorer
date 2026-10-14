@@ -64,7 +64,7 @@ class SecurityAnalysisTests(unittest.TestCase):
             )
 
         self.assertTrue(pack.dataflow_verified)
-        self.assertEqual("2.3", pack.schema_version)
+        self.assertEqual("2.4", pack.schema_version)
         self.assertEqual("1.3", pack.ir_version)
         self.assertEqual(["python-core/1.0", "python-fastapi/1.0"], pack.rule_packs)
         self.assertEqual("static_security_evidence", pack.analysis_kind)
