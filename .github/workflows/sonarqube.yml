@@ -1,0 +1,70 @@
+name: SonarQube analysis
+
+"on":
+  push:
+    branches: ["master"]
+  workflow_dispatch:
+
+# Source is fetched on EC2; this job does not need a GitHub API token.
+permissions: {}
+
+concurrency:
+  group: sonarqube-master
+  cancel-in-progress: false
+
+jobs:
+  analysis:
+    name: SonarQube quality gate
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Analyze the exact default-branch commit on EC2
+        shell: bash
+        env:
+          SONAR_CI_SSH_KEY: ${{ secrets.SONAR_CI_SSH_KEY }}
+          COMMIT_SHA: ${{ github.sha }}
+          SONAR_CI_HOST: ec2-16-16-172-100.eu-north-1.compute.amazonaws.com
+        run: |
+          set -euo pipefail
+          if [[ -z "$SONAR_CI_SSH_KEY" ]]; then
+            echo '::error::Add the dedicated SONAR_CI_SSH_KEY Actions secret to this repository before running.'
+            exit 1
+          fi
+          if [[ ! "$COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo '::error::Unexpected commit SHA.'
+            exit 1
+          fi
+          umask 077
+          key_file=$(mktemp "$RUNNER_TEMP/sonar-ci-key.XXXXXX")
+          hosts_file=$(mktemp "$RUNNER_TEMP/sonar-ci-hosts.XXXXXX")
+          result_file=$(mktemp "$RUNNER_TEMP/sonar-ci-result.XXXXXX")
+          trap 'rm -f "$key_file" "$hosts_file" "$result_file"' EXIT
+          printf '%s\n' "$SONAR_CI_SSH_KEY" | tr -d '\r' > "$key_file"
+          ssh-keygen -y -f "$key_file" > /dev/null
+          printf '%s ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP+0NJ9bKsRYK5PaYyUwyMkOaFW1qkHSCpDPFIY5nwed\n' "$SONAR_CI_HOST" > "$hosts_file"
+          set +e
+          ssh -T -i "$key_file" \
+            -o BatchMode=yes \
+            -o IdentitiesOnly=yes \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$hosts_file" \
+            -o GlobalKnownHostsFile=/dev/null \
+            -o ConnectTimeout=20 \
+            -o ServerAliveInterval=30 \
+            -o ServerAliveCountMax=10 \
+            "ubuntu@$SONAR_CI_HOST" "scan $COMMIT_SHA" > "$result_file" 2>&1
+          scan_status=$?
+          set -e
+          cat "$result_file"
+          {
+            printf '### SonarQube analysis\n\n'
+            printf 'Repository: `%s`\n\n' "$GITHUB_REPOSITORY"
+            printf 'Commit: `%s`\n\n' "$COMMIT_SHA"
+            printf 'Remote exit code: `%s`\n\n' "$scan_status"
+            printf '```text\n'
+            cat "$result_file"
+            printf '\n```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$scan_status"
+
