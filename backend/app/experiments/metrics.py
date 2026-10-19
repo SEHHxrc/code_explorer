@@ -39,14 +39,24 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
         observation_window_version = None
         input_estimates = []
         budget_configurations = []
+        batch_reports = []
+        pending_batch = None
         citation_check = None
         audit_summary = {"status": "unavailable"}
         contract_hash = None
         execution_policy = None
         experiment_protocol = None
         last_model_payload = {}
+        findings_ledger = None
         for event in events:
             payload = event.payload or {}
+            if event.event_type == "findings.recorded":
+                findings_ledger = payload
+            if event.event_type == "batch.completed":
+                batch_reports.append({key: payload[key] for key in ("batch_id", "report", "status", "semantic_coverage") if key in payload})
+                pending_batch = None
+            elif event.event_type == "batch.pending":
+                pending_batch = {"batch_id": payload.get("batch_id"), "status": "unreported"}
             if event.event_type == "citations.checked":
                 citation_check = payload
             elif event.event_type == "audit.completed":
@@ -124,6 +134,22 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
         unreported_http_attempts = max(0, http_attempts - measured) if isinstance(http_attempts, int) else None
         if unreported_http_attempts and usage_status == "complete":
             usage_status = "partial"
+        # 只消费本次已冻结的声明与实测审计，不用当前环境回填旧记录或改写供应商 usage。
+        network = audit_summary.get("network_accounting") or {}
+        zero_attempts = network.get("assumed_zero_token_attempts", 0)
+        known_attempts = measured + zero_attempts
+        accounted_usage_status = ("complete_with_declared_zero_rejections" if zero_attempts else "complete") if (
+            isinstance(http_attempts, int) and http_attempts > 0 and known_attempts == http_attempts and measured == len(metadata_rows)
+        ) else usage_status
+        excluded_ms = adjusted_ms = None
+        if network.get("policy") and duration_ms is not None:
+            excluded_ms = round(network.get("excluded_request_ms", 0) + network.get("excluded_retry_wait_ms", 0), 2)
+            if not network.get("unknown_rejection_timings") and 0 <= excluded_ms <= duration_ms:
+                adjusted_ms = round(duration_ms - excluded_ms, 2)
+        accounted_tokens = None
+        if accounted_usage_status in {"complete", "complete_with_declared_zero_rejections"} and network.get("policy"):
+            accounted_tokens = sum(usage.get("total_tokens") if usage.get("total_tokens") is not None else
+                                   usage["input_tokens"] + usage["output_tokens"] for usage in usage_rows)
 
         def usage_total(key: str) -> int | None:
             """累计供应商确实报告的字段；未知值不当作零，不与字符估算混加。"""
@@ -147,6 +173,9 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
             "output_diagnostics": completion.get("output_diagnostics"),
             "max_request_input_estimate": max((item["tokens"] for item in input_estimates), default=None),
             "duration_ms": duration_ms,
+            "adjusted_duration_ms": adjusted_ms,
+            "excluded_network_ms": excluded_ms,
+            "network_accounting": network or None,
             "queue_duration_ms": queue_duration_ms,
             "context_characters": context_chars,
             "request_characters": request_chars,
@@ -163,6 +192,10 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
             "budget_configurations": budget_configurations[:1],
             "budget_changed_during_run": any(item != budget_configurations[0] for item in budget_configurations[1:]),
             "usage_status": usage_status,
+            "accounted_usage_status": accounted_usage_status,
+            "accounted_model_total_tokens": accounted_tokens,
+            "assumed_zero_token_attempts": zero_attempts,
+            "unknown_cost_http_attempts": max(0, unreported_http_attempts - zero_attempts) if unreported_http_attempts is not None else None,
             "usage_accounting_scope": "reported_responses_not_provider_invoice",
             "http_attempts": http_attempts,
             "unreported_http_attempts": unreported_http_attempts,
@@ -182,6 +215,9 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
             "response_measurement_available": any(event.event_type == "model.completed" for event in events),
             "tool_calls": tool_calls,
             "model_requests": model_requests,
+            "batch_reports": batch_reports,
+            "findings_ledger": findings_ledger,
+            "pending_batch": pending_batch,
             "evidence_count": len(evidence_keys),
             "initial_evidence_count": initial_evidence_count,
             "tool_evidence_count": len(tool_evidence),

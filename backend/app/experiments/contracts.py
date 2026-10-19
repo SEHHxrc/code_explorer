@@ -9,7 +9,7 @@ class ComparisonRequest(BaseModel):
     """同一问题、同一模型预算下创建一组盲态配对运行。"""
 
     question: str = Field(min_length=1, max_length=8000)
-    max_steps: int = Field(default=4, ge=1, le=6)
+    max_steps: int = Field(default=8, ge=1, le=24)
 
 
 class LaneScores(BaseModel):

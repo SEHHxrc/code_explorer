@@ -8,7 +8,7 @@ from backend.app.agents.contracts import AgentEvidence, ContextPacket
 from backend.app.llm.registry import create_model_provider, get_model_configuration, get_model_limits
 from backend.app.llm.budget import BudgetPlanner, initial_message, request_payload
 from backend.app.schemas.manifest import ProjectManifest
-from backend.app.services.security_analysis import SecurityEvidencePromptBuilder
+from backend.app.services.security_analysis.evidence_query import SecurityEvidenceCatalog
 
 
 class ContextBuilder(Protocol):
@@ -29,10 +29,6 @@ class ContextBuilder(Protocol):
 
 class ProjectContextBuilder:
     """从项目分析产物构建受字符预算约束的模型上下文。"""
-
-    def __init__(self, security_builder: SecurityEvidencePromptBuilder | None = None,) -> None:
-        """注入静态安全证据投影器。"""
-        self.security_builder = security_builder or SecurityEvidencePromptBuilder()
 
     def build(self, *, project_id: str, question: str, artifact: dict[str, Any], model: str | None = None, budgeted: bool = True) -> ContextPacket:
         """构建项目上下文。
@@ -112,33 +108,15 @@ class ProjectContextBuilder:
         *,
         max_chars: int,
     ) -> tuple[str, list[AgentEvidence]]:
-        """生成有效 JSON，并把已选候选端点加入 Agent 证据列表。"""
+        """初始只交付公共路径摘要；位置不作为已阅读的源码证据，正文由工具按需读取。"""
         raw_pack = artifact.get("security_evidence")
         if not isinstance(raw_pack, dict):
             return "", []
         try:
-            envelope = self.security_builder.build(
-                raw_pack,
-                question=question,
-                max_chars=max_chars,
-            )
+            rendered = SecurityEvidenceCatalog(raw_pack).summary(max_chars=min(8000, max_chars))
         except (TypeError, ValueError):
             return "", []
-        items = [
-            AgentEvidence(
-                    path=endpoint.location.path,
-                    line=endpoint.location.line,
-                    symbol=endpoint.symbol,
-                    detail=f"static security {endpoint.role}: {finding.rule_id}",
-            )
-            for finding in envelope.findings
-            for endpoint in (finding.source, finding.sink)
-        ]
-        items.extend(AgentEvidence(
-            path=item.location.path, line=item.location.line, symbol=item.symbol,
-            detail=f"static {item.kind} rule match; not a vulnerability",
-        ) for item in envelope.observations)
-        return envelope.to_json(), items
+        return rendered, []
 
     @staticmethod
     def _select_repo_map(repo_map: str, question: str, max_lines: int = 140) -> str:

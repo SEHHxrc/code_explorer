@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass, field as dataclass_field
+from functools import lru_cache, wraps
+from inspect import signature
+from typing import Any, ParamSpec, TypeVar
 
 from backend.app.services.program_index import ProgramIdentity
 from backend.app.services.value_binding import (
@@ -19,6 +25,58 @@ from .literals import parse_static_index_literal
 from .tree_parser import field, text
 
 
+P = ParamSpec("P")
+T = TypeVar("T")
+
+
+@dataclass(slots=True)
+class _BindingCache:
+    """单文件缓存状态；functools 的动态缓存包装器保存在私有表中。"""
+
+    source: bytes
+    path: str
+    max_entries: int
+    functions: dict[Callable[..., Any], Any] = dataclass_field(default_factory=dict)
+
+
+_BINDING_CACHE: ContextVar[_BindingCache | None] = ContextVar("javascript_binding_cache", default=None)
+
+
+def _cached_binding(function: Callable[P, T]) -> Callable[P, T]:
+    """统一绑定函数的缓存分发；保留签名、节点/深度键及源码对象隔离。"""
+    source_position = tuple(signature(function).parameters).index("source")
+
+    @wraps(function)
+    def cached(*args: P.args, **kwargs: P.kwargs) -> T:
+        """仅在匹配的文件作用域内使用有界 LRU，其他调用直接计算。"""
+        cache = _BINDING_CACHE.get()
+        source = args[source_position] if len(args) > source_position else kwargs.get("source")
+        path = args[source_position + 1] if len(args) > source_position + 1 else kwargs.get("path")
+        if cache is None or source is not cache.source or path != cache.path:
+            return function(*args, **kwargs)
+        memoized = cache.functions.get(cached)
+        if memoized is None:
+            memoized = cache.functions[cached] = lru_cache(maxsize=cache.max_entries)(function)
+        return memoized(*args, **kwargs)
+
+    return cached
+
+
+@contextmanager
+def javascript_binding_scope(source: bytes, path: str, *, max_entries: int = 1024) -> Iterator[_BindingCache]:
+    """在单文件收集期间复用纯结果，支持线程/异步隔离、嵌套恢复和异常清理。"""
+    if max_entries < 1:
+        raise ValueError("Binding cache size must be positive")
+    cache = _BindingCache(source, path, max_entries)
+    token = _BINDING_CACHE.set(cache)
+    try:
+        yield cache
+    finally:
+        _BINDING_CACHE.reset(token)
+        for function in cache.functions.values():
+            function.cache_clear()
+
+
 def _origin(node: Any, path: str) -> str:
     """让叶值溯源可与安全事实的精确源码身份匹配。"""
     return ProgramIdentity.location_id(
@@ -30,6 +88,7 @@ def _origin(node: Any, path: str) -> str:
     )
 
 
+@_cached_binding
 def javascript_pattern(
     node: Any, source: bytes, path: str, depth: int = 0
 ) -> BindingPattern:
@@ -107,6 +166,7 @@ def javascript_pattern(
     return BindingPattern("unknown", reason=f"unsupported_binding_pattern:{node.type}")
 
 
+@_cached_binding
 def javascript_value(
     node: Any, source: bytes, path: str, depth: int = 0
 ) -> BindingValue:
@@ -237,11 +297,6 @@ def javascript_value(
             ),
             uncertain=uncertain,
         )
-    values = [
-        javascript_value(child, source, path, depth + 1)
-        for child in node.named_children
-        if child.type not in {"property_identifier", "type_identifier"}
-    ]
     # 调用名不是实参值；调用返回的变换不能假设为确定传递。
     if node.type in {"call_expression", "new_expression"}:
         args = field(node, "arguments")
@@ -257,6 +312,12 @@ def javascript_value(
         receiver = field(callee, "object")
         if receiver is not None:
             values.append(javascript_value(receiver, source, path, depth + 1))
+    else:
+        values = [
+            javascript_value(child, source, path, depth + 1)
+            for child in node.named_children
+            if child.type not in {"property_identifier", "type_identifier"}
+        ]
     return BindingValue(
         variables=tuple(
             dict.fromkeys(name for value in values for name in value.variables)
@@ -271,6 +332,7 @@ def javascript_value(
     )
 
 
+@_cached_binding
 def resolve_javascript_binding(
     target: Any, value: Any, source: bytes, path: str
 ) -> BindingResolution:

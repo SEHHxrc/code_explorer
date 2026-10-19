@@ -11,6 +11,8 @@ from pydantic import BaseModel, Field
 from backend.app.agents.contracts import ToolResult
 from backend.app.agents.policy import IGNORED_DIRECTORIES, resolve_project_path
 from backend.app.agents.tools.base import AgentTool, ToolContext, ToolRegistry
+from backend.app.agents.tools.batches import SubmitAnalysisBatchTool
+from backend.app.agents.tools.security import SearchStaticEvidenceTool, SelectStaticEvidenceTool
 from backend.app.agents.tools.source import (
     ReadFileTool,
     SearchProjectTextTool,
@@ -75,8 +77,9 @@ class ListProjectFilesTool(AgentTool):
         return ToolResult(content={"files": paths})
 
 
-def create_experiment_tool_registry() -> ToolRegistry:
-    """两组使用完全相同的列文件、读文件和文本搜索权限及预算。"""
+def create_experiment_tool_registry(*, with_evidence: bool = False) -> ToolRegistry:
+    """原始文件和提交报告工具两组一致；仅实验组追加静态目录与 ID 详情。"""
     return ToolRegistry(
-        [ListProjectFilesTool(), ReadFileTool(), SearchProjectTextTool(), SearchProjectTextManyTool()]
+        [ListProjectFilesTool(), ReadFileTool(), SearchProjectTextTool(), SearchProjectTextManyTool(), SubmitAnalysisBatchTool(),
+         *([SearchStaticEvidenceTool(), SelectStaticEvidenceTool()] if with_evidence else [])]
     )

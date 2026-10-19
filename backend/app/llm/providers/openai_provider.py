@@ -15,7 +15,7 @@ from backend.app.llm.http import post_json
 from backend.app.llm.response_metadata import response_metadata
 from backend.app.llm.conversation import ModelMessage, response_items
 from backend.app.llm.budget import validate_provider_request
-from backend.app.llm.settings import ModelLimits, get_model_limits, get_model_request_timeout
+from backend.app.llm.settings import ModelLimits, get_model_limits, get_model_transport_settings
 
 
 class OpenAIResponsesProvider(ModelProvider):
@@ -41,7 +41,8 @@ class OpenAIResponsesProvider(ModelProvider):
         self.base_url = base_url.rstrip("/")
         self.max_output_tokens = max_output_tokens
         self.model_limits = replace(model_limits or get_model_limits(model), max_output_tokens=max_output_tokens)
-        self.request_timeout_seconds = get_model_request_timeout()
+        self.transport_settings = get_model_transport_settings()
+        self.request_timeout_seconds = self.transport_settings.request_timeout_seconds
 
     async def generate(self, *, instructions: str, prompt: str) -> ModelResult:
         """调用 Responses API 生成文本并输出规范化结果。"""
@@ -88,6 +89,7 @@ class OpenAIResponsesProvider(ModelProvider):
             request,
             {"Authorization": f"Bearer {self.api_key}"},
             timeout=self._request_timeout(timeout), transient_retries=transient_retries,
+            total_timeout=min(self.transport_settings.total_timeout_seconds, timeout) if timeout is not None else self.transport_settings.total_timeout_seconds,
         )
         calls: list[ToolCall] = []
         for item in payload.get("output", []):

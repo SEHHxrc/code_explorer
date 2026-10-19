@@ -37,8 +37,9 @@ from backend.app.experiments.repository import ExperimentRepository
 from backend.app.experiments.service import ExperimentComparisonService
 from backend.app.llm.base import ModelProvider, ModelResult, ModelTurn, ToolCall
 from backend.app.llm.response_metadata import ModelResponseMetadata, ModelUsage
-from backend.app.experiments.report import REPORT_END
+from test.test_on_demand_evidence import ledger_text
 from backend.app.llm.registry import ModelConfiguration
+from backend.app.llm.settings import ModelLimits
 from backend.app.models import (
     AgentJobModel,
     AgentRunModel,
@@ -65,7 +66,8 @@ class RecordingModel(ModelProvider):
 
     name = "test-provider"
     model = "fixed-test-model"
-    answer = "## 结论\n候选需要验证。\n## 已核实问题\n未确认。\n## 未确认风险\n[view.js:3]。\n## 范围与局限\n只读测试范围。\n" + REPORT_END
+    model_limits = ModelLimits(0, 2400, max_input_tokens=32000)
+    answer = ledger_text('view.js', 1, 3)
     metadata = ModelResponseMetadata(finish_reason="stop", usage=ModelUsage(100, 40, 140))
 
     def __init__(self, calls: list[dict]) -> None:
@@ -125,6 +127,9 @@ class SecurityExperimentWorkflowTests(unittest.IsolatedAsyncioTestCase):
             "backend.app.services.projects.artifacts.ARTIFACT_ROOT", root / "artifacts"
         )
         self.artifact_patch.start()
+        # 此用例验证业务链路，显式容纳完整报告 Schema；不更改真实 .env 或模型预算。
+        self.limits_patch = patch("backend.app.experiments.context.get_model_limits", return_value=ModelLimits(0, 2400, max_input_tokens=32000))
+        self.limits_patch.start()
         self.artifacts = ProjectArtifactRepository()
         self.paths = ProjectWorkspacePaths(root / "workspaces")
         self.workspace = ProjectWorkspaceService(paths=self.paths)
@@ -158,6 +163,7 @@ class SecurityExperimentWorkflowTests(unittest.IsolatedAsyncioTestCase):
     async def asyncTearDown(self) -> None:
         """仅释放本测试创建的临时资源，恢复全局路径配置。"""
         self.artifact_patch.stop()
+        self.limits_patch.stop()
         self.engine.dispose()
         self.temporary.cleanup()
 
@@ -240,14 +246,17 @@ class SecurityExperimentWorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await self.worker.run_once())
         completed = self.comparisons.get(view["id"], "user1")
         self.assertTrue(completed["valid_for_review"])
-        self.assertEqual("static-security-v6", completed["protocol"])
-        first, second = self.model_calls[0], self.model_calls[2]
+        self.assertEqual("static-security-v14-review-ledger", completed["protocol"])
+        first, second = self.model_calls[0], self.model_calls[3]
         self.assertEqual(SECURITY_EXPERIMENT_INSTRUCTIONS, first["instructions"])
         self.assertEqual(first["instructions"], second["instructions"])
-        self.assertEqual(first["tools"], second["tools"])
+        first_tools = {item["name"] for item in first["tools"]}
+        second_tools = {item["name"] for item in second["tools"]}
+        self.assertEqual({"search_static_security_evidence", "get_static_security_evidence"}, first_tools - second_tools)
         self.assertIn("STATIC_SECURITY_EVIDENCE", first["prompt"])
         envelope = json.loads(first["prompt"].split("STATIC_SECURITY_EVIDENCE\n", 1)[1])
-        self.assertTrue(envelope["findings"])
+        self.assertTrue(envelope["items"])
+        self.assertNotIn("snippets", envelope)
         self.assertNotIn("STATIC_SECURITY_EVIDENCE", second["prompt"])
         for call in self.model_calls:
             for forbidden in (
@@ -263,9 +272,10 @@ class SecurityExperimentWorkflowTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(1, metrics["tool_calls"])
             self.assertEqual("complete", metrics["usage_status"])
-            self.assertEqual(200, metrics["actual_input_tokens"])
-            self.assertEqual(60, metrics["actual_output_tokens"])
-            self.assertEqual(["tool_calls", "stop"], metrics["finish_reasons"])
+            self.assertEqual(300, metrics["actual_input_tokens"])
+            self.assertEqual(100, metrics["actual_output_tokens"])
+            self.assertEqual(["tool_calls", "stop", "stop"], metrics["finish_reasons"])
+            self.assertEqual(1, len(metrics["batch_reports"]))
             self.assertGreater(
                 metrics["request_characters"], metrics["context_characters"]
             )

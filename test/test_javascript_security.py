@@ -10,7 +10,7 @@ from pathlib import Path
 from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
 from backend.app.services.security_analysis import (
     SecurityAnalysisService,
-    SecurityEvidencePromptBuilder,
+    SecurityEvidenceCatalog,
 )
 from backend.app.services.security_analysis.contracts import SecurityEvidencePack
 
@@ -193,13 +193,11 @@ class JavaScriptSecurityTests(unittest.TestCase):
             any(item.fact_kind == "sanitizer" for item in pack.facts.values())
         )
         self.assertTrue(any(item.dataflow_verified for item in pack.candidates))
-        builder = SecurityEvidencePromptBuilder()
-        envelope = builder.build(pack)
-        self.assertTrue(envelope.findings)
-        self.assertEqual(
-            envelope.schema_version,
-            json.loads(envelope.model_dump_json())["schema_version"],
-        )
+        catalog = SecurityEvidenceCatalog(pack.model_dump())
+        summary = json.loads(catalog.summary())
+        self.assertTrue(summary["items"])
+        candidate = pack.candidates[0]
+        self.assertTrue(catalog.detail(candidate.candidate_id, section="protections")["items"])
 
     def test_cross_file_call_uses_resolved_dependency_edge(self) -> None:
         """模块间传播只沿已解析调用边，仍是 may-reach 而不是确定漏洞。"""

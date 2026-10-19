@@ -4,9 +4,6 @@ import json
 import re
 from typing import Any
 
-OBSERVATION_WINDOW_VERSION = "complete-records-v2"
-
-
 def encoded(value: Any) -> str:
     """把 JSON 兼容工具结果编码为紧凑完整 JSON。"""
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str)
@@ -96,30 +93,3 @@ def compact_observation(observation: dict[str, Any], max_chars: int) -> dict[str
     elif "error" in result:
         compact["result"]["content"] = {key: result[key] for key in ("error", "type") if key in result}
     return compact
-
-
-def render_observation_window(history: list[dict[str, Any]], max_chars: int) -> tuple[str, dict[str, int]]:
-    """按最新优先保留完整观察或结构化缩略，输出有效 JSON 与明确省略计数。"""
-    envelope: dict[str, Any] = {"observations": [], "omitted_observations": len(history)}
-    compacted = 0
-    recent = history[-12:]
-    for observation in reversed(recent):
-        item = observation
-        # 先保障最新有效正文，再保留预算能容纳的旧观察；不能按历史条数摊薄成全是空正文。
-        overhead = len(encoded({"observations": [None, *envelope["observations"]],
-                                "omitted_observations": envelope["omitted_observations"] - 1})) - 4
-        remaining = max(0, max_chars - overhead)
-        if len(encoded(item)) > remaining:
-            item = compact_observation(observation, remaining)
-        trial = {"observations": [item, *envelope["observations"]],
-                 "omitted_observations": envelope["omitted_observations"] - 1}
-        if len(encoded(trial)) <= max_chars:
-            envelope = trial
-            compacted += int(item is not observation)
-    rendered = encoded(envelope)
-    if len(rendered) > max_chars:
-        raise ValueError("Model context budget cannot hold the tool observation envelope")
-    return rendered, {
-        "total_observations": len(history), "included_observations": len(envelope["observations"]),
-        "compacted_observations": compacted, "omitted_observations": envelope["omitted_observations"],
-    }

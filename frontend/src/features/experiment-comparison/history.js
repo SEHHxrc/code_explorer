@@ -1,4 +1,6 @@
 /** 只投影已记录条件，不用当前设置补填历史；缺失值保持未知。 */
+export const reviewPreference = (value) => ({ left: '左侧更好', right: '右侧更好', tie: '相当' }[value] || '未评分')
+
 export const historyConditions = (lane) => ({
   prompt_sha256: lane?.prompt_snapshot?.instructions_sha256 ?? null,
   report_version: lane?.prompt_snapshot?.report_version ?? lane?.metrics?.answer_completeness?.report_version ?? null,

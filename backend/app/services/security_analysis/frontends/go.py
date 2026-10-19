@@ -12,7 +12,6 @@ from backend.app.services.syntax_analysis import field as _field
 from backend.app.services.syntax_analysis import fields as _fields
 from backend.app.services.syntax_analysis import normalize_type as _norm_type
 from backend.app.services.syntax_analysis import parse_static_index_literal
-from backend.app.services.syntax_analysis.static_sequences import static_sequence_value
 
 from ..ir import (
     IRCall,
@@ -299,16 +298,7 @@ class _GoIRCollector(TreeSitterIRCollector):
 
     def _expression(self, node: Any) -> IRExpression:
         """保留表达式文本、标识符、字面量和调用形态。"""
-        literal = self._literal(node)
-        return IRExpression(
-            text=self._text(node)[:1000],
-            identifiers=self._identifiers(node),
-            is_literal=node.type in _LITERAL_NODES,
-            literal=literal,
-            kind=node.type,
-            contains_call=any(item.type in _CALL_NODES for item in self._walk(node)),
-            binding_value=static_sequence_value(node, self._identifiers),
-        )
+        return self._sequence_expression(node, self._literal(node), _LITERAL_NODES, _CALL_NODES)
 
     def _literal(self, node: Any) -> Any:
         """在不执行代码的情况下解析常见 Go 标量字面量。"""

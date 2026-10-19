@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 
 from backend.app.services.security_analysis.contracts import SecurityEvidencePack
-from backend.app.services.security_analysis import SecurityEvidencePromptBuilder
+from backend.app.services.security_analysis import SecurityEvidenceCatalog
 from test import test_javascript_security as fixtures
 
 
@@ -148,13 +148,8 @@ class JavaScriptInputTests(unittest.TestCase):
                 flow = pack.dataflows[candidate.dataflow_id]
                 self.assertTrue(any(step.certainty == "may" for step in flow.steps))
                 self.assertEqual("low", flow.confidence)
-                envelope = SecurityEvidencePromptBuilder().build(pack)
-                finding = next(
-                    item
-                    for item in envelope.findings
-                    if item.rule_id == "JS-SINK-VUE-HTML"
-                )
-                self.assertEqual("may", finding.source.context["binding_certainty"])
+                finding = SecurityEvidenceCatalog(pack.model_dump()).detail(candidate.candidate_id)["items"][0]
+                self.assertEqual("may", finding["endpoint_context"][candidate.source_fact_id]["binding_certainty"])
 
     def test_vue_mutable_variable_and_whitespace(self) -> None:
         """保留表达式两侧空格和原始 UTF-8 坐标；普通可写 setup 变量可建立模型。"""

@@ -28,7 +28,7 @@ class ReportModeTests(unittest.TestCase):
         for text in ("", "继续读取更多文件", ANSWER):
             turn = ModelTurn(text, "mock", "m", metadata=ModelResponseMetadata(finish_reason="tool_calls", usage=ModelUsage(10, 5, 15)))
             with self.subTest(text=text), self.assertRaises(ModelOutputError) as failure:
-                AgentRunManager._require_answer(turn, forbid_tools=True, require_report=True)
+                AgentRunManager._require_answer(turn, forbid_tools=True)
             self.assertEqual("tool_finish_without_payload", failure.exception.code)
             self.assertEqual("tool_calls", turn.metadata.finish_reason)
             self.assertEqual(15, turn.metadata.usage.total_tokens)
@@ -36,14 +36,14 @@ class ReportModeTests(unittest.TestCase):
     def test_investigation_text_is_distinct_from_blank_and_tool_violation(self):
         turn = ModelTurn("需要继续读取代码再判断。", "mock", "m", metadata=ModelResponseMetadata(finish_reason="stop"))
         with self.assertRaises(ModelOutputError) as failure:
-            AgentRunManager._require_answer(turn, forbid_tools=True, require_report=True)
-        self.assertEqual("final_report_contract_not_met", failure.exception.code)
+            AgentRunManager(store=MemoryRunStore())._accept_answer('r',turn,forbid_tools=True,require_report=True)
+        self.assertEqual("invalid_findings_ledger", failure.exception.code)
         self.assertEqual(turn.text, AgentRunManager._require_answer(turn))  # 普通对话不强制实验格式。
 
     def test_unknown_or_truncated_finish_is_not_rewritten(self):
         for metadata in (ModelResponseMetadata(), ModelResponseMetadata(finish_reason="length")):
             turn = ModelTurn(ANSWER, "mock", "m", metadata=metadata)
-            self.assertEqual(ANSWER, AgentRunManager._require_answer(turn, forbid_tools=True, require_report=True))
+            self.assertEqual(ANSWER, AgentRunManager._require_answer(turn, forbid_tools=True))
             self.assertNotEqual("complete", assess_answer(ANSWER, metadata, require_report=True)["status"])
 
     def test_without_definitions_keeps_valid_paired_history_for_both_adapters(self):

@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+SecurityEvidenceSection = Literal["overview", "flow", "snippets", "protections", "unresolved"]
+
 
 class StrictArguments(BaseModel):
     """禁止未声明字段的智能体工具参数基类。"""
@@ -41,8 +43,11 @@ class DependencyArguments(StrictArguments):
 
 
 class SecurityEvidenceArguments(StrictArguments):
-    """分页查询面向 LLM 的静态安全候选。"""
+    """普通 Agent 复用路径目录筛选和按 ID 详情；不再生成旧版事实包。"""
 
     query: str = Field(default="", max_length=200)
-    offset: int = Field(default=0, ge=0, le=10_000)
-    limit: int = Field(default=10, ge=1, le=25)
+    cursor: str = Field(default="", max_length=1000)
+    offset: int = Field(default=0, ge=0, le=10_000, description="Detail-section offset; catalog uses cursor.")
+    limit: int = Field(default=10, ge=1, le=10)
+    evidence_id: str = Field(default="", max_length=1000)
+    section: SecurityEvidenceSection = "overview"

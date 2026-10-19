@@ -5,6 +5,8 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
+from functools import cached_property
+from backend.app.services.security_analysis.evidence_query import SecurityEvidenceCatalog
 
 
 @dataclass(frozen=True)
@@ -19,6 +21,7 @@ class ProjectEvidenceIndex:
 
     def __init__(self, artifact: dict[str, Any]) -> None:
         """输入分析产物并预建符号、文件及依赖邻接索引。"""
+        self.artifact = artifact
         self.symbols: list[SymbolRow] = []
         for path, symbols in (artifact.get("file_symbols") or {}).items():
             for symbol in symbols or []:
@@ -48,3 +51,8 @@ class ProjectEvidenceIndex:
         if isinstance(value, dict):
             value = value.get("id")
         return "" if value is None else str(value)
+
+    @cached_property
+    def security(self) -> SecurityEvidenceCatalog:
+        """在本运行首次使用时构造目录，不重复验证全包或加载完整图。"""
+        return SecurityEvidenceCatalog(self.artifact.get("security_evidence"))

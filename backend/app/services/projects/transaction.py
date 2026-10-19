@@ -91,10 +91,6 @@ class ProjectImportTransaction:
             ),
         ))
 
-    def track_project(self) -> None:
-        """兼容旧名称，登记已发布项目工作区补偿。"""
-        self.track_published_workspace()
-
     def track_artifact(self) -> None:
         """登记可能已经保存的分析产物补偿。"""
         operation = self._require_operation()

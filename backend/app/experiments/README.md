@@ -1,8 +1,8 @@
 # 静态安全证据对照实验模块
 
-本模块比较“相同原始文件访问能力 + 静态安全证据”与“仅原始文件”的安全分析效果，不预设输赢。两组共享指令、模型名、工具 Schema 和预算；独立随机化入队顺序与左右标签，不再输入完整图、Manifest 或 Repo Map。静态分析由 `services/security_analysis` 负责，本模块只负责编排、输入隔离和评审。
+本模块比较“相同原始文件访问能力 + 静态安全证据”与“仅原始文件”的安全分析效果，不预设输赢。两组共享指令、模型、原始文件工具、批次报告规则和预算；实验组另有静态查询工具，两组实际工具契约分别冻结。独立随机化入队顺序与左右标签，不输入完整图、Manifest 或 Repo Map。静态分析由 `services/security_analysis` 负责，本模块只负责编排、输入隔离和评审。
 
-新配对使用 `static-security-v6` / `concise-security-v3`：优先追到危险操作真实实现、输入与对应防护；校验必须对应被消费的值、危险上下文和执行顺序。摘要最多突出 5 个问题，其余独立根因简列；相同根因的多重影响合并，不同根因即使在同一接口也分开，逐项区分代码行为、安全影响和利用前提。[audit/](audit/README.md) 保存脱敏可见请求/回复和输入指纹。两组仍拥有同样的四个原始文件工具和调查预算，静态输入 1.4 不变，没有同步收缩证据预算或增加轮次。旧 v5/v2 记录不回填。
+新配对使用 `static-security-v14-review-ledger` / `ledger-security-v5`：初始路径摘要和排序不变，两组共用结构化发现台账与六类覆盖核对。最终输出是 JSON，`findings.FindingLedger` 校验后生成四段报告，摘要编号和计数只来自状态。v5 在提示中直接使用该模型生成的完整 JSON Schema，不维护另一份不完整的手写示例；不修补原始回复，不改变数据结构和校验强度。源码支持风险不等于已确认可利用漏洞；未闭合与排除项不计入该风险数。模型 JSON 保留在审计，台账保留于 `findings.recorded` 或批次事件，原始文件组仍不访问派生索引。共同默认 8 轮调查，可选 1～24；请求和提交次数不因台账而增加。旧结果不回填，不与新条件混算；同协议族的 v4/v5 也须分开记录。
 
 `citations.py` 新警告版本为 `mechanical-citations-v2`：分别记录引用语法不规范、唯一简称解析提示、同名歧义、真实路径/行范围错误、未展示源码或只在早期展示。简称唯一时仍提示不符合规范，并在原快照坐标上核对；歧义不猜测。原报告不改写，警告不自动否定答案，也不证明引用支持断言。`test/security_report_cases.json` 提供错误变量净化、白名单后执行、工厂隐藏实现、同接口不同根因的人工/模型评估样本；不嵌入生产提示词，不冒充自动语义验证。
 
@@ -12,6 +12,63 @@ v5 使用安全输入 1.4：片段仅在同页 `snippets` 表保存一次，候�
 
 ## 入口与数据流
 
+### 累计证据预算补充条件
+
+`cumulative.py` / `static-security-v15-cumulative-ledger` 为另一独立研究条件。
+`prepare_inputs(root, paths, pack, condition)` 冻结源码范围、原静态事实选择和共同累计字节额度；
+`EvidenceAllowance` 为每个运行保存唯一源码行账本，`CumulativeReadTool` 与 `CumulativeSearchTool`
+共用配额，搜索命中不能绕过限制。`CumulativeContextBuilder` 只发送共同文件清单与可选有界静态事实，
+完整私有源码快照仅用于受控读取和审计。`cumulative_trial.py` 默认离线预检，显式 `--run-model`
+才创建配对，复用同一 Worker、接入层与报告完整性检查；可用 `--project-id` 和 `--condition` 限定项目和条件。
+该补充入口不替代网页默认按需分批流程、不修改实际 `.env`、不自动打分。理论容量与实际请求展示覆盖分开记录，
+累计证据字节不是供应商 Token。条件定义、计费方式与复现入口见
+[累计证据预算实验](../../../docs/CUMULATIVE_EVIDENCE_EXPERIMENT.md)。
+
+诊断入口和 `prepare_inputs()` 继续选择 `security-path-summary-v2`，新配对使用独立协议 `static-security-v15-cumulative-ledger`。
+新选择复用 `services/security_analysis/evidence_selection.py`，不是另建扫描器；选择器源码哈希、
+原产物哈希、选择版本与字节上限进入私有冻结输入，漂移时发送前失败。保持同一共同指令、
+原始文件工具、源码范围、轮次和累计总额度；静态正文按实际大小计费。
+旧选择器及 `--selection` 切换已删除；`--static-max-bytes` 事前固定摘要上限（默认 8000 UTF-8 字节）。
+复测 audio2sheet 时显式设为 7676，沿用上一轮比较额度，而不运行旧算法反推上限。
+旧 v8～v13 标签和记录只读；重跑旧实现须使用当时另存的版本，不能用当前代码回填。网页默认 v14，不混算历史结果。
+详见 [选择整改说明](../../../docs/STATIC_EVIDENCE_SELECTION.md)。
+
+### 完整源码补充条件
+
+`full_source.py` / `static-security-v16-full-source-ledger` 是独立研究条件，不替代网页当前的按需实验。
+
+只验证共同报告链路时，可筛选既有极小样本，避免默认重跑三个项目：
+
+```powershell
+python -m backend.app.experiments.full_source_trial --case case_03 --repeats 1
+# 明确允许真实模型调用时才加 --run-model；两组各一次报告，使用已有有限网络重试。
+```
+
+`--case` 可重复指定，不提供时维持全部样本的原行为；未知或空选择在导入项目及模型调用前拒绝。
+此条件验证完整源码输入、共同 JSON 台账、校验、报告生成与持久化，不验证工具调用或分批汇总，也不自动评分代码安全性。
+`prepare_full_source_inputs(root, paths, raw_pack, static_max_bytes=8000)` 接收明确的项目相对文件清单、
+已有静态安全产物和独立摘要预算，两组共用完全相同的全文 JSON；仅证据组追加公共路径摘要。
+它和累计预算条件共用 `freeze_source()` 冻结源码，共用唯一 `SecurityEvidenceSelector`，不再有事实优先的备用选择器。
+不发送完整图、架构介绍或生成命令。源码最多 100 文件/128 KiB，UTF-8 全文原样保留；秘密、二进制或
+预算不足直接拒绝，不截断、不放宽预算。省略路径计数明确；零工具条件不声称可以按 ID 续读，静态候选不等于漏洞。
+
+两组均零工具、一次最终报告，不分批、不在空白后自动更换模式或再次生成；正常网络传输重试仍按共同策略记录。
+输入、源码哈希和非认证模型配置指纹在创建时冻结，源码/配置漂移在发送前拒绝。冻结正文计入现有审计配额，
+受相同访问权限、过期及删除策略约束，不进入普通历史/SSE。无新数据库表。完整源码行范围进入机械引用核对，
+仍不证明断言语义正确。普通网页“开始配对”创建 v14；完整源码实验目前使用显式命令入口：
+
+```powershell
+# 只运行真实静态分析与输入预检，不调用模型、不创建配对
+.venv/Scripts/python.exe -m backend.app.experiments.full_source_trial
+# 明确授权后：3 个固定样本各 2 对，保存为新项目与新实验记录
+.venv/Scripts/python.exe -m backend.app.experiments.full_source_trial --repeats 2 --run-model
+```
+
+`full_source_trial.py` 复用项目导入事务、Worker、审计、比较仓储及完整性检查，不另建模型接入循环。
+两次重复平衡执行先后，左右顺序独立随机。研究核验清单位于样本根目录之外，绝不传入模型；
+脚本不自动提交人工盲评分数。所有成功、失败和用量均保留在历史，汇总另存于 `backend/storage/experiments/`。
+只适用于这类微型样本的探索性实验，不能据此推断全部小项目或大项目的普遍效果。
+
 HTTP 入口位于 `api/experiment.py`，应用入口是 `ExperimentComparisonService.create(project_id, user_id, request)`。创建后，两个运行进入同一 Agent 持久化队列；前端通过比较 SSE 查看盲态结果，提交 `BlindReviewRequest` 后才能揭盲。
 
 ## 历史实验
@@ -20,17 +77,19 @@ HTTP 入口位于 `api/experiment.py`，应用入口是 `ExperimentComparisonSer
 
 前端 `ExperimentHistory.vue` 在盲测页提供打开原结果、选两次试验并排阅读提示词/运行条件和报告。左右映射每次独立随机，未揭盲不能把跨试次左侧当作同一组；提示词哈希不同不证明仅提示词不同，须核对问题、模型、预算、源码/产物、工具、协议和重复试次。历史缺失信息明确未知，不用当前设置补填。新试次复用运行事件保存轻量 `experiment.snapshot`（只有脱敏共同指令及元数据），不新增数据库表；完整审计过期不删除这份新提示词快照。旧试次只读取尚存审计，过期后不能还原。项目删除仍统一清除这些记录。
 
-## 下一阶段：按需静态证据供给（尚未启用）
+## 按需静态证据与分批报告
 
-建议优先增加独立静态证据预算，再单独验证按需交付：初始化只给有界候选定位、覆盖/省略计数和局限；完整静态产物留在服务器。可以根据原始文件工具实际读取的路径/范围追加相关完整证据束，不增加基线的派生索引访问能力，也不改源码工具 Schema。证据束继续包含精确位置、共享片段、路径、Guard 和不确定性，给出来源、去重 ID、检索范围与未交付数量；未知不能伪装成无风险。防护仍须模型读取/核实，不能把静态候选当结论。
+`services/security_analysis/evidence_query.py` 拥有静态目录与查询，初始摘要直接复用 `evidence_selection.py` 的路径选择。上限 8000 UTF-8 字节，仅有三类有序路径/线索及最小元数据，无源码/孤立输入/条件/全局统计，不计为已读源码；短路径优先整条交付，长路径标记步骤未展开。`_coverage` 按需返回覆盖与完整局限。`search_static_security_evidence` 返回同一优先级的 ID、定位、筛选范围和快照绑定游标；`get_static_security_evidence` 按原 ID 分页提供 overview、flow、snippets、protections 或 unresolved，不抽样长路径。详情每页最多 24000 字符，过大明确拒绝而非切碎内容。保留阶段已丢弃内容不能按需恢复，源码反向切片未实现。
 
-按需供给会改变信息到达时机，可能遗漏模型未访问区域，也可能增加多轮输入/延迟，不能保证必然省 Token。应作为显式的新实验交付条件，记录初始/后续静态输入及总成本；原始文件权限相同，两组预算、提示词和报告模式保持共同条件。不得偷偷将当前内联模式换成按需模式；本轮未启用此功能。
+`agents/batching.py` 保存运行内选择与报告台账；已报告 ID 自动排除，可继续读取本批同一 ID 的其他组件。原始文件组按路径＋行范围记录，不能因为读过同一文件前半段而禁止后半段。`batch.completed` 在进入下一批前保存完整模型报告并通过 SSE 展示，失败/取消的未完批次由 `batch.pending` 标记，已有报告不删除。reported 只是已形成报告，不证明语义正确或完整审查。恢复用于查看；新运行不会继承旧运行的排除集合，本轮不新增断点续跑 API。
+
+新批次重新开始原生消息链，只携带更新目录与带来源说明的报告台账；不能把不同小对话可能复用的调用 ID、孤立结果或加密推理项混拼。最终通过 `APPLICATION_BATCH_EVIDENCE` 交付此前实际展示的完整观察档案，最多 12000 字符并受公共请求预算约束；整条省略计数明确，引用检查仍核对实发范围，不证明语义。模型合并同根因，不简单拼接四段报告，不能提高历史报告的确认等级。全部实际请求、批次和失败成本保留，不保证按需一定省 Token。
 
 ```text
 ComparisonRequest
   → ExperimentComparisonService
-  ├─ security_evidence → 紧凑安全证据 JSON + 原始文件工具
-  └─ baseline          → 仅相同原始文件工具（临时对照）
+  ├─ security_evidence → 小目录 + 静态查询 + 原始文件工具 + 批次报告
+  └─ baseline          → 相同原始文件工具 + 批次报告（临时对照）
   → AgentQueueWorker
   → collect_run_metrics()
   → BlindReviewRequest
@@ -45,9 +104,11 @@ ComparisonRequest
 | `service.py` / `ExperimentComparisonService` | 创建配对运行、随机化、查询、评分和揭盲。 |
 | `repository.py` / `ExperimentRepository` | 比较记录、左右映射和评审结果的持久化边界。 |
 | `context.py` | 共同安全指令、产物允许列表、`SecurityExperimentContextBuilder`，保证完整 JSON 预算。 |
-| `tools.py` | `ListProjectFilesTool` 和两组相同的原始文件工具注册表，不查询静态索引。 |
+| `tools.py` | 四个共同原始文件工具＋提交报告；实验组另注册两个静态查询工具，控制组禁止访问。 |
 | `metrics.py` | 汇总时延、工具、真实供应商用量及其完整性、字符估算、终止原因和回答完整性。 |
-| `report.py` | 两组共享的四段简洁报告约束，以及传输/报告结构完整性检查；不证明安全审计完整。 |
+| `report.py` | 当前协议标识、共同台账指令及生成报告的结构完整性检查。 |
+| `findings.py` | `parse_ledger(text)` 验证根因/状态/六类覆盖，`FindingLedger.render()` 生成唯一计数与分区；不做语义判断。 |
+| `cumulative.py` / `cumulative_trial.py` | 固定范围的累计字节配额、冻结选择与独立补充实验入口，默认不调用模型。 |
 | `baseline/` | 带明显标记的临时原始文件对照组。 |
 
 `ExperimentRepository.create_pair(record, request)` 在一个事务中创建两个运行、队列项和配对；Worker 按 strategy 构造隔离上下文。创建前两组都经过公共 `BudgetPlanner` 验证完整初始 JSON 和实际请求表示，避免只有对照组消耗模型。两组使用相同原生工具消息协议；真实 usage 与本地请求 Token 估算分别统计，保留估算方法和预算快照。窗口版本、输入/输出预算、分词策略或思考配置不一致，不进入正式配对评价；运行中预算改变同样拒绝。旧数据库 `graph_run_id` 为兼容列名，不表示新实验输入完整图；历史记录不回填。

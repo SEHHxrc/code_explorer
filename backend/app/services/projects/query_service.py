@@ -88,15 +88,8 @@ class ProjectQueryService:
             "artifact_bytes": artifact_bytes or 0,
             "total_bytes": workspace_bytes + (artifact_bytes or 0),
             "size_complete": size_complete,
-            "active_tasks": self._has_active_tasks(record),
+            "active_tasks": self.activity.has_active_tasks(record.project_id, record.user_id),
         }
-
-    def _has_active_tasks(self, record: ProjectRecord) -> bool:
-        """读取活动任务状态，并兼容迁移期旧仓储测试替身。"""
-        legacy = getattr(self.projects, "has_active_runs", None)
-        if callable(legacy):
-            return bool(legacy(record.project_id, record.user_id))
-        return self.activity.has_active_tasks(record.project_id, record.user_id)
 
     def _snapshot_sync(self, project_id: str, user_id: str) -> dict[str, Any]:
         """校验所有权和资源完整性后生成前端交换数据。"""

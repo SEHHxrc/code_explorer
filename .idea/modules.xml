@@ -4,6 +4,7 @@
     <modules>
       <module fileurl="file://$PROJECT_DIR$/.idea/code_explorer.iml" filepath="$PROJECT_DIR$/.idea/code_explorer.iml" />
       <module fileurl="file://$PROJECT_DIR$/.idea/gitnexus-swebench-eval.iml" filepath="$PROJECT_DIR$/.idea/gitnexus-swebench-eval.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/gitnexus-swebench-eval@1.iml" filepath="$PROJECT_DIR$/.idea/gitnexus-swebench-eval@1.iml" />
     </modules>
   </component>
 </project>

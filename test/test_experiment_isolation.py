@@ -67,8 +67,10 @@ class ExperimentIsolationTests(unittest.TestCase):
     def test_baseline_registry_excludes_dependency_tool(self):
         names = {schema["name"] for schema in create_baseline_tool_registry().schemas()}
         self.assertNotIn("get_dependency_neighbors", names)
-        self.assertEqual({"list_project_files", "read_file_range", "search_project_text", "search_project_text_many"}, names)
+        self.assertEqual({"list_project_files", "read_file_range", "search_project_text", "search_project_text_many", "submit_analysis_batch"}, names)
         self.assertEqual(create_experiment_tool_registry().schemas(), create_baseline_tool_registry().schemas())
+        augmented = {schema["name"] for schema in create_experiment_tool_registry(with_evidence=True).schemas()}
+        self.assertEqual({"search_static_security_evidence", "get_static_security_evidence"}, augmented - names)
 
     def test_baseline_strategy_strips_graph_derived_artifacts(self):
         manager = CapturingManager()

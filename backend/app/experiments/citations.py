@@ -24,7 +24,7 @@ def visible_lines(payload: dict[str, Any]) -> dict[str, set[int]]:
             path, text = value.get("path"), value.get("text")
             if isinstance(path, str) and isinstance(text, str) and text:
                 path = PurePosixPath(path.replace("\\", "/")).as_posix()
-                numbered = list(_NUMBERED.finditer(text))
+                numbered = list(_NUMBERED.finditer(text)) if value.get("line_numbered") is not False else []
                 numbers = {int(match.group(1)) for match in numbered
                            if "[整行超过片段预算" not in match.group(2) and match.group(2).strip() != "[REDACTED]"}
                 if not numbered and isinstance(value.get("line"), int):
@@ -59,10 +59,14 @@ def visible_lines(payload: dict[str, Any]) -> dict[str, set[int]]:
             visit(message.get("output", ""))
         elif message.get("role") == "user":
             content = message.get("content") or ""
+            if isinstance(content, str) and content.startswith("APPLICATION_BATCH_EVIDENCE\n"):
+                visit(content.split("\n", 1)[1])
             if isinstance(content, str) and "\n\nTRUSTED_STATIC_CONTEXT\n" in content:
                 context = content.rsplit("\n\nTRUSTED_STATIC_CONTEXT\n", 1)[1]
                 if context.startswith("STATIC_SECURITY_EVIDENCE\n"):
                     visit(context)
+                elif context.startswith("FULL_SOURCE_CONTEXT\n"):
+                    visit(context.split("\n", 1)[1])
     return result
 
 

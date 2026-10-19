@@ -9,7 +9,7 @@
         <el-table-column label="时间" width="175"><template #default="{ row }">{{ timestamp(row.created_at) }}</template></el-table-column>
         <el-table-column prop="question_preview" label="问题" min-width="200" show-overflow-tooltip />
         <el-table-column label="左 / 右状态" width="150"><template #default="{ row }">{{ status(row.lanes.left?.status) }} / {{ status(row.lanes.right?.status) }}</template></el-table-column>
-        <el-table-column label="盲评" width="80"><template #default="{ row }">{{ row.reviewed ? '已保存' : '未评分' }}</template></el-table-column>
+        <el-table-column label="盲评偏好" width="110"><template #default="{ row }">{{ reviewPreference(row.preferred_lane) }}</template></el-table-column>
         <el-table-column label="操作" width="90"><template #default="{ row }"><el-button link type="primary" @click="$emit('open', row.id)">打开</el-button></template></el-table-column>
       </el-table>
       <div class="history-actions">
@@ -39,7 +39,7 @@
           </details>
           <pre class="history-answer">{{ lane.run?.answer || lane.run?.error || '尚无回答' }}</pre>
         </section>
-        <p v-if="item.review">已保存评分：{{ JSON.stringify(item.review) }}</p>
+        <BlindReviewResult :review="item.review" />
       </section>
     </div>
   </el-dialog>
@@ -50,7 +50,8 @@ import { onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { apiErrorMessage } from '../../services/httpClient.js'
 import { listExperimentHistory, readExperimentHistory } from '../../services/experimentApi.js'
-import { historyConditions, promptComparison } from './history.js'
+import { historyConditions, promptComparison, reviewPreference } from './history.js'
+import BlindReviewResult from './BlindReviewResult.vue'
 
 const props = defineProps({ projectId: { type: String, default: '' }, refreshKey: { type: Number, default: 0 } })
 defineEmits(['open'])

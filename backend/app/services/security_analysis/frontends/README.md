@@ -4,7 +4,7 @@
 
 当前 `PythonSecurityFrontend` 使用标准库 `ast`；Java、Go、C/C++、JavaScript/TypeScript 前端
 继承 `TreeSitterSecurityFrontend`，并与依赖图、ProgramGraph 共用线程本地 Tree-sitter 解析器池。
-Java、Go、C/C++ 的文件收集器继承同一 `TreeSitterIRCollector`，复用源码读取、具名遍历、标识符提取与位置身份；遍历本体由 `syntax_analysis.walk_named()` 拥有。语言专用字面量、表达式、声明和调用绑定保留，不因共用节点操作合并安全语义。
+Java、Go、C/C++ 的文件收集器继承同一 `TreeSitterIRCollector`，复用源码读取、具名遍历、标识符提取与位置身份；遍历本体由 `syntax_analysis.walk_named()` 拥有。Java/Go 还复用 `_sequence_expression()` 组装表达式 IR，语言前端仍提供各自的字面量值与调用/字面量节点类型；声明和调用绑定保持独立，不因共用节点操作合并安全语义。
 Java 前端提取方法、注解、继承类型和调用信息；Go 前端提取函数/接收者方法、导入别名、参数与
 显式变量类型、调用实参、位置敏感赋值目标和条件。
 C/C++ 使用同一 `c_family.py` collector，复用 `syntax_analysis.unwrap_c_declarator()`，保留

@@ -19,6 +19,7 @@ from backend.app.models import (
     ExperimentReviewModel,
     SessionLocal,
     ExperimentAuditSessionModel,
+    ExperimentAuditRecordModel,
 )
 from .audit.repository import AuditRepository, lock_writes
 from .audit.policy import contract_digest
@@ -68,29 +69,44 @@ class ExperimentRepository:
         finally:
             session.close()
 
-    def create_pair(self, record: ComparisonRecord, request: AgentRunRequest) -> None:
+    def create_pair(self, record: ComparisonRecord, request: AgentRunRequest, *, full_source_inputs: dict[str, dict[str, Any]] | None = None, cumulative_inputs: dict[str, dict[str, Any]] | None = None, claimed_by: str | None = None) -> None:
         """同一数据库事务创建随机排序的两个运行、队列项和配对，失败整体回滚。"""
         session = self.session_factory()
         try:
             from .context import SECURITY_EXPERIMENT_INSTRUCTIONS
             from .report import REPORT_VERSION
             from .tools import create_experiment_tool_registry
+            from .full_source import FULL_SOURCE_INSTRUCTIONS
+            from .cumulative import INSTRUCTIONS, policy, tool_registry
+            if full_source_inputs is not None and cumulative_inputs is not None:
+                raise ValueError("一个配对只能使用一个冻结输入协议。")
+            single_shot = full_source_inputs is not None
+            frozen_inputs = full_source_inputs if single_shot else cumulative_inputs
             lock_writes(session)
             identifiers = {"baseline": record.baseline_run_id, "security_evidence": record.graph_run_id}
-            contract = contract_digest(SECURITY_EXPERIMENT_INSTRUCTIONS,
-                                       create_experiment_tool_registry().schemas(), REPORT_VERSION,
-                                       execution_policy(request.max_steps, get_final_report_mode()))
+            contract = {run_id: contract_digest(FULL_SOURCE_INSTRUCTIONS if single_shot else SECURITY_EXPERIMENT_INSTRUCTIONS,
+                        [] if single_shot else create_experiment_tool_registry(with_evidence=strategy == "security_evidence").schemas(), REPORT_VERSION,
+                        execution_policy(request.max_steps, get_final_report_mode(), batch_mode=not single_shot, full_source=single_shot, model=request.model))
+                        for strategy, run_id in identifiers.items()}
+            if cumulative_inputs is not None:
+                contract = {run_id: contract_digest(INSTRUCTIONS,
+                    tool_registry(cumulative_inputs[strategy]["_cumulative_input"]).schemas(), REPORT_VERSION,
+                    policy(request.max_steps, get_final_report_mode(), cumulative_inputs[strategy]["_cumulative_input"]["budget_bytes"],
+                           cumulative_inputs[strategy]["_cumulative_input"].get("selection_version"), model=request.model))
+                    for strategy, run_id in identifiers.items()}
             AuditRepository(self.session_factory).reserve_pair(session, record.comparison_id, record.project_id,
-                                                               record.user_id, list(identifiers.values()), contract)
+                record.user_id, list(identifiers.values()), contract,
+                input_snapshots={run_id: frozen_inputs[strategy] for strategy, run_id in identifiers.items()} if frozen_inputs is not None else None)
             now = datetime.now(timezone.utc)
             for index, strategy in enumerate(record.execution_order):
                 run_id = identifiers[strategy]
                 session.add(AgentRunModel(
                     id=run_id, project_id=record.project_id, user_id=record.user_id,
                     question=request.question, use_model=True, max_steps=request.max_steps,
-                    model=request.model, status="queued", created_at=now + timedelta(microseconds=index),
+                    model=request.model, status="running" if claimed_by else "queued", created_at=now + timedelta(microseconds=index),
                 ))
-                session.add(AgentJobModel(run_id=run_id, strategy=strategy))
+                session.add(AgentJobModel(run_id=run_id, strategy=("full_source_" + strategy) if single_shot else ("cumulative_" + strategy) if cumulative_inputs is not None else strategy,
+                    worker_id=claimed_by, attempts=1 if claimed_by else 0))
             session.add(ExperimentComparisonModel(
                 id=record.comparison_id, project_id=record.project_id, user_id=record.user_id,
                 question=record.question, baseline_run_id=record.baseline_run_id,
@@ -103,6 +119,17 @@ class ExperimentRepository:
             raise
         finally:
             session.close()
+
+    def full_source_input(self, run_id: str, user_id: str) -> dict[str, Any]:
+        """仅供 Worker 读取本人冻结输入；普通历史投影和比较 SSE 不暴露源码正文。"""
+        with self.session_factory() as session:
+            row = session.query(ExperimentAuditRecordModel.payload).join(ExperimentAuditSessionModel,
+                ExperimentAuditSessionModel.run_id == ExperimentAuditRecordModel.run_id).filter(
+                ExperimentAuditSessionModel.user_id == user_id, ExperimentAuditRecordModel.run_id == run_id,
+                ExperimentAuditSessionModel.status != "expired", ExperimentAuditRecordModel.kind == "input_snapshot").first()
+            if row is None:
+                raise ValueError("完整源码实验缺少冻结输入；不能退回其他协议。")
+            return row[0]
 
     def get(self, comparison_id: str, user_id: str) -> ComparisonRecord | None:
         """按标识和用户读取其有权访问的领域记录。"""
@@ -134,10 +161,10 @@ class ExperimentRepository:
         with self.session_factory() as session:
             query = session.query(ExperimentComparisonModel).filter_by(project_id=project_id, user_id=user_id)
             total = query.count()
-            reviewed = session.query(ExperimentReviewModel.id).filter(
+            reviewed = session.query(ExperimentReviewModel.preferred_lane).filter(
                 ExperimentReviewModel.comparison_id == ExperimentComparisonModel.id,
                 ExperimentReviewModel.user_id == user_id,
-            ).exists()
+            ).limit(1).scalar_subquery()
             rows = query.with_entities(
                 ExperimentComparisonModel.id, ExperimentComparisonModel.created_at,
                 ExperimentComparisonModel.question, ExperimentComparisonModel.blind_order,
@@ -153,7 +180,7 @@ class ExperimentRepository:
                 runs["graph"] = runs["security_evidence"]  # 仅为读取旧记录，不创建旧图实验。
                 items.append({"id": row[0], "created_at": row[1], "question_preview": row[2][:240],
                               "lanes": {lane: runs.get(strategy, {}) for lane, strategy in row[3].items()},
-                              "reviewed": bool(row[10])})
+                              "reviewed": row[10] is not None, "preferred_lane": row[10]})
             return {"items": items, "total": total, "offset": offset, "limit": limit,
                     "has_more": offset + len(items) < total}
 

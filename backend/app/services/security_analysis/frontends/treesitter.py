@@ -11,11 +11,13 @@ from backend.app.services.syntax_analysis import (
     TreeSitterParserPool,
 )
 
-from ..ir import SecurityProgramIR, IRLocation
+from ..ir import SecurityProgramIR, IRLocation, IRExpression
 from backend.app.services.program_index import ProgramIdentity
 from backend.app.services.syntax_analysis import text, walk_named
 from backend.app.services.syntax_analysis.javascript import parser_for_file
 from backend.app.services.syntax_analysis.source_units import SourceUnit, source_unit
+from backend.app.services.syntax_analysis.javascript_bindings import javascript_binding_scope
+from backend.app.services.syntax_analysis.static_sequences import static_sequence_value
 from .base import LanguageFrontend
 
 
@@ -36,6 +38,20 @@ class TreeSitterIRCollector:
             return ()
         return tuple(dict.fromkeys(name for item in self._walk(node)
                                    if item.type == "identifier" and (name := self._text(item))))
+
+    def _sequence_expression(
+        self, node: Any, literal: Any, literal_nodes: set[str], call_nodes: set[str],
+    ) -> IRExpression:
+        """组装 Java/Go 共用的表达式 IR；字面量值和节点类型仍由语言前端确定。"""
+        return IRExpression(
+            text=self._text(node)[:1000],
+            identifiers=self._identifiers(node),
+            is_literal=node.type in literal_nodes,
+            literal=literal,
+            kind=node.type,
+            contains_call=any(item.type in call_nodes for item in self._walk(node)),
+            binding_value=static_sequence_value(node, self._identifiers),
+        )
 
     def _location(self, node: Any) -> IRLocation:
         """把零基 AST 坐标转换为同一项目位置身份，保持四个坐标与文件路径。"""
@@ -98,7 +114,8 @@ class TreeSitterSecurityFrontend(LanguageFrontend):
                         "language": self.language,
                         "reason": f"{self.language}_partial_parse_error",
                     })
-                self.collect_file_context(program, relative, unit, tree.root_node, root)
+                with javascript_binding_scope(source, relative):
+                    self.collect_file_context(program, relative, unit, tree.root_node, root)
                 program.failures.extend({"path": relative, "language": self.language, "reason": reason} for reason in unit.diagnostics)
                 program.files_scanned += 1
             except (OSError, UnicodeError, ValueError, RuntimeError) as exc:

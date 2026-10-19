@@ -1,36 +1,51 @@
 """两组共享的简洁报告契约与可审计完整性检查，不判断漏洞结论正确与否。"""
 
 import re
+import json
 from typing import Any
 
 from backend.app.llm.response_metadata import ModelResponseMetadata
+from .findings import FindingLedger
 
-REPORT_VERSION = "concise-security-v3"
+REPORT_VERSION = "ledger-security-v5"
+BATCH_PROTOCOL = "static-security-v14-review-ledger"
+CUMULATIVE_PROTOCOL = "static-security-v15-cumulative-ledger"
+FULL_SOURCE_PROTOCOL = "static-security-v16-full-source-ledger"
 REPORT_SECTIONS = ("结论", "已核实问题", "未确认风险", "范围与局限")
 REPORT_END = "<!-- SECURITY_REPORT_END -->"
 REPORT_INSTRUCTIONS = """
-两组使用完全相同的简洁报告格式：依次输出四个二级标题“## 结论”、“## 已核实问题”、
-“## 未确认风险”、“## 范围与局限”。每节必须有内容，没有条目时明确写无或未确认。
-优先直接回答问题；结论摘要最多突出 5 个问题，其他有证据的独立问题仍须在后续清单简要列出。
-问题清单按独立根因编号，摘要引用清单编号；不合并不同根因，不重复计算同一根因。评分依据去重清单，不是摘要编号。
-相同根因的多个影响合为一项并列出影响；不同根因即使位于同一接口也分别编号，不把认证、上传、跨域或资源问题笼统合并。
-每个问题分别说明三个维度：代码行为（源码直接确认、推测或未知）、安全影响（已建立与未建立部分）、
-利用前提（仓库调用方、输入来源、攻击者控制条件，以及未知条件）。已核实代码行为不等于已确认远程漏洞。
-没有找到调用方或攻击者控制证据，不等于证明对应前提不存在。每项注明证据 [相对路径:行号或起始行-结束行]。
-每项简要记录：根因、已确认的代码行为、已有证据支持的安全影响、尚未建立的利用前提、引用。
-关键执行实现未读取时不能确认最终执行行为，不能同时声称完整影响链已建立；已确认行为与未知利用条件分别记录。
-判断校验或净化有效时，核实处理的值是否就是进入危险操作的值、是否适用于该危险上下文、是否发生在危险操作之前。
-仅有附近的清洗代码不足以确认防护成立；DOM ID 清洗、路径校验、HTML 转义与 shell 参数处理不能互相替代。
-使用工具返回的完整项目相对路径；一个引用括号只包含一个文件和一个行号范围，不使用“同文件”或仅文件名简称。
-提交前核对引用位置是否直接支持断言，不得混用不同文件或实现的行为。
-抛出异常不等于宿主服务崩溃，除非已有调用方和异常处理证据；区分格式错误、长度错误、数值越界等触发条件，
-不得笼统推断异常类型。“未发现”只针对实际检查范围；搜索未完成、文件跳过或结果省略时必须说明。
-未测试算法正确性等内容放入范围与局限；只有指出具体异常逻辑或违反的条件，才能列为候选问题。
-表达简洁，但不以固定篇幅删掉有证据的独立问题；不得把健壮性问题直接升级为远程漏洞。
-零候选或零 Sink 仅代表本次已启用规则和已扫描文件范围内未匹配，不证明无 RCE 或项目整体安全。
-必须说明实际读过的文件/范围、静态覆盖与未核实部分；注册规则包不表示项目使用了相应框架。
-完整报告最后单独输出 <!-- SECURITY_REPORT_END -->，不要提前输出此标记；它只用于检测报告是否写完。
+两组共用此契约，最终只输出完整台账 JSON，不手写 Markdown、编号、计数或结束标记。
+后台按状态生成结论、已核实问题、未确认风险、范围与局限；摘要最多突出 5 项，其余独立问题仍保留，不按摘要编号评分。
+同根因多影响合并，不同根因即使位于同一接口也分列；不能合并认证、上传、跨域、资源问题。
+每项记录代码行为、输入到真实危险实现的链路、防护、安全影响、利用前提和引用。
+behavior_status 区分观察/推断/未知；chain.description 说明输入、参数、实现与缺口。未读关键实现不能闭合链路或确认影响；not_applicable 仅用于无需传播链的本地缺陷并说明原因。
+impact 仅含 status/description；confirmed_conditions（已核实条件）与 unresolved_conditions（未知/未满足条件）属于 finding 同级，不嵌入 impact；conditional 必须列未知条件。
+source_supported_risk 须为 observed、链路闭合或明确不适用、影响已建立或有条件；不等于已确认远程漏洞。
+unclosed_candidate 用于关键链路、实现或影响未建立；模板拼接无攻击者来源不能计入源码支持风险。
+excluded 必须有 exclusion_reason；未找到调用方/输入不证明全项目不存在通路。
+防护须核实：处理的是进入危险操作的值、适用于该危险上下文、发生在危险操作之前；附近的清洗不证明防护。
+protections 非空时每项必须有 description、value_match/context_match/before_operation（verified/unverified）、evidence 引用数组；不能以 location/note 代替引用。
+六类 coverage 必填；checked/not_applicable 须有实际检查依据，未检查填 not_checked。核对不是答案清单，不强迫报问题，已读不等于充分审查。
+引用须用工具返回的完整项目相对路径及实际展示行范围，不用简称、不混实现；合法坐标不证明断言。
+抛出异常不等于服务崩溃；区分格式/长度/数值越界条件，不笼统推断异常。算法未测试只记局限，除非有异常逻辑。
+reviewed_ranges 仅实际已读范围，unreviewed 记未读，limitations 记静态/规则/部署等局限；未发现仅针对实际范围，零候选/零 Sink 不证明安全。
+后台仅校验结构和一致性，不证明模型判断语义正确。
+以下完整 JSON Schema 由后台模型生成；输出实例而非 Schema。遵守 required/枚举/长度/数量上限；禁止额外字段（含 findings_summary_note）。
+无发现时 findings=[]，无防护依据时 protections=[]。检查字符串转义、括号、逗号和字段层级，只交完整对象。
 """
+
+
+def _compact_schema(value: Any) -> Any:
+    """去掉字符串元数据，保留同名字段定义及全部约束/引用，避免手写第二份契约。"""
+    if isinstance(value, dict):
+        return {key: _compact_schema(item) for key, item in value.items()
+                if key not in {"title", "description"} or not isinstance(item, str)}
+    if isinstance(value, list):
+        return [_compact_schema(item) for item in value]
+    return value
+
+
+REPORT_INSTRUCTIONS += json.dumps(_compact_schema(FindingLedger.model_json_schema()), ensure_ascii=False, separators=(",", ":"))
 
 
 def assess_answer(

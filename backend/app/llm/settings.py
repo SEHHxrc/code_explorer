@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import math
+import hashlib
 from dataclasses import dataclass
 from typing import Any
 
@@ -54,14 +55,57 @@ def get_model_api_key() -> str:
 
 
 def get_model_request_timeout() -> float:
-    """读取单次 socket 超时（默认 300 秒），不是整个 Agent 的截止时间，不发送给模型。"""
+    """读取连接/响应头及非流式 socket 超时；默认 600 秒，不是 Agent 总时限。"""
+    return _timeout_setting("CODE_EXPLORER_LLM_REQUEST_TIMEOUT_SECONDS", 600, 3600)
+
+
+def _timeout_setting(name: str, default: float, maximum: float) -> float:
+    """严格读取有限秒数；错误只含变量名和范围，不回显配置内容。"""
     try:
-        value = float(environment_value("CODE_EXPLORER_LLM_REQUEST_TIMEOUT_SECONDS", "300"))
+        value = float(environment_value(name, str(default)))
     except ValueError:
-        raise ValueError("CODE_EXPLORER_LLM_REQUEST_TIMEOUT_SECONDS 必须为 1～900 秒。") from None
-    if not math.isfinite(value) or not 1 <= value <= 900:
-        raise ValueError("CODE_EXPLORER_LLM_REQUEST_TIMEOUT_SECONDS 必须为 1～900 秒。")
+        raise ValueError(f"{name} 必须为 1～{maximum:g} 秒。") from None
+    if not math.isfinite(value) or not 1 <= value <= maximum:
+        raise ValueError(f"{name} 必须为 1～{maximum:g} 秒。")
     return value
+
+
+@dataclass(frozen=True)
+class ModelTransportSettings:
+    """一次请求尝试的本地传输策略；不限制 Token，不改变提示词或安全报告契约。"""
+
+    chat_stream: bool
+    include_stream_usage: bool
+    request_timeout_seconds: float
+    stream_idle_timeout_seconds: float
+    total_timeout_seconds: float
+
+    def snapshot(self, provider: str) -> dict[str, Any]:
+        """返回不含认证/地址的共同实验配置；Responses 暂不启用 SSE。"""
+        streaming = self.chat_stream and provider in {"compatible", "ollama", "vllm"}
+        return {"version": "bounded-http-sse-v2", "mode": "chat_sse" if streaming else "json",
+                "request_timeout_seconds": self.request_timeout_seconds,
+                "stream_idle_timeout_seconds": self.stream_idle_timeout_seconds if streaming else None,
+                "attempt_total_timeout_seconds": self.total_timeout_seconds,
+                "include_stream_usage": self.include_stream_usage if streaming else None,
+                "partial_stream_retry": False}
+
+
+def get_model_transport_settings() -> ModelTransportSettings:
+    """读取并冻结传输开关和有限超时；开关不猜测供应商能力，失败不切换协议。"""
+    def boolean(name: str, default: str) -> bool:
+        """读取明确开关，拒绝含糊配置。"""
+        value = environment_value(name, default).lower()
+        if value not in {"0", "1", "false", "true"}:
+            raise ValueError(f"{name} 必须为 0/1 或 false/true。")
+        return value in {"1", "true"}
+    return ModelTransportSettings(
+        chat_stream=boolean("CODE_EXPLORER_LLM_CHAT_STREAM", "0"),
+        include_stream_usage=boolean("CODE_EXPLORER_LLM_STREAM_INCLUDE_USAGE", "1"),
+        request_timeout_seconds=get_model_request_timeout(),
+        stream_idle_timeout_seconds=_timeout_setting("CODE_EXPLORER_LLM_STREAM_IDLE_TIMEOUT_SECONDS", 120, 3600),
+        total_timeout_seconds=_timeout_setting("CODE_EXPLORER_LLM_REQUEST_TOTAL_TIMEOUT_SECONDS", 1800, 7200),
+    )
 
 
 def get_final_report_mode() -> str:
@@ -118,3 +162,21 @@ def get_model_configuration() -> ModelConfiguration:
     base_url = environment_value("CODE_EXPLORER_LLM_BASE_URL") or defaults.get(provider, "")
     configured = bool(model and base_url and provider in defaults and (provider != "openai" or get_model_api_key()))
     return ModelConfiguration(provider=provider, model=model, base_url=base_url, configured=configured)
+
+
+def endpoint_accounting_fingerprint(model: str | None = None) -> str:
+    """绑定供应商、端点及请求模型，不含 API Key；更换任一项须重新确认平台执行语义。"""
+    config = get_model_configuration()
+    identity = "\n".join((config.provider, config.base_url.rstrip("/"), model or config.model))
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def pre_model_rejection_policy(model: str | None = None) -> dict[str, Any]:
+    """仅接受管理员绑定当前端点的声明；不把 HTTP 状态码普遍解释为模型未执行。"""
+    fingerprint = endpoint_accounting_fingerprint(model)
+    declared = environment_value("CODE_EXPLORER_LLM_PRE_MODEL_REJECTION_ENDPOINT_SHA256")
+    confirmed = bool(declared and declared == fingerprint)
+    return {"version": "endpoint-declared-rejections-v1", "endpoint_sha256": fingerprint,
+            "confirmed_pre_model_statuses": [429, 503] if confirmed else [],
+            "basis": "operator_endpoint_declaration" if confirmed else "not_declared",
+            "scope": "model_tokens_not_provider_invoice; only_observed_matching_http_rejections"}

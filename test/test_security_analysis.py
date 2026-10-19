@@ -9,7 +9,7 @@ from pathlib import Path
 from backend.app.agents.context_builder import ProjectContextBuilder
 from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
 from backend.app.services.security_analysis import SecurityAnalysisService
-from backend.app.services.security_analysis import SecurityEvidencePromptBuilder
+from backend.app.services.security_analysis import SecurityEvidenceCatalog
 from backend.app.services.security_analysis.knowledge import (
     NullSecurityKnowledgeProvider,
     SecurityKnowledgeRequest,
@@ -19,7 +19,7 @@ from backend.app.services.security_analysis.frontends import (
     JavaSecurityFrontend,
     PythonSecurityFrontend,
 )
-from backend.app.services.security_analysis.python_scanner import PythonSecurityScanner
+from backend.app.services.security_analysis.scanner import SecurityScanner
 from backend.app.services.security_analysis.registry import FrontendRegistry, RulePackRegistry
 from backend.app.services.security_analysis.rules import CallRule, RulePack
 from backend.app.services.security_analysis.semantics import (
@@ -404,34 +404,19 @@ class SecurityAnalysisTests(unittest.TestCase):
                 analysis_diagnostics=analysis["diagnostics"],
             )
 
-        rendered = SecurityEvidencePromptBuilder().render(
-            pack,
-            question="命令注入 CWE-78",
-            max_chars=12_000,
-        )
+        catalog = SecurityEvidenceCatalog(pack.model_dump())
+        rendered = catalog.summary(max_chars=12_000)
         payload = __import__("json").loads(rendered)
-        finding = payload["findings"][0]
+        finding = payload["items"][0]
         self.assertLessEqual(len(rendered), 12_000)
-        self.assertEqual("static_security_evidence", payload["kind"])
-        self.assertEqual("intra_procedural_dataflow", finding["claim"])
+        self.assertEqual("propagation_path", finding["kind"])
+        self.assertEqual("intra_procedural_dataflow", finding["relation"])
         self.assertEqual("command", finding["source"]["name"])
-        self.assertEqual("FASTAPI-ROUTE-PARAM", finding["source"]["rule_id"])
+        self.assertEqual("FASTAPI-ROUTE-PARAM", pack.facts[finding["source"]["id"]].rule_id)
         self.assertEqual("os.system", finding["sink"]["name"])
-        self.assertEqual("PY-SINK-SHELL", finding["sink"]["rule_id"])
-        self.assertEqual(
-            "cfg_value_flow_with_bounded_calls",
-            payload["analysis"]["dataflow_scope"]["kind"],
-        )
-        self.assertEqual(
-            "cfg_used_without_path_feasibility_proof",
-            payload["analysis"]["dataflow_scope"]["control_flow"],
-        )
-        self.assertEqual(
-            "cfg_used_without_path_feasibility_proof",
-            finding["confidence_dimensions"]["control_flow"],
-        )
-        self.assertEqual([], payload["analysis"]["coverage_gaps"])
-        self.assertEqual(0, payload["analysis"]["omitted_coverage_gaps"])
+        self.assertEqual("PY-SINK-SHELL", finding["rule_id"])
+        self.assertEqual("bounded_model_path", finding["path_status"])
+        self.assertFalse(any(item["kind"] == "scan_failure" for item in catalog.detail("_coverage", section="unresolved", limit=10)["items"]))
         self.assertNotIn("dependency_graph", rendered)
         self.assertNotIn("repo_map", rendered)
         packet = ProjectContextBuilder().build(
@@ -504,7 +489,7 @@ class SecurityAnalysisTests(unittest.TestCase):
                 }],
                 "links": [],
             }
-            scan = PythonSecurityScanner().scan(directory, dependency_graph=graph)
+            scan = SecurityScanner().scan(directory, dependency_graph=graph)
 
         self.assertEqual(1, scan.files_considered)
         self.assertEqual(1, scan.files_scanned)
@@ -528,7 +513,7 @@ class SecurityAnalysisTests(unittest.TestCase):
                 }],
                 "links": [],
             }
-            scan = PythonSecurityScanner().scan(directory, dependency_graph=graph)
+            scan = SecurityScanner().scan(directory, dependency_graph=graph)
 
         diagnostic = next(
             item for item in scan.failures
@@ -543,7 +528,7 @@ class SecurityAnalysisTests(unittest.TestCase):
         source = "def load():\n    return open('input.txt', 'r')\n"
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, "main.py").write_text(source, encoding="utf-8")
-            scan = PythonSecurityScanner().scan(directory)
+            scan = SecurityScanner().scan(directory)
 
         self.assertFalse(any(item.name == "open" for item in scan.sources))
 
@@ -599,9 +584,9 @@ class SecurityAnalysisTests(unittest.TestCase):
         self.assertEqual(1, pack.coverage.files_considered)
         self.assertEqual(0, pack.coverage.files_scanned)
         self.assertEqual(1, pack.coverage.unsupported_language_count)
-        envelope = SecurityEvidencePromptBuilder().build(pack)
-        self.assertEqual("unsupported_language", envelope.analysis["coverage_gaps"][0]["reason"])
-        self.assertEqual(0, envelope.analysis["omitted_coverage_gaps"])
+        gaps = SecurityEvidenceCatalog(pack.model_dump()).detail("_coverage", section="unresolved", limit=10)
+        self.assertTrue(any(item.get("reason") == "unsupported_language" for item in gaps["items"]))
+        self.assertFalse(gaps["has_more"])
 
     def test_all_dependency_languages_degrade_explicitly_in_security_analysis(self):
         """依赖图支持的语言必须被扫描或明确列为未支持，不能崩溃或静默遗漏。"""
@@ -861,10 +846,9 @@ class SecurityAnalysisTests(unittest.TestCase):
         self.assertEqual("interprocedural", flow.scope)
         self.assertEqual(1, len(candidate.call_edge_ids))
         self.assertTrue(any(item.kind == "call" for item in flow.steps))
-        rendered = SecurityEvidencePromptBuilder().build(pack)
-        finding = next(item for item in rendered.findings if item.rule_id == "JAVA-SINK-PROCESS")
-        self.assertEqual("interprocedural_dataflow", finding.claim)
-        self.assertTrue(any(item.kind == "call" for item in finding.flow))
+        catalog = SecurityEvidenceCatalog(pack.model_dump())
+        self.assertEqual("interprocedural_dataflow", catalog.detail(candidate.candidate_id)["items"][0]["relation"])
+        self.assertTrue(any(item["kind"] == "call" for item in catalog.detail(candidate.candidate_id, section="flow", limit=10)["items"]))
 
     def test_java_source_returns_to_caller_sink(self):
         """Java 被调用函数产生的 Source 应经返回槽位流入调用者 Sink。"""
@@ -901,9 +885,8 @@ class SecurityAnalysisTests(unittest.TestCase):
         self.assertTrue(any(item.kind == "return" for item in flow.steps))
         self.assertEqual(1, len(flow.call_edge_ids))
         self.assertTrue(all(item in pack.call_edges for item in flow.call_edge_ids))
-        rendered = SecurityEvidencePromptBuilder().build(pack)
-        finding = next(item for item in rendered.findings if item.rule_id == "JAVA-SINK-PROCESS")
-        self.assertTrue(any(item.kind == "return" for item in finding.flow))
+        details = SecurityEvidenceCatalog(pack.model_dump()).detail(candidate.candidate_id, section="flow", limit=10)
+        self.assertTrue(any(item["kind"] == "return" for item in details["items"]))
 
     def test_python_source_returns_to_caller_sink(self):
         """Python helper 中的 Source 应经返回槽位流入 FastAPI 调用者 Sink。"""

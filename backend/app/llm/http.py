@@ -12,10 +12,13 @@ import time
 from datetime import datetime, timezone
 from email.message import Message
 from email.utils import parsedate_to_datetime
+from http.client import HTTPException
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 from .observation import WIRE_OBSERVER
+from .response_reader import MAX_EVENT_BYTES, RequestCancelled, RequestControl, ResponseReader
+from .streaming import ChatStream, StreamProtocolError
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +62,26 @@ class ModelConnectionError(ModelRequestError):
     """模型端点无法建立网络连接。"""
 
     retryable = True
+
+
+class ModelStreamInterruptedError(ModelConnectionError):
+    """已建立的流式请求失败；不重放或拼接部分响应，避免隐式重复生成。"""
+
+    retryable = False
+    public_message = "模型流式响应中断，未生成有效报告；本次用量可能未知，未自动重放部分响应。"
+
+
+class ModelDeadlineError(ModelConnectionError):
+    """本次尝试已耗尽总预算，不因网络可重试性重新发起长请求。"""
+
+    retryable = False
+    public_message = "模型请求超过本次总时限；未接受不完整报告，请调整传输预算后重试。"
+
+
+class ModelResponseError(ModelRequestError):
+    """响应协议错误，不伪装成网络故障，也不通过重传掩盖本地解析问题。"""
+
+    public_message = "模型响应格式无效或流式响应未完整结束，不能作为有效报告；未自动切换协议或修补正文。"
 
 
 class ModelEndpointError(ModelRequestError):
@@ -121,6 +144,8 @@ async def post_json(
     timeout: float,
     *,
     transient_retries: int = MAX_TRANSIENT_RETRIES,
+    total_timeout: float | None = None,
+    stream_idle_timeout: float | None = None,
 ) -> dict[str, Any]:
     """异步发送 JSON POST，并对临时限流或上游故障执行有限退避重试。"""
     return await _request_with_retry(
@@ -130,6 +155,7 @@ async def post_json(
         headers,
         timeout,
         max_retries=min(MAX_TRANSIENT_RETRIES, max(0, transient_retries)),
+        total_timeout=total_timeout, stream_idle_timeout=stream_idle_timeout,
     )
 
 
@@ -159,12 +185,15 @@ async def _request_with_retry(
     timeout: float,
     *,
     max_retries: int,
+    total_timeout: float | None = None,
+    stream_idle_timeout: float | None = None,
 ) -> dict[str, Any]:
     """执行请求并遵循 Retry-After 或带抖动的指数退避。"""
     if max_retries < 0:
         raise ValueError("Retry count must be nonnegative")
     attempt = 0
     while True:
+        control = RequestControl()
         try:
             return await asyncio.to_thread(
                 _request_json_sync,
@@ -174,7 +203,12 @@ async def _request_with_retry(
                 headers,
                 timeout,
                 attempt=attempt + 1,
+                total_timeout=total_timeout, stream_idle_timeout=stream_idle_timeout,
+                control=control,
             )
+        except asyncio.CancelledError:
+            control.cancel()
+            raise
         except ModelRequestError as exc:
             if not exc.retryable or attempt >= max_retries:
                 raise
@@ -228,10 +262,15 @@ def _request_json_sync(
     payload: dict[str, Any] | None,
     headers: dict[str, str],
     timeout: float,
-    *, attempt: int = 1,
+    *, attempt: int = 1, total_timeout: float | None = None, stream_idle_timeout: float | None = None,
+    control: RequestControl | None = None,
 ) -> dict[str, Any]:
     """执行同步 JSON 请求并把 HTTP/网络错误转换为安全异常。"""
-    request_headers = {"Accept": "application/json", **headers}
+    streaming = bool(payload and payload.get("stream"))
+    if control is not None and control.cancelled.is_set():
+        raise RequestCancelled()
+    idle_limit = min(timeout, stream_idle_timeout) if streaming and stream_idle_timeout is not None else timeout
+    request_headers = {"Accept": "text/event-stream" if streaming else "application/json", **headers}
     data = None
     observer = None
     receipt = 0
@@ -247,6 +286,8 @@ def _request_json_sync(
     started = time.monotonic()
     body_started: float | None = None
     phase = "awaiting_response_headers"
+    reader: ResponseReader | None = None
+    stream = ChatStream() if streaming else None
     diagnostics: dict[str, Any] = {
         "version": "http-attempt-timing-v1", "attempt": attempt,
         "started_at": datetime.now(timezone.utc).isoformat(), "timeout_seconds": timeout,
@@ -254,22 +295,37 @@ def _request_json_sync(
         "request_bytes": len(data or b""), "headers_ms": None, "body_ms": None,
         "response_bytes": None, "status_code": None, "headers_received": False, "body_received": False,
     }
+    if streaming or total_timeout is not None:
+        diagnostics.update(version="http-attempt-timing-v2", total_timeout_seconds=total_timeout,
+                           stream_idle_timeout_seconds=idle_limit if streaming else None,
+                           mode="chat_sse" if streaming else "json")
 
     def finish(error: Exception | None = None, *, endpoint: ModelEndpointError | None = None) -> dict[str, Any]:
         """封存本次耗时和安全错误字段；不读取异常正文、URL、认证头或请求内容。"""
+        if control is not None and control.cancelled.is_set():
+            raise RequestCancelled()
         diagnostics.update(completed_at=datetime.now(timezone.utc).isoformat(),
                            elapsed_ms=round((time.monotonic() - started) * 1000, 2),
                            failure_phase=phase if error is not None else None)
         if error is not None:
+            cause = error.reason if isinstance(error, URLError) and isinstance(error.reason, BaseException) else error
+            if (reader is not None and reader.expired.is_set()) or (total_timeout is not None and diagnostics["elapsed_ms"] >= total_timeout * 1000):
+                diagnostics["timeout_kind"] = "attempt_total"
+            elif isinstance(cause, TimeoutError):
+                diagnostics["timeout_kind"] = "stream_idle" if streaming and diagnostics["headers_received"] else "socket_operation"
+            if stream is not None:
+                diagnostics.update(done=stream.done, events=stream.events)
+                if "usage" in stream.payload:
+                    # 只保存已经收到的供应商用量，不保存部分正文或隐藏推理。
+                    diagnostics["partial_usage"] = stream.payload["usage"]
             if phase == "reading_response_body" and body_started is not None:
                 diagnostics["body_ms"] = round((time.monotonic() - body_started) * 1000, 2)
-            cause = error.reason if isinstance(error, URLError) and isinstance(error.reason, BaseException) else error
             diagnostics.update(exception_type=type(error).__name__, cause_type=type(cause).__name__,
                 errno=getattr(cause, "errno", None) if isinstance(getattr(cause, "errno", None), int) else None,
                 winerror=getattr(cause, "winerror", None) if isinstance(getattr(cause, "winerror", None), int) else None)
             if endpoint is not None:
                 diagnostics["provider_error"] = {"type": endpoint.error_type, "code": endpoint.error_code,
-                    "request_id": endpoint.request_id, "retryable": endpoint.retryable}
+                    "request_id": endpoint.request_id, "retryable": endpoint.retryable, "retry_after": endpoint.retry_after}
             # 日志不打印供应商字符串、异常字符串或 traceback，避免地址/凭据随错误泄露。
             logger.warning("model.http_failed", extra={"attempt": attempt, "stage": phase,
                 "duration_ms": diagnostics["elapsed_ms"], "error_type": type(error).__name__,
@@ -279,26 +335,47 @@ def _request_json_sync(
         return diagnostics
 
     try:
-        with urlopen(request, timeout=timeout) as response:
+        if control is not None and control.cancelled.is_set():
+            raise RequestCancelled()
+        with urlopen(request, timeout=min(timeout, total_timeout) if total_timeout is not None else timeout) as response:
             status = getattr(response, "status", None)
             diagnostics.update(headers_ms=round((time.monotonic() - started) * 1000, 2),
                                status_code=status if type(status) is int else None, headers_received=True)
             phase = "reading_response_body"
             body_started = time.monotonic()
-            raw = response.read()
+            reader = ResponseReader(response, started=started, total_timeout=total_timeout,
+                                    idle_timeout=idle_limit, control=control)
+            with reader:
+                content_type = response.headers.get_content_type() if streaming else "application/json"
+                if streaming and content_type == "text/event-stream":
+                    assert stream is not None
+                    decoded = _read_chat_stream(reader, stream, diagnostics, started)
+                    raw = None
+                else:
+                    if streaming and content_type != "application/json":
+                        raise StreamProtocolError("端点未返回 SSE 或 JSON 响应。")
+                    if streaming:
+                        diagnostics["server_ignored_stream"] = True  # 接受该次 JSON，不补发另一种请求。
+                    raw = reader.json_body()
             diagnostics.update(body_ms=round((time.monotonic() - body_started) * 1000, 2),
-                               response_bytes=len(raw), body_received=True)
-            phase = "decoding_json"
-            decoded = json.loads(raw.decode("utf-8"))
+                               response_bytes=reader.bytes_read, body_received=True)
+            if raw is not None:
+                phase = "decoding_json"
+                decoded = json.loads(raw.decode("utf-8"))
             if not isinstance(decoded, dict):
                 raise ModelRequestError("Model endpoint returned a non-object JSON response")
             phase = "closing_response"
-    except (json.JSONDecodeError, UnicodeDecodeError, ModelRequestError) as exc:
+    except RequestCancelled:
+        raise  # 取消由编排器封存，不让遗留读取线程再追加 response/failed 记录。
+    except (ValueError, UnicodeDecodeError, ModelRequestError) as exc:
         details = finish(exc)
         if observer is not None:
             observer.failed(receipt, type(exc).__name__, diagnostics=details)
-        raise ModelRequestError("Model endpoint returned an invalid JSON response") from exc
+        raise ModelResponseError("Model endpoint returned an invalid or incomplete response") from exc
     except HTTPError as exc:
+        if control is not None and control.cancelled.is_set():
+            exc.close()
+            raise RequestCancelled() from None
         diagnostics.update(headers_ms=round((time.monotonic() - started) * 1000, 2),
                            status_code=exc.code, headers_received=True)
         endpoint = _model_endpoint_error(exc, diagnostics=diagnostics)
@@ -310,17 +387,23 @@ def _request_json_sync(
         details = finish(exc)
         if observer is not None:
             observer.failed(receipt, "URLError", diagnostics=details)
-        raise ModelConnectionError("Unable to connect to model endpoint") from exc
+        error_type = ModelDeadlineError if details.get("timeout_kind") == "attempt_total" else (
+            ModelStreamInterruptedError if streaming and diagnostics["headers_received"] else ModelConnectionError)
+        raise error_type("Unable to connect to model endpoint") from exc
     except (TimeoutError, ConnectionError, OSError) as exc:
         details = finish(exc)
         if observer is not None:
             observer.failed(receipt, type(exc).__name__, diagnostics=details)
-        raise ModelConnectionError("Model connection was interrupted") from exc
+        error_type = ModelDeadlineError if details.get("timeout_kind") == "attempt_total" else (
+            ModelStreamInterruptedError if streaming and diagnostics["headers_received"] else ModelConnectionError)
+        raise error_type("Model connection was interrupted") from exc
     except Exception as exc:
         # 例如 HTTP 协议提前 EOF：补齐审计，但原异常/可重试性保持不变。
         details = finish(exc)
         if observer is not None:
             observer.failed(receipt, type(exc).__name__, diagnostics=details)
+        if streaming and diagnostics["headers_received"] and isinstance(exc, HTTPException):
+            raise ModelStreamInterruptedError("Model stream was interrupted") from exc
         raise
     completed = finish()
     if observer is not None:
@@ -331,14 +414,35 @@ def _request_json_sync(
     return decoded
 
 
-def _post_json_sync(
-    url: str,
-    payload: dict[str, Any],
-    headers: dict[str, str],
-    timeout: float,
-) -> dict[str, Any]:
-    """保留既有内部入口，委托统一请求实现。"""
-    return _request_json_sync("POST", url, payload, headers, timeout)
+def _read_chat_stream(reader: ResponseReader, stream: ChatStream, diagnostics: dict[str, Any], started: float) -> dict[str, Any]:
+    """从共用有界读取器消费 SSE；记录通道首帧计时，正文只在结束后交给 Provider。"""
+    diagnostics.update(first_event_ms=None, first_reasoning_ms=None, first_content_ms=None,
+                       reasoning_chars=0, content_chars=0, events=0, done=False)
+    data: list[str] = []
+    event_bytes = 0
+    while not stream.done:
+        raw = reader.line()
+        if not raw:
+            raise StreamProtocolError("流式响应在 DONE 前结束，不能作为有效报告。")
+        line = raw.decode("utf-8").rstrip("\r\n")
+        if line.startswith("data:"):
+            event_bytes += len(raw)
+            if event_bytes > MAX_EVENT_BYTES:
+                raise StreamProtocolError("模型 SSE 事件超过传输上限。")
+            data.append(line[5:].removeprefix(" "))
+        elif not line and data:
+            channels = stream.consume("\n".join(data))
+            data, event_bytes = [], 0
+            elapsed = round((time.monotonic() - started) * 1000, 2)
+            for channel, present in (("event", bool(stream.events)), ("content", "content" in channels),
+                                     ("reasoning", bool(channels & {"reasoning_content", "thinking"}))):
+                if present and diagnostics["first_" + channel + "_ms"] is None:
+                    diagnostics["first_" + channel + "_ms"] = elapsed
+                    logger.info("model.stream_progress", extra={"stage": "first_" + channel, "duration_ms": elapsed})
+    diagnostics.update(done=True, events=stream.events,
+                       content_chars=sum(map(len, stream.fragments.get("content", []))),
+                       reasoning_chars=sum(len(text) for key in ("reasoning_content", "thinking") for text in stream.fragments.get(key, [])))
+    return stream.finish()
 
 
 def _model_endpoint_error(exc: HTTPError, *, diagnostics: dict[str, Any] | None = None) -> ModelEndpointError:

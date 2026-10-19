@@ -23,6 +23,7 @@ from backend.app.experiments.citations import visible_lines, check_citations
 from backend.app.experiments.report import REPORT_INSTRUCTIONS
 from backend.app.llm.observation import observe_requests
 from backend.app.llm.http import post_json, ModelRequestError
+from backend.app.llm.response_metadata import response_channel_sizes
 from backend.app.experiments.audit.policy import digest
 from backend.app.agents.tools.source import search_literals, SearchProjectTextManyTool
 from backend.app.agents.tools.base import ToolContext
@@ -32,6 +33,19 @@ from backend.app.services.projects.repository import ProjectRepository, ProjectD
 
 
 class AuditTests(unittest.TestCase):
+    def test_hidden_channel_is_measured_without_copying_content(self):
+        result = response_channel_sizes({"choices": [{"message": {"role": "assistant", "content": None,
+            "reasoning_content": "PRIVATE_REASONING", "thinking": "PRIVATE_THINKING"}}]})
+        channel = result["chat_messages"][0]
+        self.assertEqual(len("PRIVATE_REASONING"), channel["fields"]["reasoning_content"]["characters"])
+        self.assertIsNone(channel["fields"]["content"]["characters"])
+        self.assertNotIn("PRIVATE", json.dumps(result))
+        self.assertEqual("protocol_field_characters_not_token_accounting", result["measurement"])
+
+    def test_malformed_optional_channels_do_not_break_audit(self):
+        for choices in (None, 7, "invalid", {}, [None, {"message": "invalid"}]):
+            self.assertEqual([], response_channel_sizes({"choices": choices})["chat_messages"])
+
     def setUp(self):
         self.engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
         Base.metadata.create_all(self.engine)

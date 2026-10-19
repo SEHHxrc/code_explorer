@@ -155,11 +155,8 @@ class ExperimentComparisonService:
             "valid_for_review": valid,
             "quality_warnings": quality_warnings,
             "report_version": next((value["metrics"].get("answer_completeness", {}).get("report_version") for value in lanes.values() if value["metrics"].get("answer_completeness", {}).get("report_version")), None),
-            "protocol": (
-                "static-security-v6" if any(value["metrics"].get("experiment_protocol") == "static-security-v6" for value in lanes.values())
-                else "static-security-v5" if any(value["metrics"].get("experiment_protocol") == "static-security-v5" for value in lanes.values())
-                else "static-security-v4" if any(value["metrics"].get("experiment_protocol") == "static-security-v4" for value in lanes.values())
-                else "static-security-v3" if any(value["metrics"].get("answer_completeness", {}).get("report_version") == "concise-security-v2" for value in lanes.values())
+            "protocol": next((value["metrics"]["experiment_protocol"] for value in lanes.values() if value["metrics"].get("experiment_protocol")), None) or (
+                "static-security-v3" if any(value["metrics"].get("answer_completeness", {}).get("report_version") == "concise-security-v2" for value in lanes.values())
                 else "static-security-v2" if any(value["metrics"].get("answer_completeness", {}).get("report_version") for value in lanes.values())
                 else "static-security-v1" if "security_evidence" in record.execution_order else "legacy-graph"
             ),

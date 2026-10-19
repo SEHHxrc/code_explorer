@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from backend.app.services.security_analysis import SecurityEvidencePromptBuilder
+from backend.app.services.security_analysis import SecurityEvidenceCatalog
 from backend.app.services.security_analysis.contracts import SecurityEvidencePack
 from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
 from backend.app.services.program_graph import ProgramGraphService
@@ -56,14 +56,9 @@ class JavaScriptStateTests(unittest.TestCase):
                     )
                 )
                 self.assertEqual("low", flow.confidence)
-                envelope = SecurityEvidencePromptBuilder().build(pack)
-                finding = next(
-                    item
-                    for item in envelope.findings
-                    if item.rule_id == "JS-SINK-REACT-HTML"
-                )
-                self.assertTrue(any(step.certainty == "may" for step in finding.flow))
-                self.assertTrue(any("批处理" in item for item in finding.limitations))
+                catalog = SecurityEvidenceCatalog(pack.model_dump())
+                self.assertTrue(any(step["certainty"] == "may" for step in catalog.detail(candidate.candidate_id, section="flow", limit=10)["items"]))
+                self.assertTrue(any("批处理" in item.get("description", "") for item in catalog.detail(candidate.candidate_id, section="unresolved", limit=10)["items"]))
                 restored = SecurityEvidencePack.model_validate_json(
                     pack.model_dump_json()
                 )

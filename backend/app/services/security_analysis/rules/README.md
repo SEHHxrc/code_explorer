@@ -12,7 +12,6 @@
 - `go/frameworks/net_http.py`：`http.HandleFunc/Handle(path, handler)` 注册式入口；
 - `c_family/standard_library.py`：C/C++ 标准库、POSIX 与 SQLite 的共用规则；
 - `javascript.py`：JS/TS 共用的 DOM、Node.js 和 Express 声明式规则；
-- `python_rules.py`：旧 `PYTHON_CALL_RULES` 的兼容导出，新代码不应依赖它。
 
 每个规则包拥有独立名称和版本，例如 `python-core/1.0`、`java-core/1.0`、
 `go-core/1.1`、`go-net-http/1.0`。`RulePackRegistry` 按语言选择规则，并拒绝相同标识被静默覆盖。

@@ -33,7 +33,9 @@ test('audit body is escaped text and reading is limited to reviewed or invalid t
     for (const child of node.children || []) visit(child)
   }
   visit(baseParse(descriptor.template.content))
-  const body = nodes.find((node) => node.tag === 'pre')
+  const body = nodes.find((node) => node.tag === 'pre'
+    && node.children.some((child) => child.type === 5 && child.content.content === 'auditText'))
+  assert.ok(body)
   assert.ok(body.children.some((node) => node.type === 5 && node.content.content === 'auditText'))
   assert.ok(!body.props.some((prop) => prop.name === 'html'))
   const button = nodes.find((node) => node.tag === 'el-button'

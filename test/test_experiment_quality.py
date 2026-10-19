@@ -7,7 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
-from backend.app.agents.observations import compact_observation, render_observation_window
+from backend.app.agents.observations import compact_observation, encoded
 from backend.app.agents.orchestrator import AgentRunManager
 from backend.app.agents.contracts import AgentRunRequest
 from backend.app.experiments.context import SecurityExperimentContextBuilder
@@ -17,7 +17,7 @@ from backend.app.llm.response_metadata import ModelResponseMetadata, ModelUsage,
 from backend.app.llm.providers.compatible_provider import OpenAICompatibleProvider
 from backend.app.llm.providers.openai_provider import OpenAIResponsesProvider
 from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
-from backend.app.services.security_analysis import SecurityAnalysisService, SecurityEvidencePromptBuilder
+from backend.app.services.security_analysis import SecurityAnalysisService, SecurityEvidenceCatalog
 from test import test_agent_foundation as fixtures
 
 ANSWER = "## 结论\n未确认。\n## 已核实问题\n无。\n## 未确认风险\n无。\n## 范围与局限\n仅样本。\n" + REPORT_END
@@ -50,34 +50,30 @@ class ExperimentQualityTests(unittest.TestCase):
         self.assertEqual([evidence], compact["result"]["evidence"])
         self.assertLess(compact["result"]["content"]["end_line"], 60)
         self.assertTrue(all(len(line.split(': ', 1)[1]) == 250 for line in compact["result"]["content"]["text"].splitlines()))
-        rendered, metrics = render_observation_window([observation], 2200)
-        self.assertEqual(1, len(json.loads(rendered)["observations"]))
-        self.assertLessEqual(len(rendered), 2200)
-        self.assertEqual(1, metrics["compacted_observations"])
         self.assertEqual(60, observation["result"]["content"]["end_line"])
 
     def test_latest_source_is_not_starved_by_many_old_observations(self):
-        old = [{"call_id": str(i), "name": "list_project_files", "arguments": {},
-                "result": {"content": {"files": ["src/" + "long" * 80 + ".py"]}, "evidence": []}} for i in range(10)]
         latest = {"call_id": "latest", "name": "read_file_range", "arguments": {"path": "main.py"},
                   "result": {"content": {"path": "main.py", "start_line": 1, "end_line": 20,
                                          "text": "\n".join(f"{i}: user = input()" for i in range(1, 21))},
                              "evidence": [{"path": "main.py", "line": 1}]}}
-        text, _ = render_observation_window([*old, latest], 1600)
-        source = next(item for item in json.loads(text)["observations"] if item["call_id"] == "latest")
+        from backend.app.agents.conversation_window import ToolRound, round_messages
+        from backend.app.llm.conversation import ModelMessage
+        messages = round_messages(ToolRound(ModelMessage(role="assistant", content="read"), [latest]), max_chars=1600)
+        source = {"result": json.loads(messages[1]["content"])}
         self.assertIn("1: user = input()", source["result"]["content"]["text"])
-        self.assertLessEqual(len(text), 1600)
+        self.assertLessEqual(len(messages[1]["content"]), 1600)
 
     def test_compact_directory_keeps_whole_paths_and_omission_count(self):
         paths = [f"src/folder/{i}_long_name.py" for i in range(100)]
         observation = {"call_id": "files", "name": "list_project_files", "arguments": {},
                        "result": {"content": {"files": paths}, "evidence": []}}
-        text, _ = render_observation_window([observation], 900)
-        result = json.loads(text)["observations"][0]["result"]["content"]
+        compact = compact_observation(observation, 900)
+        result = compact["result"]["content"]
         self.assertTrue(result["files"])
         self.assertTrue(all(item in paths for item in result["files"]))
         self.assertEqual(100, len(result["files"]) + result["omitted_files"])
-        self.assertLessEqual(len(text), 900)
+        self.assertLessEqual(len(encoded(compact)), 900)
 
     def test_no_candidate_context_includes_real_input_locations_and_scope(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -85,28 +81,31 @@ class ExperimentQualityTests(unittest.TestCase):
             analysis = UnifiedCodeAnalyzer(directory).run_full_analysis()
             pack = SecurityAnalysisService().analyze(project_root=directory, dependency_graph=analysis["dependency_graph"])
             self.assertFalse(pack.candidates)
-            envelope = SecurityEvidencePromptBuilder().build(pack)
-            observation = next(item for item in envelope.observations if item.kind == "source")
+            catalog = SecurityEvidenceCatalog(pack.model_dump())
+            observation = next(item for item in pack.facts.values() if item.fact_kind == "source")
             self.assertEqual("main.py", observation.location.path)
             self.assertEqual(1, observation.location.line)
-            self.assertIn(observation.snippet_id, envelope.snippets)
-            self.assertTrue(envelope.analysis["rule_coverage_available"])
+            self.assertTrue(catalog.detail(observation.fact_id, section="snippets")["snippets"])
+            self.assertTrue(catalog.detail("_coverage", section="protections")["items"])
             self.assertEqual(0, pack.coverage.entrypoint_count)
             self.assertEqual(1, pack.coverage.source_count)
-            self.assertIn("not_project_safety", envelope.analysis["count_semantics"]["zero_detection"])
+            self.assertIn("零条目不证明安全", json.loads(catalog.summary())["semantics"])
 
-    def test_small_context_keeps_both_input_locations_without_broken_json(self):
+    def test_no_path_summary_does_not_fill_budget_with_standalone_sources(self):
         from backend.app.llm.registry import ModelLimits
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, "main.py").write_bytes(b"a = input('a')\nb = input('b')\n")
             analysis = UnifiedCodeAnalyzer(directory).run_full_analysis()
             pack = SecurityAnalysisService().analyze(project_root=directory, dependency_graph=analysis["dependency_graph"])
-            with patch("backend.app.experiments.context.get_model_limits", return_value=ModelLimits(7500, 2400)):
+            # 完整台账 Schema 是固定开销；本测试验证目录而非低于共同指令的拒绝边界。
+            with patch("backend.app.experiments.context.get_model_limits", return_value=ModelLimits(18000, 2400, max_input_tokens=32000)):
                 packet = SecurityExperimentContextBuilder().build(project_id="p", question="是否存在 RCE？", artifact={"security_evidence": pack.model_dump()})
             value = json.loads(packet.prompt_context.split("\n", 1)[1])
-            self.assertEqual(2, len(value["observations"]))
-            self.assertEqual(0, value["omitted_observations"])
-            self.assertEqual({1, 2}, {item.line for item in packet.evidence})
+            self.assertEqual([], value["items"])
+            self.assertFalse(value["has_more"])
+            self.assertEqual("_coverage", value["coverage_details_id"])
+            self.assertIn("零条目不证明安全", value["semantics"])
+            self.assertEqual([], packet.evidence)  # 目录定位不是已经展示的源码证据。
 
     def test_baseline_preflight_rejects_over_budget_question(self):
         from backend.app.llm.registry import ModelLimits
@@ -125,11 +124,11 @@ class ExperimentQualityTests(unittest.TestCase):
             Path(directory, "main.py").write_text(source, encoding="utf-8")
             analysis = UnifiedCodeAnalyzer(directory).run_full_analysis()
             pack = SecurityAnalysisService().analyze(project_root=directory, dependency_graph=analysis["dependency_graph"])
-            with patch("backend.app.experiments.context.get_model_limits", return_value=ModelLimits(7500, 2400)):
+            with patch("backend.app.experiments.context.get_model_limits", return_value=ModelLimits(18000, 2400, max_input_tokens=32000)):
                 packet = SecurityExperimentContextBuilder().build(project_id="p", question="是否存在 RCE？", artifact={"security_evidence": pack.model_dump()})
             value = json.loads(packet.prompt_context.split("\n", 1)[1])
-            self.assertTrue(value["findings"] or any(item["name"] == "eval" for item in value["observations"]))
-            self.assertTrue(value["truncated"])
+            self.assertTrue(any(item.get("sink", item.get("location", {})).get("name") == "eval" for item in value["items"]))
+            self.assertTrue(value["has_more"])
 
     def test_registration_prefilter_preserves_original_match_order(self):
         """对比旧全量匹配结果，并确保无关调用不进入每个函数的注册扫描。"""
@@ -163,15 +162,12 @@ class ExperimentQualityTests(unittest.TestCase):
             )
             analysis = UnifiedCodeAnalyzer(directory).run_full_analysis()
             pack = SecurityAnalysisService().analyze(project_root=directory, dependency_graph=analysis["dependency_graph"])
-            builder = SecurityEvidencePromptBuilder()
-            header = builder._empty_envelope(pack)
-            finding = builder._finding(pack, pack.candidates[0])
-            compact = builder._compact_header(header, pack)
-            enough = builder._size(compact.model_copy(update={"findings": [finding],
-                "snippets": {key: pack.snippets[key] for key in finding.snippet_ids}})) + 128
-            larger = max(enough + 1, int(builder._size(header) / 0.65) + 1)
-            self.assertTrue(builder.build(pack, max_chars=enough).findings)
-            self.assertTrue(builder.build(pack, max_chars=larger).findings)
+            catalog = SecurityEvidenceCatalog(pack.model_dump())
+            small = json.loads(catalog.summary(max_chars=3000))
+            larger = json.loads(catalog.summary(max_chars=8000))
+            self.assertTrue(small["items"])
+            self.assertTrue(larger["items"])
+            self.assertEqual(small["items"][0]["id"], larger["items"][0]["id"])
 
     def test_full_large_tool_observation_is_persisted_with_all_evidence(self):
         async def scenario():

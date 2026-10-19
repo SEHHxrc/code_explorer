@@ -15,7 +15,7 @@ from backend.app.llm.http import post_json
 from backend.app.llm.response_metadata import response_metadata
 from backend.app.llm.conversation import ModelMessage
 from backend.app.llm.budget import validate_provider_request
-from backend.app.llm.settings import ModelLimits, get_model_limits, get_model_request_timeout
+from backend.app.llm.settings import ModelLimits, get_model_limits, get_model_transport_settings
 
 
 class OpenAICompatibleProvider(ModelProvider):
@@ -48,7 +48,8 @@ class OpenAICompatibleProvider(ModelProvider):
         self.output_token_parameter = output_token_parameter
         self.reasoning_effort = reasoning_effort
         self.model_limits = replace(model_limits or get_model_limits(model), max_output_tokens=max_output_tokens)
-        self.request_timeout_seconds = get_model_request_timeout()
+        self.transport_settings = get_model_transport_settings()
+        self.request_timeout_seconds = self.transport_settings.request_timeout_seconds
 
     async def generate(self, *, instructions: str, prompt: str) -> ModelResult:
         """调用 ``/chat/completions`` 生成文本并输出规范化结果。"""
@@ -59,7 +60,7 @@ class OpenAICompatibleProvider(ModelProvider):
 
     def capabilities(self) -> ProviderCapabilities:
         """输出该适配器声明的工具调用能力。"""
-        return ProviderCapabilities(streaming=False, tool_calling=True, structured_output=False)
+        return ProviderCapabilities(streaming=True, tool_calling=True, structured_output=False)
 
     def request_payload(
         self, *, instructions: str, messages: list[ModelMessage], tools: list[dict[str, Any]],
@@ -72,6 +73,10 @@ class OpenAICompatibleProvider(ModelProvider):
             payload[self.output_token_parameter] = payload.pop("max_tokens")
         if self.reasoning_effort:
             payload["reasoning_effort"] = self.reasoning_effort
+        if self.transport_settings.chat_stream:
+            payload["stream"] = True
+            if self.transport_settings.include_stream_usage:
+                payload["stream_options"] = {"include_usage": True}
         return payload
 
     async def generate_with_tools(
@@ -91,6 +96,8 @@ class OpenAICompatibleProvider(ModelProvider):
             request,
             headers,
             timeout=self._request_timeout(timeout), transient_retries=transient_retries,
+            total_timeout=min(self.transport_settings.total_timeout_seconds, timeout) if timeout is not None else self.transport_settings.total_timeout_seconds,
+            stream_idle_timeout=self.transport_settings.stream_idle_timeout_seconds,
         )
         choices = payload.get("choices") or []
         message = choices[0].get("message", {}) if choices else {}

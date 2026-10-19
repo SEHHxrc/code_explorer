@@ -10,7 +10,7 @@ from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
 from backend.app.services.program_graph import ProgramGraphArtifact, ProgramGraphService
 from backend.app.services.security_analysis import (
     SecurityAnalysisService,
-    SecurityEvidencePromptBuilder,
+    SecurityEvidenceCatalog,
 )
 from backend.app.services.security_analysis.contracts import SecurityEvidencePack
 from backend.app.services.security_analysis.scanner import SecurityScanner
@@ -307,12 +307,9 @@ class TaintLanguageGapTests(unittest.TestCase):
                     }
                 )
                 self.assertTrue(self._verified(pack, "C-SINK-SHELL"))
-                finding = next(
-                    item
-                    for item in SecurityEvidencePromptBuilder().build(pack).findings
-                    if item.claim == "interprocedural_dataflow"
-                )
-                self.assertTrue(any("输出参数" in item for item in finding.limitations))
+                candidate = next(item for item in pack.candidates if item.path_kind == "interprocedural_dataflow")
+                details = SecurityEvidenceCatalog(pack.model_dump()).detail(candidate.candidate_id, section="unresolved", limit=10)
+                self.assertTrue(any("输出参数" in item.get("description", "") for item in details["items"]))
 
     def test_c_complex_output_pointer_reports_gap(self) -> None:
         """buffer+offset 不猜测别名，保留事实和显式缺口。"""

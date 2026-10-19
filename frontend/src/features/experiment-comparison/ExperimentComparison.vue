@@ -23,6 +23,16 @@
 
     <el-alert v-if="comparison?.quality_warnings?.length" :title="comparison.quality_warnings.join(' ')"
       type="warning" :closable="false" show-icon />
+    <el-alert v-if="['static-security-v8-full-source', 'static-security-v13-full-source-paths', 'static-security-v16-full-source-ledger'].includes(comparison?.protocol)" type="info" :closable="false"
+      title="完整源码补充实验：两组初始包含相同完整范围源码，零工具、单次报告，仅静态事实不同；不与按需分批试次混合统计。" />
+    <el-alert v-if="comparison?.protocol === 'static-security-v9-cumulative-evidence'" type="info" :closable="false"
+      title="累计证据预算实验：两组使用相同原始文件工具和累计字节配额；静态事实也占用配额。理论可读完与实际已展示不同，不与其他协议合并统计。" />
+    <el-alert v-if="comparison?.protocol === 'static-security-v10-navigation'" type="info" :closable="false"
+      title="静态导航选择实验：沿用累计配额、共同工具和报告规则，仅替换静态选择/表达；未连接的危险操作不是安全结论，不与旧事实包试次合并统计。" />
+    <el-alert v-if="['static-security-v11-path-summary', 'static-security-v12-cumulative-paths'].includes(comparison?.protocol)" type="info" :closable="false"
+      title="路径摘要协议：初始只提供传播路径、结构线索和操作线索；优先级是核验顺序而非漏洞概率。覆盖与局限按需读取，源码反向切片未启用；不与旧摘要试次混算。" />
+    <el-alert v-if="['static-security-v14-review-ledger', 'static-security-v15-cumulative-ledger', 'static-security-v16-full-source-ledger'].includes(comparison?.protocol)" type="info" :closable="false"
+      title="发现台账协议：两组共用六类覆盖核对，摘要计数和报告分区由台账状态生成；机械一致不代表结论正确。导航、轮次和预算未因此扩大，不与旧报告协议混算。" />
 
     <ExperimentHistory :project-id="projectId" :refresh-key="historyRefresh" @open="openHistory" />
 
@@ -37,7 +47,8 @@
         :disabled="running"
       />
       <div class="setup-actions">
-        <span>展示和入队顺序均已随机化；两组指令、模型、原始文件工具和步骤预算相同。</span>
+        <span>两组使用相同分批规则和调查预算；已报告证据不重复选择。</span>
+        <el-input-number v-model="maxSteps" :min="1" :max="24" :disabled="running" aria-label="两组共同调查轮次" />
         <el-button
           type="primary"
           :loading="running"
@@ -60,11 +71,23 @@
         <div class="answer">
           {{ displayAnswer(laneRun(lane)?.answer) || laneRun(lane)?.error || (completed ? '没有返回答案' : '正在分析项目证据…') }}
         </div>
+        <el-collapse v-if="laneMetrics(lane).batch_reports?.length" accordion
+          :model-value="laneMetrics(lane).batch_reports.at(-1).batch_id">
+          <el-collapse-item v-for="batch in laneMetrics(lane).batch_reports" :key="batch.batch_id"
+            :name="batch.batch_id" :title="`第 ${batch.batch_id} 批报告（模型判断，非语义验证）`">
+            <div class="answer">{{ displayAnswer(batch.report) }}</div>
+          </el-collapse-item>
+        </el-collapse>
+        <el-alert v-if="laneMetrics(lane).pending_batch" type="warning" :closable="false"
+          :title="`第 ${laneMetrics(lane).pending_batch.batch_id} 批尚未输出完整报告；此前批次仍保留。`" />
         <dl class="metrics">
-          <div><dt>耗时</dt><dd>{{ metric(lane, 'duration_ms', ' ms') }}</dd></div>
+          <div><dt>墙钟耗时</dt><dd>{{ metric(lane, 'duration_ms', ' ms') }}</dd></div>
+          <div><dt>剔除前置拒绝后耗时</dt><dd>{{ metric(lane, 'adjusted_duration_ms', ' ms') }}</dd></div>
+          <div><dt>已剔除拒绝/退避</dt><dd>{{ metric(lane, 'excluded_network_ms', ' ms') }}</dd></div>
           <div><dt>供应商输入 Token</dt><dd>{{ metric(lane, 'actual_input_tokens') }}</dd></div>
           <div><dt>供应商输出 Token</dt><dd>{{ metric(lane, 'actual_output_tokens') }}</dd></div>
           <div><dt>供应商总 Token</dt><dd>{{ metric(lane, 'actual_total_tokens') }}</dd></div>
+          <div><dt>按冻结口径核算模型总 Token</dt><dd>{{ metric(lane, 'accounted_model_total_tokens') }}</dd></div>
           <div><dt>其中推理 Token</dt><dd>{{ metric(lane, 'reasoning_tokens') }}</dd></div>
           <div><dt>用量记录</dt><dd>{{ usageLabel(lane) }}</dd></div>
           <div><dt>供应商终止原因</dt><dd>{{ finishReasons(lane) }}</dd></div>
@@ -91,13 +114,20 @@
           </div>
           <div><dt>工具调用</dt><dd>{{ metric(lane, 'tool_calls') }}</dd></div>
           <div>
-            <el-tooltip content="包含初始静态端点和工具结果，按 path、line、symbol 去重；不等于漏洞数量、模型采纳量或答案正确性">
+            <el-tooltip content="仅对显式证据元数据按 path、line、symbol 去重；完整源码条件按固定范围与实发审计核对，0 不代表未提供源码。该计数不等于漏洞数量或答案正确性">
               <dt>去重证据条目</dt>
             </el-tooltip>
             <dd>{{ metric(lane, 'evidence_count') }}</dd>
           </div>
         </dl>
         <p class="audit-note">审计：{{ auditLabel(lane) }}。引用检查仅做机械核对，不代表结论正确。</p>
+        <p v-if="laneMetrics(lane).assumed_zero_token_attempts" class="audit-note">
+          按本次冻结的当前端点声明，{{ laneMetrics(lane).assumed_zero_token_attempts }} 次 429/503 为执行前拒绝，假设模型 Token 为 0；这不是供应商返回的 usage，也不代表所有端点如此。未知成本尝试：{{ metric(lane, 'unknown_cost_http_attempts') }}。
+        </p>
+        <details v-if="laneMetrics(lane).findings_ledger" class="audit-note">
+          <summary>发现台账与覆盖状态（模型判断，非语义验证）</summary>
+          <pre class="audit-body">{{ JSON.stringify(laneMetrics(lane).findings_ledger.ledger, null, 2) }}</pre>
+        </details>
         <p v-if="laneMetrics(lane).failure_diagnosis" class="audit-note">当前诊断：{{ laneMetrics(lane).failure_diagnosis.message }}</p>
         <ul v-if="laneMetrics(lane).citation_check?.warnings?.length" class="citation-warnings">
           <li v-for="(warning, index) in laneMetrics(lane).citation_check.warnings" :key="index">
@@ -124,6 +154,7 @@
       </section>
     </details>
 
+    <BlindReviewResult :review="comparison?.review" />
     <div v-if="completed && comparison.valid_for_review && !reveal" class="review">
       <h4>揭盲前评分</h4>
       <div class="score-grid">
@@ -155,6 +186,7 @@ import { computed, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiErrorMessage } from '../../services/httpClient.js'
 import ExperimentHistory from './ExperimentHistory.vue'
+import BlindReviewResult from './BlindReviewResult.vue'
 import { historyConditions } from './history.js'
 import {
   createExperimentComparison,
@@ -171,6 +203,7 @@ const props = defineProps({
 
 const laneNames = ['left', 'right']
 const question = ref('')
+const maxSteps = ref(8)
 const comparison = ref(null)
 const reveal = ref(null)
 const running = ref(false)
@@ -194,7 +227,7 @@ const laneMetrics = (lane) => comparison.value?.lanes?.[lane]?.metrics || {}
 const usageLabel = (lane) => ({ complete: '全部请求已报告', partial: '仅部分请求/字段，非完整总量', unavailable: '供应商未报告或历史未记录' }[laneMetrics(lane).usage_status] || '未知')
 const completenessLabel = (lane) => ({ complete: '生成及格式完整（非覆盖完整）', incomplete: '未通过', unknown: '未知，不能认定完整' }[laneMetrics(lane).answer_completeness?.status] || '未知')
 const finishReasons = (lane) => laneMetrics(lane).finish_reasons?.join(' / ') || '未记录'
-const reportModeLabel = (lane) => ({ tools_none: '保留定义，禁用新工具', history_no_tools: '无工具定义，保留有效历史' }[laneMetrics(lane).execution_policy?.final_report_mode] || '历史未记录')
+const reportModeLabel = (lane) => ({ tools_none: '保留定义，禁用新工具', history_no_tools: '无工具定义，保留有效历史', single_shot_no_tools: '完整源码，零工具单次报告' }[laneMetrics(lane).execution_policy?.final_report_mode] || '历史未记录')
 const auditLabel = (lane) => ({ complete: '可见传输记录已保存', incomplete: '审计不完整', expired: '正文已按保留策略过期清理', reserved: '已预留，等待运行', recording: '正在记录', unavailable: '历史未记录' }[laneMetrics(lane).audit?.status] || '历史未记录')
 const citationReason = (reason) => ({ path_outside_snapshot: '路径不在允许范围', path_not_in_snapshot: '快照中无此文件',
   citation_syntax_invalid: '引用格式不规范，未认定为虚构证据', path_abbreviation_resolved: '路径简称可唯一对应，但不符合完整路径规范',
@@ -262,6 +295,8 @@ const openHistory = async (comparisonId) => {
     if (ticket !== generation) return
     comparison.value = result
     question.value = result.question
+    const recordedSteps = Object.values(result.lanes || {}).map((lane) => lane.metrics?.execution_policy?.max_tool_rounds)
+    if (recordedSteps.length === 2 && Number.isInteger(recordedSteps[0]) && recordedSteps[0] >= 1 && recordedSteps[0] === recordedSteps[1]) maxSteps.value = recordedSteps[0]
     reveal.value = result.reveal
     if (result.review) {
       preferredLane.value = result.review.preferred_lane
@@ -288,7 +323,7 @@ const start = async () => {
   const stream = new AbortController()
   controller = stream
   try {
-    const result = await createExperimentComparison(projectId, { question: text, max_steps: 4 })
+    const result = await createExperimentComparison(projectId, { question: text, max_steps: maxSteps.value })
     if (ticket !== generation) return
     comparison.value = result
     historyRefresh.value++
@@ -316,6 +351,8 @@ const submitReview = async () => {
     if (ticket !== generation) return
     reveal.value = result.reveal
     comparison.value.reviewed = true
+    comparison.value.review = { preferred_lane: preferredLane.value,
+      scores: { left: { ...scores.left }, right: { ...scores.right } }, notes: notes.value }
     historyRefresh.value++
     ElMessage.success('评分已保存，实验组身份已揭示。')
   } catch (error) {

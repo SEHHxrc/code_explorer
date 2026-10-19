@@ -100,9 +100,9 @@ class ModelProvider(ABC):
 
     def _request_timeout(self, override: float | None) -> float:
         """显式探测超时优先，否则继承实例冻结值；非法值拒绝，不能用 or 静默覆盖零。"""
-        value = override if override is not None else getattr(self, "request_timeout_seconds", 300.0)
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 1 <= value <= 900:
-            raise ValueError("单次请求超时必须为 1～900 秒。")
+        value = override if override is not None else getattr(self, "request_timeout_seconds", 600.0)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value) or not 1 <= value <= 3600:
+            raise ValueError("单次请求超时必须为 1～3600 秒。")
         return float(value)
 
     def request_payload(

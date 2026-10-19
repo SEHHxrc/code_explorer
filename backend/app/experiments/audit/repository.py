@@ -26,18 +26,24 @@ class AuditRepository:
         self.session_factory = session_factory
         self.limits = limits or AuditLimits.from_environment()
 
-    def reserve_pair(self, session: Session, comparison_id: str, project_id: str, user_id: str, run_ids: list[str], contract_hash: str = "") -> None:
+    def reserve_pair(self, session: Session, comparison_id: str, project_id: str, user_id: str, run_ids: list[str], contract_hash: str | dict[str, str] = "", *, input_snapshots: dict[str, dict[str, Any]] | None = None) -> None:
         """在创建配对的同一写事务中为两组预留配额；不足时不创建任何运行。"""
         used = session.query(func.sum(ExperimentAuditSessionModel.reserved_bytes)).scalar() or 0
         if used + len(run_ids) * self.limits.run_bytes > self.limits.total_bytes:
             raise AuditError("实验审计存储配额不足，请清理或提高配额后再创建配对。")
         for run_id in run_ids:
+            snapshot = input_snapshots[run_id] if input_snapshots is not None else None
+            size = len(json.dumps(snapshot).encode("utf-8")) if snapshot is not None else 0
+            if size > min(self.limits.record_bytes, self.limits.run_bytes):
+                raise AuditError("完整源码冻结输入超过审计存储上限；未创建配对。")
             session.add(ExperimentAuditSessionModel(
                 run_id=run_id, project_id=project_id, user_id=user_id, comparison_id=comparison_id,
-                contract_hash=contract_hash,
-                reserved_bytes=self.limits.run_bytes, payload_bytes=0,
+                contract_hash=contract_hash[run_id] if isinstance(contract_hash, dict) else contract_hash,
+                reserved_bytes=self.limits.run_bytes, payload_bytes=size,
                 expires_at=datetime.now(timezone.utc) + timedelta(days=self.limits.retention_days),
             ))
+            if snapshot is not None:
+                session.add(ExperimentAuditRecordModel(run_id=run_id, kind="input_snapshot", payload=snapshot))
 
     def exists(self, run_id: str, user_id: str) -> bool:
         """只有新实验的预留记录才启用审计；旧记录不补写。"""

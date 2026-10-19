@@ -8,7 +8,7 @@ from pathlib import Path
 
 from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
 from backend.app.services.program_graph import ProgramGraphService
-from backend.app.services.security_analysis import SecurityAnalysisService, SecurityEvidencePromptBuilder
+from backend.app.services.security_analysis import SecurityAnalysisService, SecurityEvidenceCatalog
 from backend.app.services.security_analysis.contracts import SecurityEvidencePack
 from backend.app.services.security_analysis.frontends import CSecurityFrontend, CppSecurityFrontend
 from backend.app.services.security_analysis.scanner import SecurityScanner
@@ -55,9 +55,9 @@ class CFamilySecurityTests(unittest.TestCase):
         self.assertEqual("intra_procedural_dataflow", candidate.path_kind)
         self.assertTrue(any("环境变量" in value for value in candidate.preconditions))
         self.assertTrue(all(item in pack.snippets for item in candidate.snippet_ids))
-        finding = SecurityEvidencePromptBuilder().build(pack).findings[0]
-        self.assertEqual("medium", finding.confidence_dimensions["sink_rule_match"])
-        self.assertEqual("header_and_lexical_scope", finding.sink.context["api_resolution"])
+        finding = SecurityEvidenceCatalog(pack.model_dump()).detail(candidate.candidate_id)["items"][0]
+        self.assertEqual("medium", finding["confidence"])
+        self.assertEqual("header_and_lexical_scope", finding["endpoint_context"][sink.fact_id]["api_resolution"])
 
     def test_c_safe_sibling_declarator_does_not_verify_shell_flow(self) -> None:
         """同一 declaration 的安全兄弟变量不得获得 Source 的返回值污点。"""
@@ -189,9 +189,11 @@ class CFamilySecurityTests(unittest.TestCase):
         self.assertFalse(any(item.get("reason") == "output_argument_binding_unresolved"
                              for item in pack.scan_failures))
         self.assertTrue(any(item.dataflow_verified for item in pack.candidates))
-        finding = SecurityEvidencePromptBuilder().build(pack).findings[0]
-        self.assertEqual([1], finding.source.value_role["output_arguments"])
-        self.assertTrue(any("输出参数" in item for item in finding.limitations))
+        catalog = SecurityEvidenceCatalog(pack.model_dump())
+        candidate = next(item for item in pack.candidates if item.dataflow_verified)
+        finding = catalog.detail(candidate.candidate_id)["items"][0]
+        self.assertEqual([1], finding["source"]["parameter_roles"]["output_arguments"])
+        self.assertTrue(any("输出参数" in item["description"] for item in catalog.detail(candidate.candidate_id, section="unresolved", limit=10)["items"] if item["kind"] == "limitation"))
 
     def test_exec_fixed_program_argument_is_not_shell_injection(self) -> None:
         """exec 的固定程序路径与可控参数不同；只验证声明为路径角色的实参。"""

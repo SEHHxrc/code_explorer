@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from backend.app.services.syntax_analysis.parameters import java_parameter_parts
-from backend.app.services.syntax_analysis.static_sequences import static_sequence_value
 
 import ast
 from typing import Any
@@ -326,16 +325,7 @@ class _JavaIRCollector(TreeSitterIRCollector):
 
     def _expression(self, node: Any) -> IRExpression:
         """保留表达式文本、变量标识符、字面量和值调用形态。"""
-        literal = self._literal(node)
-        return IRExpression(
-            text=self._text(node)[:1000],
-            identifiers=self._identifiers(node),
-            is_literal=node.type in _LITERAL_NODES,
-            literal=literal,
-            kind=node.type,
-            contains_call=any(item.type in _CALL_NODES for item in self._walk(node)),
-            binding_value=static_sequence_value(node, self._identifiers),
-        )
+        return self._sequence_expression(node, self._literal(node), _LITERAL_NODES, _CALL_NODES)
 
     def _literal(self, node: Any) -> Any:
         """在不执行代码的前提下解析常见 Java 标量字面量。"""

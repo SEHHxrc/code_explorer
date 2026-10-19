@@ -1,5 +1,20 @@
 # 静态安全证据模块
 
+按需交付入口是 `evidence_query.SecurityEvidenceCatalog(raw_pack)`：`summary()` 调用公共路径选择器，`search()` 复用同一优先级目录、绑定快照和排除集合分页，`detail(id, section, offset, limit)` 解引用原候选或事实 ID，读取完整路径步骤或已有共享片段。不重新扫描、不调用 LLM、不把候选当结论。实际查询与已报告状态由 Agent 层负责；不能按需恢复保留阶段未保存的内容。旧 1.4 投影实现已经移除，普通 Agent、网页实验和命令行实验均使用这一入口。
+
+特殊 ID `_coverage` 不参与候选选择：overview 返回全局覆盖，unresolved 分页提供全部局限和扫描失败（不含内部异常正文），protections 返回规则覆盖配置而不是防护成立结论。摘要省略的全局说明仍可查询，不能把启用规则当作实际框架使用或完整覆盖。
+
+初始摘要的唯一选择入口为 `evidence_selection.SecurityEvidenceSelector(raw_pack, paths=None).build(max_bytes=...)`，
+输出 `security-path-summary-v2`，由 `encode_navigation()` 统一紧凑序列化和 UTF-8 计费。
+普通 Agent、网页按需实验和累计预算补充实验均复用它，直接替换旧零散事实/实现组摘要，不再并行保留旧摘要引擎。
+目录只包含 `propagation_path → structural_lead → operation_lead`；优先级是核验顺序，非漏洞概率。
+同函数共现不证明调用关系，归入操作线索；Guard/Sanitizer、孤立 Source、规则说明及全局统计不填入摘要。
+头部仅保留快照、类型/省略计数和必要语义，覆盖与完整局限通过 `_coverage` 查询。
+短路径可展开全部原有步骤；长路径显式 `sequence_delivery=detail_only`，仍用原 ID 续读，不抽样首尾。
+极长端点改为 ID 引用并标明 `locators_delivery=detail_only`，不以短的低优先级线索取代它。
+不读取源码、不生成新关系、不实现反向切片，属于安全证据交付域。历史交付与当前设计见
+[选择整改说明](../../../../docs/STATIC_EVIDENCE_SELECTION.md)。
+
 本模块将依赖分析的结构拓扑、语言前端 IR、版本化安全规则和语言数据流分析组合成有界证据包，不执行项目代码，也不自行调用大模型。稳定入口为：
 
 ```python
@@ -20,11 +35,9 @@ pack = SecurityAnalysisService().analyze(
 `interprocedural_dataflow` 通过已解析调用的实参/形参绑定，或显式有界状态值边界连接不同函数，且最终变量进入规则指定的 Sink 实参。CFG 已参与计算，但尚未
 证明具体路径在运行时可行，因此数据流仍保守标记为 `may_reach_sink`。
 
-面向模型的入口是 `SecurityEvidencePromptBuilder.build()/render()`，输出 `LLMSecurityEvidenceEnvelope 1.4`。候选的 `snippet_ids` 和观察的 `snippet_id` 引用同页 `snippets` 表；端点、路径、角色、位置、置信度与局限不删减。预算直接按共享后的完整表示计算，分页不会留下悬空引用。`to_json()` 是唯一紧凑序列化实现，供模型上下文和预算计量共用；工具通过同一模型输出字典。旧 1.0～1.3 审计正文原样保留，不按新协议校验或回填。完整设计见 `docs/STATIC_SECURITY_LLM_FORMAT.md`。
+`detail(id, section=...)` 是唯一详细交付实现。overview 保留路径定位、原候选引用/前提及端点匹配上下文；flow 分页保留全部原步骤；snippets 用 `snippet_id` 引用同页 `snippets` 表，不重复嵌入正文；protections/unresolved 提供原事实、局限和未解析信息，不抽样路径或静默截断。旧 1.0～1.4 审计正文原样读取，不按新协议重建。旧格式说明仅作历史设计参考。
 
-无候选不再只提供统计：输入仍可包含真实入口以及未配对的 Source/Sink 观察与精确位置，空间允许时附带脱敏源码片段；这些观察只代表规则匹配，不代表漏洞。先保留各条观察的定位，再分配片段预算。小上下文启用紧凑头部，保留完整计数和实际规则覆盖类别，合并重复解释；明确标记省略与表示方式。完整静态事实、原坐标和规则描述仍保存在产物中，不为适配模型预算改写。
-
-完整候选超预算时，优先提供高风险 Sink 和候选相关 Source 的定位，再考虑入口元数据；不能只因为入口对象较大就把所有安全观察挤掉。紧凑头部保留事实实际留存数、证据体量限制标记、覆盖缺口分类计数与少量完整示例，其余缺口明示省略，完整诊断仍在产物中。
+无 Sink/路径时返回空目录，不以孤立 Source、Guard 或统计填充；完整事实及已有片段仍可按已知 ID 读取。零条目不等于安全，统计与扫描局限通过 `_coverage` 查询。完整静态事实、坐标和规则描述继续保存在产物中。
 
 `rule_coverage` 描述本次启用的规则、类别及框架匹配器，而非证明该框架存在或功能全覆盖。`coverage.entrypoints` 是已识别的外部触发函数数，不能代替所有 CLI/脚本/`input()` 入口；Sources/Sinks 是当前规则下的观察数，Candidates 是有界候选数而非漏洞数。零候选只能说明当前规则与扫描范围未产生候选，不能据此判定不存在 RCE 或其他安全问题。历史产物缺少规则描述时标为不可用，不根据新规则猜测历史覆盖。
 
@@ -84,7 +97,6 @@ Spring Web/Servlet、Go 标准库与 `net/http`、C/C++ 标准库/POSIX/SQLite�
 | `ir.py` | 规则无关的 `SecurityProgramIR`、调用参数和源码位置。 |
 | `registry.py` | 前端、语言语义和规则包注册表。 |
 | `scanner.py` | 按依赖图语言范围编排全部已注册前端和规则包。 |
-| `python_scanner.py` | 旧 Python 专用入口的兼容门面。 |
 | `frontends/base.py` | `LanguageFrontend` 抽象基类。 |
 | `frontends/python.py` | Python AST 到通用 IR。 |
 | `frontends/treesitter.py` | 多语言 Tree-sitter 文件编排、解析器池和失败隔离模板。 |
@@ -118,8 +130,8 @@ Spring Web/Servlet、Go 标准库与 `net/http`、C/C++ 标准库/POSIX/SQLite�
 | `path_finder.py` | 引用依赖图 calls 边计算有界结构路径。 |
 | `slicer.py` | 提取有界完整源码行并遮蔽常见凭据；实际显示行与请求行范围分开，超长单行显式省略。 |
 | `knowledge.py` | CWE/RAG 异步 Provider 预留接口；当前默认空实现。 |
-| `llm_contracts.py` | 面向模型的自包含安全候选协议。 |
-| `llm_context.py` | 问题相关排序、路径压缩、预算控制和 JSON 序列化。 |
+| `evidence_query.py` | `SecurityEvidenceCatalog`：既有产物的有界目录、快照绑定筛选及按 ID 分页详情。 |
+| `evidence_selection.py` | `SecurityEvidenceSelector`：无源码正文的有界实现导航、原有关系完整投影与省略计数。 |
 | `service.py` | 组合扫描、路径、切片和去重注册表。 |
 
 ## 入口点与 Source
@@ -136,7 +148,8 @@ Spring Web/Servlet、Go 标准库与 `net/http`、C/C++ 标准库/POSIX/SQLite�
 
 - 已实现函数内变量级传播，并消费八语言 ProgramGraph 的字段/成员、静态下标和精确赋值配对；当前安全规则覆盖的 Python、Java、Go、C、C++ 可执行最多四层的已解析调用实参到形参、直接返回值到调用结果变量传播。另支持直接嵌套单返回 Source、可变参数常量成员及 Go 直接多返回分量。词法路径不代表堆对象敏感分析，尚未实现路径条件求解、对象/字段/容器别名分析、动态下标元素身份、通用嵌套调用结果和完整对象传播。
 - 全部语言语义实现只建立调用实参和形参的语法绑定，不宣称值受污染。Java、Go、C、C++ 共用位置绑定实现，Python 保留关键字参数钩子。
-- 已知返回值 Sanitizer 会截断当前函数内的简单名字传播；Guard 和复杂 Sanitizer 是否有效仍需路径条件分析或 Agent 验证。
+- 当前规则标记的返回值 Sanitizer 会截断函数内简单名字传播，但尚未按目标 Sink 上下文证明净化有效，可能漏链。
+  Guard/Sanitizer 匹配不能直接作为防护成立结论；该上游边界不能由交付选择器修复。
 - 完整依赖图、Repo Map、架构概述和系统生成命令不会写入安全证据包。
 - 安全规则 IR 与 ProgramGraph 当前仍各自解析规则已覆盖语言的源码，但项目文件范围、符号和调用点身份已经统一；后续可在不改变契约的前提下共享语言前端语法缓存。
 

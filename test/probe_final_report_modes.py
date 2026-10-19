@@ -26,6 +26,7 @@ from backend.app.agents.reporting import phase_message, PHASE_VERSION
 from backend.app.experiments.context import SECURITY_EXPERIMENT_INSTRUCTIONS
 from backend.app.experiments.tools import create_experiment_tool_registry
 from backend.app.experiments.report import assess_answer
+from backend.app.experiments.findings import parse_ledger
 from backend.app.experiments.audit.policy import digest
 from backend.app.llm.base import ModelOutputError
 from backend.app.llm.conversation import ModelMessage, validate_messages
@@ -36,7 +37,7 @@ from backend.app.llm.registry import create_model_provider
 def fixed_history() -> list[ModelMessage]:
     """构造完整配对历史，仅包含合成文件和已获得的工具观察，不实际执行工具。"""
     messages = [
-        ModelMessage(role="user", content="这是合成协议测试，不是真实项目安全审计。已读取 fixture.py。停止调查，按四段报告分别用一句话说明没有真实项目，不编造问题，最后输出结束标记。"),
+        ModelMessage(role="user", content="这是合成协议测试，不是真实项目安全审计。已读取 fixture.py。停止调查，只输出共同契约的完整台账 JSON，findings 为空，六类覆盖如实标记，说明合成范围和局限；不编造问题，不手写 Markdown。"),
         ModelMessage(role="assistant", content=None, tool_calls=[{"id": "fixture-read", "type": "function", "function": {
             "name": "read_file_range", "arguments": '{"path":"fixture.py","start_line":1,"end_line":1}',
         }}]),
@@ -73,13 +74,16 @@ async def probe() -> list[dict[str, Any]]:
                 transient_retries=0, timeout=60)
             row.update(metadata=asdict(turn.metadata), actual_model=turn.model, actual_tool_calls=len(turn.tool_calls),
                        visible_chars=len(turn.text), visible_sha256=digest(turn.text))
-            row["answer_completeness"] = assess_answer(turn.text, turn.metadata, require_report=True)
             try:
-                AgentRunManager._require_answer(turn, forbid_tools=True, require_report=True)
+                text = AgentRunManager._require_answer(turn, forbid_tools=True)
+                report = parse_ledger(text).render()
+                row["answer_completeness"] = assess_answer(report, turn.metadata, require_report=True)
                 row["passed"] = row["answer_completeness"]["status"] == "complete"
                 row["error_code"] = None if row["passed"] else "completion_not_confirmed"
             except ModelOutputError as error:
                 row.update(passed=False, error_code=error.code)
+            except ValueError:
+                row.update(passed=False, error_code="invalid_findings_ledger")
         except ModelRequestError as error:
             row.update(passed=False, error_code=type(error).__name__, status_code=getattr(error, "status_code", None))
         row["elapsed_ms"] = round((time.monotonic() - started) * 1000, 2)

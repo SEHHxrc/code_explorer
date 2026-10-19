@@ -16,7 +16,7 @@ from backend.app.llm.diagnostics import list_available_models, probe_model_conne
 from backend.app.llm.http import (
     ModelConnectionError,
     ModelEndpointError,
-    _post_json_sync,
+    _request_json_sync,
     post_json,
     _retry_delay,
 )
@@ -112,7 +112,7 @@ class ModelHttpErrorTests(unittest.TestCase):
         response = self.response_fixture()
         with patch("backend.app.llm.http.urlopen", return_value=response) as send, \
                 patch("backend.app.llm.http.time.monotonic", side_effect=[10, 10.2, 10.2, 11.2, 11.4]), observe_requests(observer):
-            self.assertEqual({"ok": True}, _post_json_sync("http://mock", {"max_tokens": 8192}, {}, 180))
+            self.assertEqual({"ok": True}, _request_json_sync("POST", "http://mock", {"max_tokens": 8192}, {}, 180))
         self.assertEqual(180, send.call_args.kwargs["timeout"])
         self.assertEqual({"max_tokens": 8192}, json.loads(send.call_args.args[0].data))
         timing = observer.received.call_args.kwargs["diagnostics"]
@@ -129,7 +129,7 @@ class ModelHttpErrorTests(unittest.TestCase):
                        side_effect=None if during_read else TimeoutError("PRIVATE_CREDENTIAL_ADDRESS")), \
                     observe_requests(observer), self.assertLogs("backend.app.llm.http", level="WARNING") as logs:
                 with self.assertRaises(ModelConnectionError):
-                    _post_json_sync("http://mock", {}, {}, 180)
+                    _request_json_sync("POST", "http://mock", {}, {}, 180)
             timing = observer.failed.call_args.kwargs["diagnostics"]
             self.assertEqual("reading_response_body" if during_read else "awaiting_response_headers", timing["failure_phase"])
             self.assertEqual(during_read, timing["headers_received"])
@@ -143,7 +143,7 @@ class ModelHttpErrorTests(unittest.TestCase):
         observer = Mock()
         with patch("backend.app.llm.http.urlopen", side_effect=URLError(ConnectionResetError(10054, "PRIVATE"))), observe_requests(observer):
             with self.assertRaises(ModelConnectionError):
-                _post_json_sync("http://mock", {}, {}, 1)
+                _request_json_sync("POST", "http://mock", {}, {}, 1)
         details = observer.failed.call_args.kwargs["diagnostics"]
         self.assertEqual("ConnectionResetError", details["cause_type"])
         self.assertEqual(10054, details["errno"])
@@ -161,7 +161,7 @@ class ModelHttpErrorTests(unittest.TestCase):
             observer = Mock()
             with patch("backend.app.llm.http.urlopen", side_effect=error), observe_requests(observer):
                 with self.assertRaises(ModelEndpointError) as raised:
-                    _post_json_sync("http://mock", {}, {}, 1)
+                    _request_json_sync("POST", "http://mock", {}, {}, 1)
             details = observer.failed.call_args.kwargs["diagnostics"]
             self.assertTrue(raised.exception.retryable)
             self.assertTrue(details["headers_received"])
@@ -180,7 +180,7 @@ class ModelHttpErrorTests(unittest.TestCase):
         observer = Mock()
         with patch("backend.app.llm.http.urlopen", return_value=response), observe_requests(observer):
             with self.assertRaises(IncompleteRead):
-                _post_json_sync("http://mock", {}, {}, 1)
+                _request_json_sync("POST", "http://mock", {}, {}, 1)
         details = observer.failed.call_args.kwargs["diagnostics"]
         self.assertEqual("reading_response_body", details["failure_phase"])
         self.assertNotIn("PRIVATE", json.dumps(details))
@@ -191,7 +191,7 @@ class ModelHttpErrorTests(unittest.TestCase):
         observer = Mock()
         with patch("backend.app.llm.http.urlopen", side_effect=error), observe_requests(observer):
             with self.assertRaises(ModelEndpointError):
-                _post_json_sync("http://mock", {}, {}, 1)
+                _request_json_sync("POST", "http://mock", {}, {}, 1)
         details = observer.failed.call_args.kwargs["diagnostics"]
         self.assertEqual(0, details["error_body_bytes"])
         self.assertEqual("empty", details["error_body_format"])
@@ -211,7 +211,7 @@ class ModelHttpErrorTests(unittest.TestCase):
         error = HTTPError("https://example.test", 429, "Too Many Requests", headers, body)
         with patch("backend.app.llm.http.urlopen", side_effect=error):
             with self.assertRaises(ModelEndpointError) as raised:
-                _post_json_sync("https://example.test", {}, {}, 1.0)
+                _request_json_sync("POST", "https://example.test", {}, {}, 1.0)
         exception = raised.exception
         self.assertEqual(exception.error_code, "credit_balance_exhausted")
         self.assertEqual(exception.request_id, "req_safe123")

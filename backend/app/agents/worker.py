@@ -12,7 +12,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 from backend.app.agents.context_builder import ProjectContextBuilder
-from backend.app.agents.contracts import AgentRunRequest
+from backend.app.agents.contracts import AgentClaim, AgentRunRequest
 from backend.app.agents.orchestrator import AGENT_INSTRUCTIONS, AgentRunManager
 from backend.app.agents.run_store import AgentRunStore
 from backend.app.agents.tools import create_project_tool_registry
@@ -82,6 +82,10 @@ class AgentQueueWorker:
         claim = await asyncio.to_thread(self.store.claim_next, self.worker_id)
         if claim is None:
             return False
+        return await self.execute_claim(claim)
+
+    async def execute_claim(self, claim: AgentClaim) -> bool:
+        """执行已由本 Worker 认领的任务；实验诊断复用此路径，不另写模型/审计循环。"""
         context_token = LOG_CONTEXT.set({**LOG_CONTEXT.get(), "run_id": claim.run_id,
                                          "project_id": claim.project_id, "worker_id": self.worker_id})
         logger.info("agent.job_claimed")
@@ -96,14 +100,29 @@ class AgentQueueWorker:
                     "Project workspace or analysis artifact is unavailable.",
                 )
                 return True
-            manager, prepared_artifact = self._manager_for(claim.strategy, artifact)
-            if claim.strategy in {"baseline", "security_evidence"}:
+            full_source = claim.strategy.startswith("full_source_")
+            cumulative = claim.strategy.startswith("cumulative_")
+            if full_source or cumulative:
+                from backend.app.experiments.repository import ExperimentRepository
+                from backend.app.experiments.full_source import FullSourceContextBuilder, FULL_SOURCE_INSTRUCTIONS
+                from backend.app.agents.tools.base import ToolRegistry
+                prepared_artifact = await asyncio.to_thread(ExperimentRepository(self.store.session_factory).full_source_input, claim.run_id, claim.user_id)
+                if cumulative:
+                    from backend.app.experiments.cumulative import CumulativeContextBuilder, INSTRUCTIONS, tool_registry
+                    manager = AgentRunManager(store=self.store, context_builder=CumulativeContextBuilder(),
+                        tools=tool_registry(prepared_artifact["_cumulative_input"]), instructions=INSTRUCTIONS)
+                else:
+                    manager = AgentRunManager(store=self.store, context_builder=FullSourceContextBuilder(),
+                                              tools=ToolRegistry([]), instructions=FULL_SOURCE_INSTRUCTIONS)
+            else:
+                manager, prepared_artifact = self._manager_for(claim.strategy, artifact)
+            if full_source or cumulative or claim.strategy in {"baseline", "security_evidence"}:
                 from backend.app.experiments.audit import AuditRepository
                 from backend.app.experiments.audit.recorder import AuditRecorder
                 audit_repository = AuditRepository(self.store.session_factory)
                 if await asyncio.to_thread(audit_repository.exists, claim.run_id, claim.user_id):
                     manager.audit = AuditRecorder(audit_repository, claim.run_id, claim.user_id)
-                    manager.audit_artifact = artifact  # 仅供哈希；绝不加入 baseline 模型上下文。
+                    manager.audit_artifact = prepared_artifact if full_source or cumulative else artifact  # 仅供哈希；绝不加入 baseline 模型上下文。
             request = AgentRunRequest(
                 question=claim.question,
                 use_model=claim.use_model,
@@ -160,7 +179,7 @@ class AgentQueueWorker:
             return AgentRunManager(
                 store=self.store,
                 context_builder=SecurityExperimentContextBuilder(),
-                tools=create_experiment_tool_registry(),
+                tools=create_experiment_tool_registry(with_evidence=True),
                 instructions=SECURITY_EXPERIMENT_INSTRUCTIONS,
             ), prepare_experiment_artifact(artifact, with_evidence=True)
         if strategy == "baseline":

@@ -62,7 +62,7 @@ Tree-sitter Parser 池、节点字段/文本读取和类型名称归一化。Pro
 | `frontends/python.py` | Python 语言 collector 与薄前端。 |
 | `frontends/java.py` | Java 语言 collector 与薄前端。 |
 | `passes/cfg.py` | 通用顺序、分支、循环、return、throw、break、continue 和保守 try/catch CFG。 |
-| `passes/reaching_definitions.py` | 基于 CFG 的通用到达定义工作列表算法。 |
+| `passes/reaching_definitions.py` | 基于 CFG 的通用到达定义工作列表算法；一次索引已定义父访问路径的后代，避免每个写入重扫全部变量。保留原工作列表、传播方程、收敛条件、`may` 写入、父字段/容器覆盖、可达性和传播深度。 |
 | `passes/value_flow.py` | 将 Def-Use 增强为包含变量改名与变换语义的值流 Overlay。 |
 | `registry.py` | 语言前端注册表。 |
 | `service.py` | 文件范围复用、前端编排、Overlay 构建与覆盖率汇总入口。 |

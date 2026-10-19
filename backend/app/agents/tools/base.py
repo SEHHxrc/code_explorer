@@ -11,6 +11,7 @@ from pydantic import BaseModel, ValidationError
 
 from backend.app.agents.contracts import ToolResult
 from backend.app.agents.tools.evidence_index import ProjectEvidenceIndex
+from backend.app.agents.batching import AnalysisBatches
 
 
 @dataclass(frozen=True)
@@ -22,6 +23,7 @@ class ToolContext:
     project_root: Path
     artifact: dict[str, Any]
     evidence_index: ProjectEvidenceIndex = field(init=False)
+    batches: AnalysisBatches = field(default_factory=AnalysisBatches)
 
     def __post_init__(self) -> None:
         """校验数据类实例在初始化后的约束。"""
@@ -37,11 +39,14 @@ class AgentTool(ABC):
     def schema(self) -> dict[str, Any]:
         """返回工具名称、说明和严格 JSON 参数模式。"""
         parameters = self.arguments_model.model_json_schema()
+        parameters.pop("title", None)
+        parameters.pop("description", None)  # 工具职责已由上层 description 明确，不重复模型类说明。
         properties = parameters.get("properties", {})
         parameters["required"] = list(properties)
         parameters["additionalProperties"] = False
         for definition in properties.values():
             definition.pop("default", None)
+            definition.pop("title", None)
         return {
             "type": "function",
             "name": self.name,

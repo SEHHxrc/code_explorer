@@ -35,21 +35,26 @@ if provider is not None:
 | `CODE_EXPLORER_LLM_MAX_CONTEXT_CHARS` | 否 | 旧字符保护，默认 0（关闭）；旧 .env 中的非零值仍同时生效。 |
 | `CODE_EXPLORER_LLM_MAX_OUTPUT_TOKENS` | 否 | 未配置默认 2400；显式留空则省略输出上限，由平台决定，并非无限输出。有限值为 128～32768，非法值明确报错。 |
 | `CODE_EXPLORER_LLM_OUTPUT_RESERVE_TOKENS` | 否 | 省略输出上限时的本地窗口预留，默认 32768，范围 128～1000000；不发送给平台、不限制实际输出。有限模式仍按实际上限预留。 |
-| `CODE_EXPLORER_LLM_REQUEST_TIMEOUT_SECONDS` | 否 | 单次 socket 超时，默认 300 秒，范围 1～900；在 Provider 构造时冻结，不发送给平台，不是整个 Agent 的截止时间。显式探测超时优先。 |
+| `CODE_EXPLORER_LLM_REQUEST_TIMEOUT_SECONDS` | 否 | 连接/响应头与非流式 socket 等待，默认 600 秒，范围 1～3600；Provider 构造时冻结，不发送平台，不是整个 Agent 的截止时间。 |
+| `CODE_EXPLORER_LLM_CHAT_STREAM` | 否 | `1/true` 启用 Chat Completions SSE，默认 `0` 兼容未验证端点；Responses 不启用 SSE，失败不自动改协议重发。 |
+| `CODE_EXPLORER_LLM_STREAM_INCLUDE_USAGE` | 否 | 默认 `1`，流式请求发送 `stream_options.include_usage=true`；若平台不支持此字段应明确设为 `0`。缺失 usage 保持未知。 |
+| `CODE_EXPLORER_LLM_STREAM_IDLE_TIMEOUT_SECONDS` | 否 | 响应建立后的流式空闲 socket 超时，默认 120 秒，范围 1～3600；持续收到数据不会消耗这个空闲上限。 |
+| `CODE_EXPLORER_LLM_REQUEST_TOTAL_TIMEOUT_SECONDS` | 否 | 单次尝试总预算，默认 1800 秒，范围 1～7200，含此前响应头等待；不是全部调查轮次或所有重试的总时限。已建立 socket 有总读取看门狗；DNS/建连仍受系统与 socket 超时约束。 |
 | `CODE_EXPLORER_LLM_CONTEXT_WINDOW_TOKENS` | 否 | 平台窗口的显式运维配置；未知时留空。仅属于默认模型，切换模型不能继承。 |
 | `CODE_EXPLORER_LLM_TOKEN_MARGIN` | 否 | 模板和未知开销的安全余量，默认 512 Token。 |
 | `CODE_EXPLORER_LLM_TOKENIZER` | 否 | `auto` 或 `utf8`，均使用标准库 UTF-8 字节保守估算，不依赖外部分词库。 |
 | `CODE_EXPLORER_LLM_OUTPUT_TOKEN_PARAMETER` | 否 | Chat API 的 `max_tokens`（默认）或 `max_completion_tokens`。 |
 | `CODE_EXPLORER_LLM_REASONING_EFFORT` | 否 | 供应商明确支持的思考强度；默认不发送，不自动禁用思考。 |
 | `CODE_EXPLORER_LLM_FINAL_REPORT_MODE` | 否 | `tools_none`（默认：保留定义并发送 `tool_choice=none`）或 `history_no_tools`（不提供定义/工具选择字段，保留有效配对历史）。由 Agent 冻结，不作为同名 API 参数发送，不在失败后切换。 |
+| `CODE_EXPLORER_LLM_PRE_MODEL_REJECTION_ENDPOINT_SHA256` | 否 | 管理员声明的供应商/端点/模型指纹；匹配时仅把明确 429/503 当作执行前拒绝，单列零模型 Token 假设与时间剔除。默认空，换端点/模型失效。不发送平台，不改供应商 usage、重试或预算。 |
 
 收尾兼容性用 `test/probe_final_report_modes.py --send` 显式验证：两次合成请求、无重试、不执行工具、不读取实验记录；默认不带 `--send` 只打印计划。测试分别核对真实调用载荷、供应商结束原因、非空文本和报告契约；不会把 `tool_calls` 改成 `stop`。小用例通过不保证大项目正常收尾。当前端点固定用例两模式都可完成，不足以据此强制改实际配置。
 
-单变量输出预算诊断使用 `test/diagnose_output_budget.py --source-comparison <旧配对ID> --output-tokens 16384`：默认只预检、不联网；显式加 `--send` 才进行一次小型参数接受探测及一次新配对。它读取旧审计核对共同契约、预算、源码/产物哈希及首请求；只在独立进程改变输出上限，使用正常 Agent Worker，将新记录保存到 `test/experiment_results/` 下的独立 SQLite，不修改实际 `.env`、正式数据库、网页审计权限或旧记录。两组保留原调查轮次、报告模式和静态输入，结果标记为诊断，不用于效果排名。端点接受小请求不等于证明最大输出能力；供应商未报告推理 Token 时保持未知。
+旧单变量输出预算/模式/超时诊断入口已退役：它按旧版非分批协议重建首请求，不能与当前分批、完整源码和 SSE 冻结条件混用。新的试验统一通过现行实验入口运行并记录实际配置，不再维护一套历史 Worker/审计补丁编排；旧 JSON、SQLite 与源码归档保留，不修改或重新计分。
 
-同一脚本可用 `--final-report-mode history_no_tools` 单独测试收尾模式，与 `--output-tokens` 互斥；通过 `--source-database <旧诊断SQLite>` 可只读复用上一诊断配对。模式试验恢复选定基准的输出上限和原模式，预检其他条件及首请求不变，再只在诊断进程修改收尾模式，两组均使用新模式，不新增输出参数探测。真实审计确认最终阶段不包含工具定义/选择字段，调用—结果历史仍保留；实际 `.env` 不变，不与旧失败单侧拼接。
+机制验证使用 `python -m backend.app.experiments.full_source_trial --case case_03 --reuse-project-id <已有项目ID> --repeats 3 --stop-after-valid-pair --cooldown-seconds 60 --run-model`：复用源码与固定样本逐字相同的项目，避免重复导入；保存每一侧结果，首个完整有效配对后停止，达到次数上限也停止。不因报告失败修改提示词或预算。成功即停属于机制诊断而非无偏效果排名，所有失败及成本必须一并报告。默认不加 `--run-model` 仅预检。
 
-`--request-timeout 300` 是与上述变量互斥的单次 socket 超时诊断：读取旧配对的已记录超时，保留原模式、输出、预算、轮次及重试条件，仅在独立进程覆盖 Provider 的 timeout（必须大于原值且不超过 600 秒）。默认不联网，`--send` 才运行新配对。它不改实际 `.env`，不增加输出接受探测，并核对实际 urllib 参数。超时发生时，私有 `timeout_location` 只保存模块文件名、函数名和行号，不保存堆栈源码、局部变量、地址或异常正文；HTTP 429/503 不标为 socket 超时。调查会重新执行，不能声称逐字重放了审计未保存的隐藏续接状态；单变量配置并不消除生成随机性或网络/平台负载波动。正式适配器现在统一读取上述可配置超时，缺省 300 秒；历史 180/120 秒试次不改写。
+只读原始请求重放仍使用 `test/probe_static_request_diff.py`，仅显式选择两组原始消息的 JSON/SSE 和连接路径，默认只计划一个静态 SSE 请求；已移除不能固定实际生成工作的“固定短台账”变体。
 
 默认地址分别是 OpenAI 的 `https://api.openai.com/v1`、Ollama 的 `http://localhost:11434/v1` 和 vLLM 的 `http://localhost:8001/v1`。自定义兼容服务必须显式配置根地址。
 
@@ -114,6 +119,8 @@ $env:CODE_EXPLORER_LLM_BASE_URL = "http://localhost:11434/v1"
 | `base.py` / `ProviderCapabilities` | 声明流式、工具调用和结构化输出能力。 |
 | `settings.py` / `ModelConfiguration`、`ModelLimits` | 纯配置与不可变预算契约，不依赖适配器；`registry.py` 重新导出原有配置入口并创建 Provider。 |
 | `http.py` | 以标准库 `urllib` 发起异步封装的 JSON POST，并将网络错误转换成脱敏异常。 |
+| `streaming.py` / `ChatStream` | 唯一 Chat SSE 组装器，按工具索引合并参数、保留原始结束原因/usage/内存推理续接；不执行工具或修补报告。 |
+| `response_reader.py` / `ResponseReader` | JSON/SSE 共用有界读取、空闲超时与总读取看门狗；不改系统代理、不引入额外 HTTP 依赖。 |
 | `diagnostics.py` | 最多两次生成验证工具闭环；模型目录保留允许字段的容量元数据，但不猜测缺失值。 |
 | `providers/openai_provider.py` | OpenAI Responses API 实现。 |
 | `providers/compatible_provider.py` | OpenAI Chat Completions 兼容实现。 |
@@ -124,7 +131,15 @@ $env:CODE_EXPLORER_LLM_BASE_URL = "http://localhost:11434/v1"
 
 ## Provider 协议差异
 
-OpenAI Provider 调用 `{base_url}/responses`，使用完整 `input` 项并在 `store=false` 下申请加密推理续接状态；兼容 Provider 调用 `{base_url}/chat/completions`，使用 system/user/assistant/tool 消息。兼容响应中的 `reasoning_content` 在运行内存中回传，不展示或持久化。默认不强制 temperature、thinking 等可能不兼容的选项。二者都不启用流式输出，由编排器将最终文本切片成 SSE 增量事件。
+OpenAI Provider 调用 `{base_url}/responses`，使用完整 `input` 项并在 `store=false` 下申请加密推理续接状态，暂时保持 JSON 响应；兼容 Provider 调用 `{base_url}/chat/completions`，使用 system/user/assistant/tool 消息，可按显式配置启用上游 SSE。兼容响应中的 `reasoning_content` 仅在运行内存中续接，审计投影排除隐藏正文。默认不强制 temperature、thinking 等可能不兼容的选项。
+
+上游流式传输不等于把原始台账 JSON 或隐藏推理实时展示给前端：先组装完整回复、保留真实 `finish_reason` 和供应商 usage，再由原有 Agent 校验并生成报告。工具分片只组装、不执行；收到完整调用后仍经现有工具注册表和参数校验。需要 `[DONE]` 和供应商终止原因，EOF、错误帧、非法参数和超限均明确失败，不把终止原因改为 `stop`。HTTP 正文最多 32 MiB，SSE 单行/单事件最多 1 MiB，超限拒绝，不静默截断。
+
+单次响应建立后的总读取看门狗可中断持续滴流，空闲超时则只限制长时间没有新数据；Windows 主动关闭 socket 引起的 10053 等错误仍按总时限归因。DNS/连接阶段不由 Python 强制杀死，仍受操作系统解析器及 socket 等待约束，不能把配置总预算宣称为绝对进程截止。显式 `timeout` 探测会同时收紧空闲与总预算。平台若忽略 `stream=true` 而直接返回 JSON，只读取该次响应并记录 `server_ignored_stream`，不会补发第二次请求。
+
+取消会通知后台读取并尝试 shutdown 已建立 socket，禁止遗留线程继续发布结果或向已封存审计追加 response/failed；系统阻塞可能延后释放，不承诺立即终止 DNS/底层连接，也不等于平台已停止计算或计费。Worker 的心跳独立于模型读取，每秒续租，无需因长生成扩大任务租约。
+
+`execution_policy.transport` 和完整源码实验配置哈希冻结上述传输条件；两组必须一致，新旧策略不能直接混算。实际 `stream`/`stream_options` 进入请求审计。早先诊断脚本 `test/probe_static_request_diff.py` 也复用生产读取与组装，不维护第二个 SSE 实现。
 
 `ModelResponseMetadata` 区分正常 `stop/completed`、`length/max_output_tokens` 等不完整终止与未知状态；空回答仍返回元数据，由编排器记录用量后判定失败。`ModelUsage` 仅接收供应商实际返回的非负整数，真实零值不会被当成缺失。缓存和推理 Token 是供应商细分计数，不应再加到已经包含它们的总用量上；供应商不返回这些字段时不能推算。
 
@@ -134,8 +149,13 @@ API Key 只用于请求头，不进入公开配置和日志。网络错误不回
 
 公共代码收敛在既有契约内：`ToolCall.from_arguments()` 统一两种协议的参数对象解析，`ModelLimits.output_budget()` 统一状态/事件的输出预算元数据。工厂将冻结预算注入适配器，避免再次读取环境；直接构造适配器仍可自行读取。协议序列化、原生历史、超时与重试仍分别保留，不能为了减少代码而消除平台差异或审计检查。
 
-上游错误仅公开安全诊断字段。余额、额度和明确的上下文超限不重试；临时 429/502/503/504 最多重试两次。429 识别 `RateLimitReached` 等明确速率码，优先遵守秒数/HTTP 日期形式的 `Retry-After`，缺失或无效时约等待 30、60 秒；平台要求超过 60 秒则停止本次请求，不截短等待后提前重试。其他网络/网关错误保留原有短退避，探测显式设置零重试仍然生效。等待可取消，不增加调查轮次、不改变请求或输出预算。成功响应的 usage 不保证涵盖失败尝试的计费，不应冒充供应商账单。
+上游错误仅公开安全诊断字段。余额、额度和明确的上下文超限不重试；初始临时 429/502/503/504 最多重试两次。429 识别 `RateLimitReached` 等明确速率码，优先遵守秒数/HTTP 日期形式的 `Retry-After`，缺失或无效时约等待 30、60 秒；平台要求超过 60 秒则停止本次请求，不截短等待后提前重试。已经建立的流式请求中断、协议错误及总时限耗尽不自动重放，不拼接不同请求的片段；失败审计保留已收到的 partial_usage（如有），不能将未知用量当零。初始网络/网关错误保留有限退避，显式零重试仍生效。等待可取消，不增加调查轮次、不改变输出预算。成功 usage 不保证涵盖失败尝试的计费，不应冒充供应商账单。
 
-传输层为每次真实尝试计量响应头等待、完整响应体读取和失败阶段，通过可选观察器写入实验私有审计；运行日志只含安全元数据和必要的本地解析位置，不输出 URL、凭据或原始错误正文。响应头等待包含本机连接、请求发送、代理和服务等待，不能仅凭该阶段定位根因。适配器的 socket 超时现在可配置，缺省 300 秒；计量不增加探测请求，也不把 socket 超时误写成整个请求的总截止时间。服务端/网络重传只针对已标记的临时错误，JSON/协议/报告解析失败不重传，不自动切换协议或纠正结束状态。
+传输层为每次尝试计量响应头等待、首帧/首段可见正文、完整响应读取和失败阶段，通过可选观察器写入实验私有审计；运行日志只含安全元数据，不输出 URL、凭据或隐藏推理。响应头等待包含本机连接、发送、代理和服务等待，不能单凭该阶段定位根因。socket 默认现为 600 秒，不把它误写成总截止时间。计量不增加探测请求；JSON/协议/报告解析失败不重传，不自动切换协议或纠正结束状态。
+
+经平台明确确认后，可加载部署使用的 .env，调用 `settings.endpoint_accounting_fingerprint()`，将其结果配置到上述声明变量。
+`settings.pre_model_rejection_policy(model)` 返回绑定策略，创建实验时冻结；审计按实际尝试及其对应退避计时，不把失败发送当作源码已经展示。
+`duration_ms` 始终保留墙钟值，`adjusted_duration_ms` 只扣已确认拒绝/退避，不扣成功请求传输或未知超时。
+供应商 `actual_*` / `usage_status` 保持原值；按声明核算值另列，模型 Token 为零不等于证明平台所有费用均为零。历史不回填。
 
 `POST /api/models/probe` 最多两次生成、无重试：先要求调用验证工具，再回传只存在于工具结果的随机校验值，要求最终完整回答该值。只有工具调用、结果回传、正常终止均通过才标记 `agent_compatible`；它不探测最大窗口、不读取项目、不写实验记录。每次输出不超过 1024 Token，思考模型仍可能因过小上限未完成，此时只说明未通过当前探测条件，不证明不支持 Agent。`GET /api/models/status` 无外部请求；`GET /api/models` 只读取目录和允许容量字段，目录可见不等于支持工具。远程 HTTP 不保障密钥/源码传输安全，应优先使用平台正式 HTTPS 地址。

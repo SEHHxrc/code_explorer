@@ -12,7 +12,7 @@ HTTP 入口是 `api/agent.py:create_agent_run()`：请求体使用 `AgentRunRequ
 | --- | --- | --- |
 | `question` | `str`，1～8000 字符 | 用户对当前项目的问题。 |
 | `use_model` | `bool`，默认 `true` | 是否调用已配置的大模型；为 `false` 时走静态结果。 |
-| `max_steps` | `int`，1～6，默认 4 | 模型—工具循环的最大轮数。 |
+| `max_steps` | `int`，1～24，普通 Agent 默认 4，实验默认 8 | 模型—工具循环的最大轮数。 |
 | `model` | `str \| null`，最长 200 字符 | 可选的本次运行模型；为空时使用服务端环境变量中的默认模型。 |
 
 真正的运行入口是 `AgentRunManager.start(run_id, project_id, user_id, project_root, artifact, request)`。队列 Worker 使用 `AgentRunStore.claim_next()` 原子认领后调用它；开发环境也可由 FastAPI 生命周期启动内嵌 Worker。
@@ -23,7 +23,7 @@ HTTP 入口是 `api/agent.py:create_agent_run()`：请求体使用 `AgentRunRequ
 POST /api/agent/projects/{project_id}/runs
   → AgentRunStore.create() 持久化 run 与 queue job
   → AgentQueueWorker.claim_next() 认领并续租
-  → ProjectContextBuilder.build() 生成 manifest + 紧凑静态安全证据 + 相关 repo map
+  → ProjectContextBuilder.build() 生成 manifest + 静态路径摘要 + 相关 repo map（实验剔除 manifest/repo map）
   → create_model_provider(request.model) 选择在线或本地模型
   → AgentRunManager.generate_with_tools()
       ├─ 无 tool_calls：保存答案并完成
@@ -42,10 +42,12 @@ POST /api/agent/projects/{project_id}/runs
 
 ## 文件与核心类
 
+当前实验 v11 沿用 `batching.py` 的 `AnalysisBatches`：先选择、分析、发布批次报告，再更新目录并开始下一批；两组采用相同流程。新摘要仅保留公共选择器的分级路径与线索，报告/未完批次及供应商元数据进入事件存储；台账不证明漏洞结论。每批原生调用链独立，最终以可见证据档案汇总，不混拼跨批调用 ID。预算用完至多追加当前批次报告和最终汇总两个禁止新工具的请求。普通 Agent 也复用路径摘要，但保持原有一般项目上下文与一次收尾模式，不自动附加源码切片。
+
 | 文件/类 | 作用 |
 | --- | --- |
 | `contracts.py` | `AgentRunRequest`、`AgentClaim`、`ContextPacket`、`ToolResult`、`AgentEvent`、`AgentRunView`、历史摘要与快照等边界模型。 |
-| `context_builder.py` / `ProjectContextBuilder` | 验证 Manifest，优先加入按问题筛选的静态安全证据，再加入有界仓库地图。 |
+| `context_builder.py` / `ProjectContextBuilder` | 验证 Manifest，复用公共静态路径摘要，再加入有界仓库地图；实验上下文另行隔离。 |
 | `orchestrator.py` / `AgentRunManager` | 执行模型—工具循环、收集证据、输出事件、处理取消与错误。 |
 | `observations.py` | 将完整工具结果投影为预算内的结构化观察窗口；保留证据定位，按完整源码行压缩并报告省略。 |
 | `conversation_window.py` | `ToolRound`/原生消息窗口；调用和全部结果整轮保留或整轮省略，复用观察正文压缩。 |
@@ -73,4 +75,4 @@ POST /api/agent/projects/{project_id}/runs
 
 系统提示明确把仓库内容、README 和工具输出视为不可信数据。模型不能选择任意 Python 函数或宿主命令，只能按注册表调用工具。工具是只读的，并受路径边界、字节数、行数、文件数、耗时和结果数限制；错误通过公开消息返回，不暴露内部路径或密钥。
 
-实验策略的权限与普通 Agent 不同：`security_evidence/baseline` 使用共同安全指令与仅原始文件的工具注册表；实验组额外接收有界静态安全证据。实验不使用 Manifest、Repo Map 或依赖图工具，并在 Provider 缺失时失败而非静态回退。`model.completed.metadata` 保存响应 ID、真实返回模型名、终止原因、状态与供应商实际用量（未提供时为空）；`run.completed` 保存运行终止原因和回答完整性。规范化字符数仍用于独立估算，不能当成真实 Token usage。恢复快照保留这些诊断字段和全部去重证据，但不携带工具源码正文。旧图任务拒绝续跑，历史记录不被重写。
+实验策略的权限与普通 Agent 不同：`security_evidence/baseline` 使用共同安全指令、原始文件工具与批次报告工具；实验组额外获得有界静态目录和 ID 查询，控制组没有派生索引访问能力。实验不使用 Manifest、Repo Map 或依赖图工具，并在 Provider 缺失时失败而非静态回退。`model.completed.metadata` 保存响应 ID、真实返回模型名、终止原因、状态与供应商实际用量（未提供时为空）；`run.completed` 保存运行终止原因和回答完整性。规范化字符数仍用于独立估算，不能当成真实 Token usage。恢复快照保留这些诊断字段、批次报告和全部去重证据，但不携带工具源码正文。旧图任务拒绝续跑，历史记录不被重写。

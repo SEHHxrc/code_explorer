@@ -69,6 +69,8 @@ class ExperimentHistoryTests(unittest.TestCase):
         self.assertEqual('cancelled',page['items'][0]['lanes']['left']['status'])
         self.assertEqual('failed',page['items'][1]['lanes']['right']['status'])
         self.assertEqual('pair0',self.service.history('project','alice',offset=2,limit=2)['items'][0]['id'])
+        self.assertEqual('tie',self.service.history('project','alice',offset=2,limit=2)['items'][0]['preferred_lane'])
+        self.assertIsNone(page['items'][0]['preferred_lane'])
         text=json.dumps(page,default=str)
         for forbidden in ('原始回答','PRIVATE','baseline','security_evidence','blind_order'):
             self.assertNotIn(forbidden,text)
@@ -168,7 +170,7 @@ class CitationAndPromptRulesTests(unittest.TestCase):
             self.assertIn(rule,REPORT_INSTRUCTIONS)
         for sample in ('audio2sheet','Spleeter','safe_id','AES'):
             self.assertNotIn(sample,SECURITY_EXPERIMENT_INSTRUCTIONS)
-        self.assertEqual('concise-security-v3',REPORT_VERSION)
+        self.assertEqual('ledger-security-v5',REPORT_VERSION)
 
     def test_structural_pass_does_not_validate_wrong_variable_guard_or_missing_implementation(self):
         report='## 结论\n测试。\n## 已核实问题\n附近的清洗使所有值安全。\n## 未确认风险\n未读取被调用实现但认为无风险。\n## 范围与局限\n只读测试。\n'+REPORT_END

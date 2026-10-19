@@ -31,6 +31,14 @@ class ReachingDefinitionsPass:
                 definition = (node.node_id, variable)
                 definitions_by_variable[variable].add(definition)
                 generated[node.node_id].add(definition)
+        # 每个已定义父访问路径只索引一次后代，避免每个写入节点重扫全部变量名。
+        descendants: dict[str, set[Definition]] = defaultdict(set)
+        for name, candidates in definitions_by_variable.items():
+            for position, separator in enumerate(name):
+                if separator in ".[":
+                    parent = name[:position]
+                    if parent in definitions_by_variable:
+                        descendants[parent].update(candidates)
         killed: dict[str, set[Definition]] = defaultdict(set)
         for node_id, definitions in generated.items():
             if graph.nodes[node_id].certainty == "may":
@@ -38,9 +46,7 @@ class ReachingDefinitionsPass:
                 continue
             for _, variable in definitions:
                 killed[node_id].update(definitions_by_variable[variable] - definitions)
-                for name, candidates in definitions_by_variable.items():
-                    if name.startswith((variable + ".", variable + "[")):
-                        killed[node_id].update(candidates - definitions)
+                killed[node_id].update(descendants[variable] - definitions)
 
         incoming = {node_id: set() for node_id in reachable}
         outgoing = {node_id: set(generated[node_id]) for node_id in reachable}

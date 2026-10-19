@@ -173,8 +173,8 @@ class OptionalOutputBudgetTests(unittest.TestCase):
         response = Mock(status=200)
         response.__enter__ = Mock(return_value=response)
         response.__exit__ = Mock(return_value=False)
-        response.read.return_value = json.dumps({"model": "mock", "choices": [{"finish_reason": "stop",
-            "message": {"content": "answer"}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}).encode()
+        response.read1.side_effect = [json.dumps({"model": "mock", "choices": [{"finish_reason": "stop",
+            "message": {"content": "answer"}}], "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}}).encode(), b""]
         with patch("backend.app.llm.http.urlopen", return_value=response) as send, observe_requests(recorder):
             turn = asyncio.run(provider.generate_with_tools(instructions="s", messages=MESSAGES, tools=[]))
         body = send.call_args.args[0].data

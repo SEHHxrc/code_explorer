@@ -3,6 +3,7 @@
 import hashlib
 import os
 import time
+import math
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +32,12 @@ class AuditRecorder:
         self.elapsed_ms = 0.0
         self.snapshot_ms = 0.0
         self.prompt_snapshot: dict[str, Any] = {}
+        self.network_policy: dict[str, Any] = {}
+        self.rejected_requests: set[int] = set()
+        self.excluded_request_ms = 0.0
+        self.excluded_wait_ms = 0.0
+        self.last_excluded_failure: tuple[int, int] | None = None
+        self.unknown_rejection_timings = 0
 
     def _append(self, kind: str, payload: dict[str, Any]) -> int:
         """计量审计自身耗时并原子保存，失败不静默丢弃。"""
@@ -84,6 +91,7 @@ class AuditRecorder:
                     raise AuditError("源码在审计快照期间发生变化，未继续模型请求。")
                 self.manifest[path.relative_to(root).as_posix()] = {"sha256": checksum.hexdigest(), "bytes": size, "lines": lines}
         self.snapshot_ms = (time.monotonic() - started) * 1000
+        self.network_policy = (execution_policy or {}).get("network_accounting") or {}
         self.prompt_snapshot = {"report_version": report_version, "execution_policy": execution_policy,
             "instructions": sanitize(instructions), "instructions_sha256": digest(instructions),
             "tools_sha256": digest(schemas), "files_sha256": digest(self.manifest), "static_artifact_sha256": digest(artifact)}
@@ -93,6 +101,7 @@ class AuditRecorder:
     def planned(self, payload: dict[str, Any], step: int) -> None:
         """记录发送规划，但不把它当作真实 HTTP 请求或已展示源码。"""
         self.step = step
+        self.last_excluded_failure = None
         self.planned_count += 1
         self._append("planned_request", {"step": step, "sha256": digest(payload), "visible": visible_request(payload)})
 
@@ -118,7 +127,21 @@ class AuditRecorder:
 
     def failed(self, request_id: int, error_type: str, *, diagnostics: dict[str, Any] | None = None) -> None:
         """记录对应尝试失败，公开字段不含上游正文、URL 或认证头。"""
-        self._append("request_failed", {"request_id": request_id, "error_type": error_type, "transport": sanitize(diagnostics)})
+        details = diagnostics or {}
+        excluded = (request_id in self.pending_lines and details.get("status_code") in self.network_policy.get("confirmed_pre_model_statuses", [])
+                    and error_type == "HTTPError" and self.network_policy.get("basis") == "operator_endpoint_declaration")
+        self._append("request_failed", {"request_id": request_id, "error_type": error_type, "transport": sanitize(diagnostics),
+                     "model_execution": "not_started_operator_confirmed" if excluded else "unknown",
+                     "assumed_model_tokens": 0 if excluded else None})
+        self.last_excluded_failure = None
+        if excluded:
+            self.rejected_requests.add(request_id)
+            elapsed = details.get("elapsed_ms")
+            if type(elapsed) not in (int, float) or not math.isfinite(elapsed) or elapsed < 0:
+                self.unknown_rejection_timings += 1
+            else:
+                self.excluded_request_ms += elapsed
+            self.last_excluded_failure = (self.step, details.get("attempt", 0))
         self.resolved_count += 1
         self.pending_lines.pop(request_id, None)
 
@@ -132,6 +155,14 @@ class AuditRecorder:
         self._append("retry_wait", {"step": self.step, "after_attempt": attempt, "policy_version": RETRY_POLICY_VERSION,
             "status_code": status_code, "requested_seconds": requested_seconds,
             "elapsed_seconds": round(elapsed_seconds, 3), "completed": completed})
+        if self.last_excluded_failure == (self.step, attempt) and status_code in self.network_policy.get("confirmed_pre_model_statuses", []):
+            self.excluded_wait_ms += self._elapsed_ms(elapsed_seconds * 1000)
+            self.last_excluded_failure = None
+
+    @staticmethod
+    def _elapsed_ms(value: Any) -> float:
+        """只接受有限非负实测耗时；未知/畸形诊断不用于剔除时间。"""
+        return float(value) if type(value) in (int, float) and math.isfinite(value) and value >= 0 else 0.0
 
     def citations(self, answer: str) -> dict[str, Any]:
         """根据实际发送过的正文产生机械警告，正文未审计时明确不可确认。"""
@@ -147,4 +178,9 @@ class AuditRecorder:
         return {"version": "experiment-audit-v1", "status": "complete" if complete else "incomplete",
                 "actual_requests": self.sent_count, "planned_requests": self.planned_count,
                 "audit_snapshot_ms": round(self.snapshot_ms, 2),
-                "audit_write_ms": round(self.elapsed_ms, 2)}
+                "audit_write_ms": round(self.elapsed_ms, 2),
+                "network_accounting": {"policy": self.network_policy,
+                    "assumed_zero_token_attempts": len(self.rejected_requests),
+                    "unknown_rejection_timings": self.unknown_rejection_timings,
+                    "excluded_request_ms": round(self.excluded_request_ms, 2),
+                    "excluded_retry_wait_ms": round(self.excluded_wait_ms, 2)} if self.network_policy else None}

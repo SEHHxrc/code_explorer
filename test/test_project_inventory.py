@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import Mock
 
 from backend.app.services.projects import ProjectQueryError, ProjectQueryService, ProjectRecord
 from backend.app.services.project_workspace.paths import ProjectWorkspacePaths
@@ -53,10 +54,6 @@ class FakeProjects:
         """返回匹配用户和项目的记录。"""
         return self.record if (project_id, user_id) == (self.record.project_id, self.record.user_id) else None
 
-    def has_active_runs(self, project_id: str, user_id: str) -> bool:
-        """测试项目没有活动任务。"""
-        return False
-
 
 class ProjectInventoryTests(unittest.TestCase):
     """验证后端孤立项目可见、可统计并可恢复。"""
@@ -79,6 +76,7 @@ class ProjectInventoryTests(unittest.TestCase):
             artifact = sample_artifact()
             service = ProjectQueryService(
                 projects=FakeProjects(record),
+                activity=Mock(has_active_tasks=Mock(return_value=False)),
                 paths=paths,
                 artifact_loader=lambda _: artifact,
                 artifact_sizer=lambda _: 7,
@@ -107,6 +105,7 @@ class ProjectInventoryTests(unittest.TestCase):
             )
             service = ProjectQueryService(
                 projects=FakeProjects(record),
+                activity=Mock(has_active_tasks=Mock(return_value=False)),
                 paths=paths,
                 artifact_loader=lambda _: sample_artifact(),
                 artifact_sizer=lambda _: 7,

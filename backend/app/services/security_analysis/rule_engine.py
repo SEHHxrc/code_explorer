@@ -66,9 +66,6 @@ class SecurityScanResult:
         self.dataflows.extend(other.dataflows)
 
 
-PythonScanResult = SecurityScanResult
-
-
 class SecurityRuleEngine:
     """不依赖具体语言 AST，只消费通用 IR 和规则包。"""
 

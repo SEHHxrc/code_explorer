@@ -12,6 +12,7 @@ from backend.app.services.value_binding import BindingPattern, BindingValue
 from backend.app.services.value_binding.parameters import ParameterKind
 from backend.app.services.syntax_analysis.javascript import parser_for_file
 from backend.app.services.syntax_analysis.source_units import SourceUnit, source_unit
+from backend.app.services.syntax_analysis.javascript_bindings import javascript_binding_scope
 from backend.app.services.syntax_analysis import (
     DEFAULT_TREE_SITTER_PARSER_POOL,
     TreeSitterParserPool,
@@ -82,8 +83,9 @@ class TreeSitterProgramGraphFrontend(ProgramGraphFrontend):
                 "reason": "partial_parse_error",
             })
         collector = self.collector_type(relative_path, source)
-        collector.collect(tree.root_node)
-        collector.collect_unit(unit, tree.root_node)
+        with javascript_binding_scope(source, relative_path):
+            collector.collect(tree.root_node)
+            collector.collect_unit(unit, tree.root_node)
         failures.extend({"path": relative_path, "language": self.language, "reason": reason} for reason in unit.diagnostics)
         return FrontendFileResult(
             functions=collector.functions,
@@ -502,13 +504,7 @@ class TreeSitterFunctionCollector:
                 receiver_node, name = self._split_callee(callee)
                 location = location_from_tree_sitter(self.path, current)
                 result.append(ControlCallSite(
-                    callsite_id=ProgramIdentity.callsite_id(
-                        self.path,
-                        location.line,
-                        location.column,
-                        location.end_line,
-                        location.end_column,
-                    ),
+                    callsite_id=ProgramIdentity.callsite_for_location(location.location_id),
                     name=name,
                     receiver=self._text(receiver_node),
                     location=location,

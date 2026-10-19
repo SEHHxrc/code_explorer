@@ -28,6 +28,9 @@ from backend.app.models import (
 ACTIVE_STATUSES = ("queued", "running")
 logger = logging.getLogger(__name__)
 _HISTORY_EVENT_FIELDS = {
+    "batch.selected": {"batch_id", "evidence_ids", "status"},
+    "batch.completed": {"batch_id", "report", "evidence_ids", "scopes", "status", "semantic_coverage", "metadata"},
+    "batch.pending": {"batch_id", "evidence_ids", "scopes", "status", "semantic_coverage"},
     "citations.checked": {"version", "checked", "warnings", "semantic_validation", "semantic_coverage", "actual_requests_recorded"},
     "audit.completed": {"version", "status", "actual_requests", "planned_requests", "audit_write_ms", "audit_snapshot_ms"},
     "run.started": {"project_id", "instrumentation_version", "report_version", "observation_window_version", "contract_hash", "execution_policy", "experiment_protocol"},
@@ -66,7 +69,7 @@ class AgentRunStore:
         strategy: AgentStrategy = "default",
     ) -> AgentRunView:
         """在一个事务中创建公开运行记录和待认领队列项。"""
-        if strategy not in {"default", "graph", "baseline", "security_evidence"}:
+        if strategy not in {"default", "graph", "baseline", "security_evidence", "full_source_baseline", "full_source_security_evidence", "cumulative_baseline", "cumulative_security_evidence"}:
             raise ValueError("Unsupported agent strategy")
         db = self.session_factory()
         try:
@@ -506,6 +509,14 @@ class AgentRunStore:
     @staticmethod
     def _strategy(value: str) -> AgentStrategy:
         """把数据库策略值收敛为公开契约，未知旧值退回默认策略。"""
+        if value == "full_source_baseline":
+            return "full_source_baseline"
+        if value == "full_source_security_evidence":
+            return "full_source_security_evidence"
+        if value == "cumulative_baseline":
+            return "cumulative_baseline"
+        if value == "cumulative_security_evidence":
+            return "cumulative_security_evidence"
         if value == "graph":
             return "graph"
         if value == "security_evidence":

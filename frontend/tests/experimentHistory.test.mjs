@@ -5,7 +5,35 @@ import { runInNewContext } from 'node:vm'
 import { parse, compileScript, compileTemplate } from '@vue/compiler-sfc'
 import { apiClient } from '../src/services/httpClient.js'
 import { listExperimentHistory, readExperimentHistory } from '../src/services/experimentApi.js'
-import { historyConditions, promptComparison } from '../src/features/experiment-comparison/history.js'
+import { historyConditions, promptComparison, reviewPreference } from '../src/features/experiment-comparison/history.js'
+
+test('ledger and network accounting are explicit and escaped without rewriting raw provider usage', () => {
+  const source = readFileSync(new URL('../src/features/experiment-comparison/ExperimentComparison.vue', import.meta.url), 'utf8')
+  assert.ok(source.includes('JSON.stringify(laneMetrics(lane).findings_ledger.ledger, null, 2)'))
+  assert.ok(!source.includes('v-html'))
+  for (const key of ['duration_ms', 'adjusted_duration_ms', 'excluded_network_ms', 'actual_total_tokens', 'accounted_model_total_tokens']) assert.ok(source.includes(key))
+  assert.ok(source.includes('这不是供应商返回的 usage'))
+  assert.ok(source.includes('未知成本尝试'))
+})
+
+test('saved blind review is visible after reveal with escaped notes and missing scores left unknown', () => {
+  assert.equal(reviewPreference('left'), '左侧更好')
+  assert.equal(reviewPreference('right'), '右侧更好')
+  assert.equal(reviewPreference('tie'), '相当')
+  assert.equal(reviewPreference(null), '未评分')
+  const source = readFileSync(new URL('../src/features/experiment-comparison/BlindReviewResult.vue', import.meta.url), 'utf8')
+  const { descriptor, errors } = parse(source)
+  assert.deepEqual(errors, [])
+  assert.doesNotThrow(() => compileScript(descriptor, { id: 'review-result' }))
+  assert.deepEqual(compileTemplate({ source: descriptor.template.content, filename: 'review-result', id: 'review-result' }).errors, [])
+  assert.ok(source.includes("?? '未记录'"))
+  assert.ok(source.includes('{{ review.notes'))
+  assert.ok(!source.includes('v-html') && !source.includes('v-model'))
+  for (const file of ['ExperimentComparison.vue', 'ExperimentHistory.vue']) {
+    const component = readFileSync(new URL(`../src/features/experiment-comparison/${file}`, import.meta.url), 'utf8')
+    assert.ok(component.includes('<BlindReviewResult'))
+  }
+})
 
 test('history requests are paginated and contain no audit credential or mutation', async () => {
   const original = apiClient.defaults.adapter

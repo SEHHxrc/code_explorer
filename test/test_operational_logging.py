@@ -203,8 +203,8 @@ class OperationalLoggingTests(unittest.TestCase):
 class ModelTimeoutConfigurationTests(unittest.TestCase):
     def test_default_and_invalid_settings(self):
         with patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(300, get_model_request_timeout())
-        for value in ("", "invalid", "0", "-1", "901", "nan", "inf"):
+            self.assertEqual(600, get_model_request_timeout())
+        for value in ("", "invalid", "0", "-1", "3601", "nan", "inf"):
             with patch.dict(os.environ, {"CODE_EXPLORER_LLM_REQUEST_TIMEOUT_SECONDS": value}, clear=True):
                 with self.assertRaises(ValueError):
                     get_model_request_timeout()

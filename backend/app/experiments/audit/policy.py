@@ -68,7 +68,7 @@ def visible_request(payload: dict[str, Any]) -> dict[str, Any]:
     projected = {key: payload[key] for key in (
         "model", "instructions", "messages", "input", "tools", "tool_choice", "max_tokens",
         "max_completion_tokens", "max_output_tokens", "temperature", "top_p", "stream", "store",
-        "parallel_tool_calls", "reasoning_effort", "include",
+        "parallel_tool_calls", "reasoning_effort", "include", "stream_options",
     ) if key in payload}
     for name in ("messages", "input"):
         if isinstance(projected.get(name), list):

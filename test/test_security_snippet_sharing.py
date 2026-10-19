@@ -8,7 +8,7 @@ from pathlib import Path
 from backend.app.agents.observations import compact_observation, encoded
 from backend.app.core.redaction import redact_secrets
 from backend.app.experiments.citations import visible_lines
-from backend.app.services.security_analysis import SecurityAnalysisService, SecurityEvidencePromptBuilder
+from backend.app.services.security_analysis import SecurityAnalysisService, SecurityEvidenceCatalog
 from backend.app.services.security_analysis.slicer import SourceSlicer
 from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
 
@@ -40,45 +40,33 @@ class SnippetSharingTests(unittest.TestCase):
     def test_shared_table_reconstructs_every_selected_snippet_exactly(self):
         pack = self._pack()
         before = pack.model_dump_json()
-        builder = SecurityEvidencePromptBuilder()
-        envelope = builder.build(pack, max_chars=100000)
-        references = [key for finding in envelope.findings for key in finding.snippet_ids]
-        self.assertGreater(len(references), len(envelope.snippets))
-        by_id = {item.candidate_id: item for item in pack.candidates}
-        for finding in envelope.findings:
-            expected = builder._selected_snippets(pack, by_id[finding.finding_id])
-            actual = [envelope.snippets[key] for key in finding.snippet_ids]
+        catalog = SecurityEvidenceCatalog(pack.model_dump())
+        references = [key for item in pack.candidates for key in item.snippet_ids]
+        self.assertGreater(len(references), len(set(references)))
+        for candidate in pack.candidates:
+            detail = catalog.detail(candidate.candidate_id, section="snippets", limit=10)
+            expected = [pack.snippets[key].model_dump() for key in candidate.snippet_ids]
+            actual = [detail["snippets"][item["snippet_id"]] for item in detail["items"]]
             self.assertEqual(expected, actual)
         self.assertEqual(before, pack.model_dump_json())
-        shared = json.loads(envelope.to_json())
-        expanded = json.loads(envelope.to_json())
-        resources = expanded.pop("snippets")
-        for finding in expanded["findings"]:
-            finding["snippets"] = [resources[key] for key in finding.pop("snippet_ids")]
-        for observation in expanded["observations"]:
-            if observation.get("snippet_id"):
-                observation["snippet"] = resources[observation.pop("snippet_id")]
-        old_size = len(json.dumps(expanded, ensure_ascii=False, separators=(",", ":")))
-        self.assertLess(len(envelope.to_json()), old_size)
-        self.assertEqual("1.4", shared["schema_version"])
+        self.assertNotIn('"snippets"', catalog.summary())
 
     def test_budget_pages_have_no_orphans_or_dangling_references(self):
         pack = self._pack()
-        for budget in (3000, 7000, 12000, 100000):
-            for offset in (0, 1):
-                envelope = SecurityEvidencePromptBuilder().build(pack, max_chars=budget, offset=offset, max_findings=1)
-                needed = {key for finding in envelope.findings for key in finding.snippet_ids}
-                needed.update(item.snippet_id for item in envelope.observations if item.snippet_id)
-                self.assertEqual(needed, set(envelope.snippets))
-                self.assertLessEqual(len(envelope.to_json()), budget)
+        catalog = SecurityEvidenceCatalog(pack.model_dump())
+        for candidate in pack.candidates:
+            for offset in range(len(candidate.snippet_ids) + 1):
+                detail = catalog.detail(candidate.candidate_id, section="snippets", offset=offset, limit=1)
+                self.assertEqual({item["snippet_id"] for item in detail["items"]}, set(detail["snippets"]))
+                self.assertLessEqual(len(encoded(detail)), 24000)
 
     def test_shared_body_counts_as_shown_but_reference_alone_does_not(self):
-        envelope = SecurityEvidencePromptBuilder().build(self._pack(), max_chars=100000)
-        source = next(iter(envelope.snippets.values()))
-        receipt = {"messages": [{"role": "tool", "content": envelope.to_json()}]}
+        pack = self._pack()
+        payload = SecurityEvidenceCatalog(pack.model_dump()).detail(pack.candidates[0].candidate_id, section="snippets")
+        source = next(iter(payload["snippets"].values()))
+        receipt = {"messages": [{"role": "tool", "content": encoded(payload)}]}
         seen = visible_lines(receipt)
-        self.assertIn(source.start_line, seen[source.path])
-        payload = json.loads(envelope.to_json())
+        self.assertIn(source["start_line"], seen[source["path"]])
         payload.pop("snippets")
         self.assertEqual({}, visible_lines({"messages": [{"role": "tool", "content": json.dumps(payload)}]}))
 
@@ -86,17 +74,15 @@ class SnippetSharingTests(unittest.TestCase):
         resource = {"path": "app.py", "start_line": 1, "end_line": 1, "text": "1: short"}
         long = {**resource, "text": "1: " + "x" * 10000}
         observation = {"name": "get_static_security_evidence", "arguments": {}, "result": {"evidence": [], "content": {
-            "kind": "static_security_evidence", "schema_version": "1.4",
-            "findings": [{"finding_id": "first", "snippet_ids": ["short"]},
-                         {"finding_id": "large", "snippet_ids": ["long"]}],
-            "observations": [{"fact_id": "other", "snippet_id": "short"}],
+            "kind": "static_security_evidence", "view": "detail",
+            "items": [{"snippet_id": "short"}, {"snippet_id": "long"}],
             "snippets": {"short": resource, "long": long},
         }}}
         compact = compact_observation(observation, 1800)
         content = compact["result"]["content"]
-        self.assertEqual(["first"], [item["finding_id"] for item in content["findings"]])
+        self.assertEqual(["short"], [item["snippet_id"] for item in content["items"]])
         self.assertEqual({"short": resource}, content["snippets"])
-        self.assertEqual(1, content["omitted_findings"])
+        self.assertEqual(1, content["omitted_items"])
         self.assertLessEqual(len(encoded(compact)), 1800)
 
     def test_shared_redaction_retains_union_of_previous_safety_rules(self):

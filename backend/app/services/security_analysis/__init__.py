@@ -9,8 +9,8 @@ from .knowledge import (
     SecurityKnowledgeProvider,
     SecurityKnowledgeRequest,
 )
-from .llm_context import SecurityEvidencePromptBuilder
-from .llm_contracts import LLMSecurityEvidenceEnvelope
+from .evidence_query import SecurityEvidenceCatalog
+from .evidence_selection import SecurityEvidenceSelector
 from .registry import FrontendRegistry, RulePackRegistry, SemanticsRegistry
 from .rules import RulePack
 from .scanner import SecurityScanner
@@ -22,7 +22,6 @@ __all__ = [
     "FrontendRegistry",
     "JavaLanguageSemantics",
     "JavaSecurityFrontend",
-    "LLMSecurityEvidenceEnvelope",
     "LanguageFrontend",
     "LanguageSemantics",
     "NullSecurityKnowledgeProvider",
@@ -33,7 +32,8 @@ __all__ = [
     "RulePackRegistry",
     "SecurityAnalysisService",
     "SecurityEvidencePack",
-    "SecurityEvidencePromptBuilder",
+    "SecurityEvidenceCatalog",
+    "SecurityEvidenceSelector",
     "SecurityKnowledgeDocument",
     "SecurityKnowledgeProvider",
     "SecurityKnowledgeRequest",
