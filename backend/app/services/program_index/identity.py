@@ -69,3 +69,12 @@ class ProgramIdentity:
         if prefix != "location" or not separator or not identity:
             raise ValueError("Callsite requires a generated location identity")
         return "callsite:" + identity
+
+    @classmethod
+    def declaration_id(cls, owner_symbol: str, name: str, role: str, path: str, line: int,
+                       column: int, end_line: int, end_column: int) -> str:
+        """生成源码声明身份，不是运行时地址；缺少精确范围时不补造身份。"""
+        if not all((line, column, end_line, end_column)):
+            return ""
+        material = "\x1f".join((owner_symbol, name, role, cls.location_id(path, line, column, end_line, end_column)))
+        return "declaration:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]

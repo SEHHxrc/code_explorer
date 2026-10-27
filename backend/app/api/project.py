@@ -172,6 +172,21 @@ async def create_project_overview(
     return {"code": 200, "message": "Project overview generated.", "data": result}
 
 
+@router.get("/{project_id}/security-paths")
+@router.get("/{project_id}/security-paths/{candidate_id}")
+async def get_security_paths(
+    project_id: str,
+    candidate_id: str | None = None,
+    current_user: dict[str, str] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """返回本人的静态候选路径并集或单条完整定位；不触发扫描、实验或大模型调用。"""
+    try:
+        data = await project_query_service.security_paths(project_id, current_user["user_id"], candidate_id)
+    except ProjectQueryError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.public_message) from exc
+    return {"code": 200, "data": data}
+
+
 @router.delete("/clear/{project_id}")
 async def clear_project(project_id: str, current_user: dict[str, str] = Depends(get_current_user)) -> dict[str, Any]:
     """删除当前用户的项目数据、工作目录和分析产物。"""

@@ -1,0 +1,73 @@
+# 安全分析语言适配器
+
+这里的适配器把语言源码转换成 `../ir.py` 的公共安全 IR，不是网页前端，也不拥有公共 IR 的定义。
+实现唯一归属 `language_adapters/`；旧 `frontends/` 只做显式再导出。历史公开类名保留，避免破坏调用方。
+Tree-sitter 适配与 ProgramGraph/依赖分析通过 `syntax_analysis.session` 复用同任务的语法树，
+调用方拿到独立 Tree 副本；文件权限、大小、范围与失败检查不被缓存替代。
+
+Go 前端现位于 `go/` 功能目录；公共 `GoSecurityFrontend` 导入不变。文件编排、IR 收集、
+API 类型角色与路由关联分别管理，安全规则仍在 `rules/go`；文件职责和覆盖局限见 `go/README.md`。
+
+`LanguageFrontend` 把一种语言的源码转换为通用 `SecurityProgramIR`，不执行安全规则，也不解析跨文件调用目标。
+
+当前 `PythonSecurityFrontend` 使用标准库 `ast`；Java、Go、C/C++、JavaScript/TypeScript 前端
+继承 `TreeSitterSecurityFrontend`，并与依赖图、ProgramGraph 共用线程本地 Tree-sitter 解析器池。
+Java、Go、C/C++ 的文件收集器继承同一 `TreeSitterIRCollector`，复用源码读取、具名遍历、标识符提取与位置身份；遍历本体由 `syntax_analysis.walk_named()` 拥有。Java/Go 还复用 `_sequence_expression()` 组装表达式 IR，语言前端仍提供各自的字面量值与调用/字面量节点类型；声明和调用绑定保持独立，不因共用节点操作合并安全语义。
+Java 前端提取方法、注解、继承类型和调用信息；Go 前端提取函数/接收者方法、导入别名、参数与
+显式变量类型、调用实参、位置敏感赋值目标和条件。
+C/C++ 使用同一 `c_family.py` collector，复用 `syntax_analysis.unwrap_c_declarator()`，保留
+namespace/class 和限定方法身份、直接调用返回值目标以及头文件/同名声明过滤信息。
+前端仅记录这些语法属性，Source/Sink 的库名、参数角色和头文件要求由规则包声明。
+Java 参数读取复用 `syntax_analysis.parameters.java_parameter_parts()`，避免遗漏
+spread_parameter 的名字/类型；Python/Go 安全 IR 同样记录 ParameterKind。
+Java/Go 的直接打包数组/切片通过共享 static_sequence_value() 提供 BindingValue；
+Python 字面量 *序列/**字典同时规范到规则 IR 和程序图，以免规则条件看不到 shell 等参数。
+
+`javascript.py` 同时提供 `JavaScriptSecurityFrontend` 和 `TypeScriptSecurityFrontend`，共享 ESM/CommonJS 别名、平台全局遮蔽、有限工厂接收者、属性读写和路由注册。`syntax_analysis/javascript.py` 的函数名称/参数和 TSX parser 选择同时被公共程序图复用；匿名回调使用 `anonymous@行:列` 独立身份，可做函数内分析，但不能宣称已有完整回调调用图。Express 的 req 指定字段才是 HTTP Source，res/next 不是 Source。规则仍声明在独立规则包内。
+
+JS/TS 复杂解构通过 `syntax_analysis.javascript_bindings` 和 `value_binding` 复用；Vue SFC 使用公共源码视图，脚本及模板保留原始行列。React 原始 HTML 与 Node HTTP handler 只提取语法事实，安全类别由独立规则声明。
+
+`TreeSitterSecurityFrontend.collect_file_context()` 为适配器提供受控项目上下文，默认转发
+`collect_unit()`，不保存跨项目可变状态。JS/TS 将观察到的回调注册转换为
+`CallbackParameterInput`；React 表单只绑定 value 字段，Node 请求体只绑定 data 首形参。
+Vue 模板指令共享 `vue_bindings`，有限 v-model 写入以 may 进入公共图与安全事实，
+规则通过 `JS-SOURCE-INPUT-EVENT/JS-SOURCE-NODE-BODY/JS-SOURCE-VUE-MODEL` 声明信任边界。
+回调内分析不等于完整事件、闭包、state 或响应式生命周期分析，覆盖边界见 SECURITY_COVERAGE.md。
+
+JS/TS 还读取明确导入的 Express Request/Application/Router、Node IncomingMessage 参数类型，
+支持模块化路由和提取的具名处理器；本地同名、未知导入、联合类型及重绑定参数不猜测。
+前端在 `IRParameter.api_type/reassigned` 保留 API 角色和重绑定状态；这不是整对象污点。
+`scanner` 在同语言 IR 内调用公共 `parameter_apis.forward_parameter_apis()`，沿既有调用目标和
+`LanguageSemantics` 绑定转发直接具名参数，最多四层，再匹配已注册的字段 Source。
+所有推断保留 may、`resolution_method` 和 `api_binding_callsite_ids`，按 ID 详情同样可见。
+深度超限和角色歧义显式诊断；请求别名/解构转发、JS 与 TS 之间的 API 角色转发、返回对象及
+运行时类型校验尚未实现。普通无依赖图扫描不进行调用推断。
+
+`javascript_state.py` 的入口 `collect_javascript_value_boundaries()` 接收当前函数 AST、
+源码、相对路径、作用域位置、已确认回调注册，以及 API 资格化/位置回调；返回
+`IRValueBoundary` 列表和覆盖缺口。仅适配 React 简单 useState 的直接值更新、Node 同请求
+局部字符串/简单数组的 data→end 捕获。它复用共享语法及结构绑定，不执行污点传播、
+不重新解析调用目标。实际值流由 `flow_analysis/value_boundaries.py` 接入公共 CFG/DFG。
+函数式或对象/数组字面量状态更新等明确报告未建模，不当作已证明安全。
+
+`python_callbacks.py` 的入口 `collect_python_value_boundaries(program, rebound_names)`
+消费已有 Python IR 和被重新赋值的名称，不重复解析文件。仅把有明确 BackgroundTasks 注解的
+`add_task`、同文件唯一顶层函数与可绑定实参转换为 `IRValueBoundary`，普通参数绑定复用
+`PythonLanguageSemantics`。动态回调、跨文件导入回调和含调用的复杂实参不猜测；被重绑定的
+调度器不按同名 API 建模。后续值传播仍由公共分析器负责，不创建虚假的普通调用边。
+
+文件范围来自依赖图模块节点；缺省扫描使用公共源码目录过滤。`symbol_id`、`location_id` 和
+`callsite_id` 均使用 `program_index.ProgramIdentity`，所有 Tree-sitter 前端调用点必须与相应
+ProgramGraph 前端对同一语法节点生成完全相同的 `callsite_id`。
+
+`LanguageFrontend.normalized_paths()` 对显式清单只规范身份与去重，不二次用扩展名过滤。
+依赖层已结合内容/同名源码将 `.h` 判为 C++ 时，安全扫描必须接受该范围，和 ProgramGraph 一致。
+路径越界、文件体量、读取失败检查保持不变；缺省发现仍使用各语言扩展名目录，不重复实现语言判定。
+
+新增语言时应：
+
+1. Tree-sitter 语言优先继承 `TreeSitterSecurityFrontend`；非 Tree-sitter 实现继承 `LanguageFrontend`；
+2. 注册到 `FrontendRegistry`；
+3. 输出同一 IR 语义；
+4. 将语言特有参数绑定放入 `LanguageSemantics`；
+5. 不在前端中硬编码 Source/Sink 规则。

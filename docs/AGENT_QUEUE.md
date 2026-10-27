@@ -17,7 +17,7 @@
 原型默认把一个 Worker 嵌入 FastAPI：
 
 ```powershell
-uvicorn backend.app.main:app --reload
+uvicorn backend.app.main:app --reload --reload-dir backend/app
 ```
 
 如需由进程管理器单独监管 Worker，先关闭内嵌消费者，再启动独立进程：

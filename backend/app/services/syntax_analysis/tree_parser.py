@@ -70,6 +70,11 @@ def field(node: tree_sitter.Node | None, name: str) -> tree_sitter.Node | None:
         return None
 
 
+def semantic_children(node: tree_sitter.Node | None) -> list[tree_sitter.Node]:
+    """读取有语义的直接具名子节点；注释等 extra 不占实参或形参位置。"""
+    return [child for child in node.named_children if not child.is_extra] if node is not None else []
+
+
 def fields(node: tree_sitter.Node | None, name: str) -> list[tree_sitter.Node]:
     """安全读取 Tree-sitter 节点的同名字段列表。"""
     if node is None:

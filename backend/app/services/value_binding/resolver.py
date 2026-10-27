@@ -49,6 +49,7 @@ class StructuredBindingResolver:
                     current.variables,
                     current.origins,
                     "may" if current.uncertain else "must",
+                    current.expression,
                 )
             )
             if current.uncertain and current.kind in {"object", "array"}:

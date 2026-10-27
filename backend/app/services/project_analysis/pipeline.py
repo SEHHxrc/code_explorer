@@ -17,6 +17,7 @@ from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
 from backend.app.services.reports.overview_report import render_deterministic_overview
 from backend.app.services.security_analysis import SecurityAnalysisService, SecurityEvidencePack
 from backend.app.services.syntax_analysis.parser_runtime import ParserUnavailableError
+from backend.app.services.syntax_analysis.session import reuse_syntax, syntax_statistics
 
 from .graph_exchange import GraphExchangeNormalizer
 from .progress import AnalysisProgressReporter, report_progress
@@ -69,6 +70,7 @@ class ProjectAnalysisPipeline:
         self._graph_normalizer = graph_normalizer or GraphExchangeNormalizer()
         self._security_analysis = security_analysis_service or SecurityAnalysisService()
 
+    @reuse_syntax
     def analyze(
         self, project_root: str, max_workers: int = 4, *,
         progress: AnalysisProgressReporter | None = None,
@@ -91,6 +93,7 @@ class ProjectAnalysisPipeline:
         manifest = ProjectManifestBuilder(project_root).build(raw_graph)
         repo_map = build_repo_map(manifest, file_symbols)
         overview = render_deterministic_overview(manifest)
+        diagnostics = {**analysis["diagnostics"], "syntax_reuse": syntax_statistics()}
         logger.info("analysis.completed", extra={"duration_ms": round((time.monotonic() - started) * 1000, 2),
             "file_count": len(file_symbols), "node_count": len(raw_graph.get("nodes", [])),
             "stage": "completed" if security_evidence.completed else "partial_security_analysis"})
@@ -99,7 +102,7 @@ class ProjectAnalysisPipeline:
             file_symbols=file_symbols,
             semantic_index=semantic_index,
             statistics=analysis["stats"],
-            diagnostics=analysis["diagnostics"],
+            diagnostics=diagnostics,
             security_evidence=security_evidence,
             file_tree=file_tree,
             manifest=manifest,

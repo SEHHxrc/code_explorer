@@ -1,11 +1,14 @@
 """把依赖分析阶段产物规范化为共享语义索引。"""
 
 from __future__ import annotations
+from backend.app.services.value_binding.identities import value_identity, variable_root
 
 import hashlib
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
 from typing import Any, Protocol, runtime_checkable
+
+from pydantic import TypeAdapter
 
 from backend.app.services.program_index import ProgramIdentity
 
@@ -26,6 +29,7 @@ from .contracts import (
     VariableTypeFact,
 )
 from .index import SemanticIndex
+from .hierarchy import type_facts
 from .slots import (
     CALL_RESULT_SLOT,
     PARAMETER_SLOT,
@@ -34,6 +38,9 @@ from .slots import (
     parameter_slot_id,
     return_slot_id,
 )
+
+# 只共享编译后的校验器，不共享项目数据；约束与逐条构造 CallSiteFact 完全相同。
+_CALLSITE_BATCH = TypeAdapter(dict[str, CallSiteFact])
 
 
 @runtime_checkable
@@ -86,6 +93,7 @@ class ProgramGraphSemanticProvider:
             key=lambda item: item.method_id,
         ):
             function_location = self._location(function.location)
+            entry = function.nodes[function.entry_node_id]
             return_slot = return_slot_id(function.method_id)
             return_nodes = [
                 node for node in function.nodes.values()
@@ -102,7 +110,10 @@ class ProgramGraphSemanticProvider:
             )
             for position, name in enumerate(function.parameters):
                 slot_id = parameter_slot_id(function.method_id, position)
-                type_fact = index.variable_type(function.symbol_id, name)
+                parameter_types = index.variable_types_for(function.symbol_id, name, role="parameter")
+                legacy_type = index.variable_type(function.symbol_id, name) if not parameter_types else None
+                type_fact = (parameter_types[0] if len(parameter_types) == 1 else
+                             legacy_type if legacy_type is not None and legacy_type.role == "unknown" else None)
                 fact_id = "parameter:" + self._digest(slot_id)
                 parameters[fact_id] = ParameterFact(
                     fact_id=fact_id,
@@ -113,6 +124,7 @@ class ProgramGraphSemanticProvider:
                     position=position,
                     language=function.language,
                     type_literal=type_fact.type_literal if type_fact else "",
+                    declaration_id=entry.definition_declarations.get(variable_root(name), ""),
                     location=function_location,
                 )
                 slots[slot_id] = ValueSlotFact(
@@ -123,6 +135,8 @@ class ProgramGraphSemanticProvider:
                     name=name,
                     position=position,
                     value_names=[name],
+                    value_ids={name: value_identity(entry, name, write=True)}
+                        if variable_root(name) in entry.definition_declarations else {},
                     location=function_location,
                 )
             for node in sorted(function.nodes.values(), key=lambda item: item.node_id):
@@ -153,6 +167,8 @@ class ProgramGraphSemanticProvider:
                         callsite_id=call.callsite_id,
                         node_id=node.node_id,
                         value_names=list(node.definitions),
+                        value_ids={name: value_identity(node, name, write=True) for name in node.definitions
+                                   if variable_root(name) in node.definition_declarations} if len(node.calls) == 1 else {},
                         location=self._location(call.location),
                         certainty=certainty,
                     )
@@ -169,7 +185,8 @@ class ProgramGraphSemanticProvider:
             "返回值槽位当前覆盖局部变量接收的直接调用；字段、容器元素和多调用表达式按保守 may 处理。"
         )
         return artifact.model_copy(update={
-            "schema_version": "1.1",
+            "schema_version": "1.5" if artifact.types else "1.4" if any(item.declaration_id for item in parameters.values()) or any(item.value_ids for item in slots.values())
+                else artifact.schema_version if artifact.schema_version in {"1.2", "1.3", "1.4", "1.5"} else "1.1",
             "parameters": parameters,
             "returns": returns,
             "value_slots": slots,
@@ -190,6 +207,8 @@ class ProgramGraphSemanticProvider:
 
 class DependencyAnalysisSemanticProvider:
     """从依赖分析器的定义、引用、类型表和无损图生成事实。"""
+
+    CALLSITE_BATCH_SIZE = 4096
 
     def build(
         self,
@@ -224,6 +243,7 @@ class DependencyAnalysisSemanticProvider:
                 certainty=self._certainty(attributes.get("target_certainty")),
                 confidence=self._confidence(attributes.get("confidence")),
                 truncated=bool(attributes.get("truncated")),
+                fallback_reason=attributes.get("fallback_reason"),
             ))
 
         unresolved_by_id = {
@@ -233,12 +253,13 @@ class DependencyAnalysisSemanticProvider:
         }
         all_callsite_ids = set(reference_index) | set(targets) | set(unresolved_by_id)
         callsites: dict[str, CallSiteFact] = {}
+        pending: dict[str, dict[str, Any]] = {}
         for callsite_id in sorted(all_callsite_ids):
             reference = reference_index.get(callsite_id)
             missing = unresolved_by_id.get(callsite_id, {})
-            location = self._reference_location(reference, missing)
+            location = self._reference_location_data(reference, missing)
             resolved_targets = self._unique_targets(targets.get(callsite_id, []))
-            callsites[callsite_id] = CallSiteFact(
+            pending[callsite_id] = dict(
                 callsite_id=callsite_id,
                 caller_symbol=str(
                     getattr(reference, "from_fqn", "") or missing.get("from_fqn") or ""
@@ -255,7 +276,14 @@ class DependencyAnalysisSemanticProvider:
                     if missing.get("unresolved_reason") else None
                 ),
                 truncated=any(item.truncated for item in resolved_targets),
+                fallback_reason=(missing.get("fallback_reason") or next(
+                    (item.fallback_reason for item in resolved_targets if item.fallback_reason), None)),
             )
+            if len(pending) >= self.CALLSITE_BATCH_SIZE:
+                callsites.update(_CALLSITE_BATCH.validate_python(pending))
+                pending.clear()
+        if pending:
+            callsites.update(_CALLSITE_BATCH.validate_python(pending))
 
         types: dict[str, VariableTypeFact] = {}
         for owner_symbol in sorted(variable_types):
@@ -274,8 +302,10 @@ class DependencyAnalysisSemanticProvider:
 
         resolved_count = sum(len(item.targets) for item in callsites.values())
         unresolved_count = sum(not item.targets for item in callsites.values())
+        project_types = type_facts(definitions, graph.edges(data=True))
         return SemanticIndexArtifact(
-            schema_version="1.0",
+            schema_version="1.5" if project_types else "1.0",
+            types=project_types,
             callables=callables,
             callsites=callsites,
             variable_types=types,
@@ -335,8 +365,8 @@ class DependencyAnalysisSemanticProvider:
         )
 
     @staticmethod
-    def _reference_location(reference: Any | None, fallback: Mapping[str, Any]) -> SemanticLocation:
-        """优先读取引用对象，失败时使用持久化未解析诊断。"""
+    def _reference_location_data(reference: Any | None, fallback: Mapping[str, Any]) -> dict[str, Any]:
+        """组装原位置字段，由同一模型在有界批次中校验，避免重复 Python 构造层。"""
         def value(name: str) -> Any:
             """读取引用字段；仅在引用缺失时查询诊断字典。"""
             return getattr(reference, name, None) if reference is not None else fallback.get(name)
@@ -346,7 +376,7 @@ class DependencyAnalysisSemanticProvider:
         column = max(0, int(value("column") or 0))
         end_line = max(0, int(value("end_line") or line))
         end_column = max(0, int(value("end_column") or column))
-        return SemanticLocation(
+        return dict(
             path=path,
             line=line,
             column=column,
@@ -387,11 +417,9 @@ class DependencyAnalysisSemanticProvider:
         definition = definitions.get(owner)
         if definition is not None:
             return str(getattr(definition, "lang", ""))
-        candidates = [
-            item for symbol, item in definitions.items()
+        return next((str(getattr(item, "lang", "")) for symbol, item in definitions.items()
             if owner.startswith(symbol + "::") or symbol.startswith(owner + "::")
-        ]
-        return str(getattr(candidates[0], "lang", "")) if candidates else ""
+        ), "")
 
     @classmethod
     def _stable_id(cls, *parts: str) -> str:

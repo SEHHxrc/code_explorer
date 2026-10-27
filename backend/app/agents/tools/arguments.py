@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SecurityEvidenceSection = Literal["overview", "flow", "snippets", "protections", "unresolved"]
+SecurityEvidenceSection = Literal["overview", "flow", "snippets", "protections", "unresolved", "conditions"]
 
 
 class StrictArguments(BaseModel):

@@ -10,7 +10,7 @@ _CONTROL = (
 JAVASCRIPT_RULE_PACKS = (
     RulePack(
         name="javascript-typescript-core",
-        version="1.2",
+        version="1.3",
         languages=_LANGUAGES,
         entrypoint_rules=(
             EntrypointRule(

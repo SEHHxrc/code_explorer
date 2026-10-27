@@ -5,7 +5,7 @@
       <div class="header">
         <div>
           <span class="title">🧪 静态安全证据效果盲测</span>
-          <span class="subtitle">同一问题、同一模型、同一步骤预算</span>
+          <span class="subtitle">同一问题、同一模型、相同调查及报告预算规则</span>
         </div>
         <el-tag v-if="comparison" :type="completed ? 'success' : 'primary'" size="small">
           {{ completed ? (comparison.reviewed ? '已保存盲评' : comparison.valid_for_review ? '等待盲评' : '运行失败或回答完整性未通过') : '两组运行中' }}
@@ -23,7 +23,7 @@
 
     <el-alert v-if="comparison?.quality_warnings?.length" :title="comparison.quality_warnings.join(' ')"
       type="warning" :closable="false" show-icon />
-    <el-alert v-if="['static-security-v8-full-source', 'static-security-v13-full-source-paths', 'static-security-v16-full-source-ledger'].includes(comparison?.protocol)" type="info" :closable="false"
+    <el-alert v-if="['static-security-v8-full-source', 'static-security-v13-full-source-paths', 'static-security-v16-full-source-ledger', 'static-security-v23-full-source-boundaries'].includes(comparison?.protocol)" type="info" :closable="false"
       title="完整源码补充实验：两组初始包含相同完整范围源码，零工具、单次报告，仅静态事实不同；不与按需分批试次混合统计。" />
     <el-alert v-if="comparison?.protocol === 'static-security-v9-cumulative-evidence'" type="info" :closable="false"
       title="累计证据预算实验：两组使用相同原始文件工具和累计字节配额；静态事实也占用配额。理论可读完与实际已展示不同，不与其他协议合并统计。" />
@@ -33,6 +33,18 @@
       title="路径摘要协议：初始只提供传播路径、结构线索和操作线索；优先级是核验顺序而非漏洞概率。覆盖与局限按需读取，源码反向切片未启用；不与旧摘要试次混算。" />
     <el-alert v-if="['static-security-v14-review-ledger', 'static-security-v15-cumulative-ledger', 'static-security-v16-full-source-ledger'].includes(comparison?.protocol)" type="info" :closable="false"
       title="发现台账协议：两组共用六类覆盖核对，摘要计数和报告分区由台账状态生成；机械一致不代表结论正确。导航、轮次和预算未因此扩大，不与旧报告协议混算。" />
+
+    <el-alert v-if="['static-security-v17-path-families', 'static-security-v18-source-delivery', 'static-security-v19-unbounded-batch-report', 'static-security-v20-isolated-report-stages', 'static-security-v21-chain-boundaries'].includes(comparison?.protocol)" type="info" :closable="false"
+      title="路径族协议：先浏览同 Source/Sink 的路径族，再选择具体路线；查看族不表示已核验全部路线。两组默认 12 轮、上限 36 轮；第三方知识 Agent 单独调用，不混入本次静态输入。" />
+    <el-alert v-if="comparison?.protocol === 'static-security-v18-source-delivery'" type="info" :closable="false"
+      title="交付记录协议：工具返回、HTTP 发送尝试与模型请求/显式 ID 引用分开记录，均不等于模型实际使用或语义核实。每批台账及生成正文各限 16000 字符；无路径、告警或诊断不证明安全。" />
+    <el-alert v-if="comparison?.protocol === 'static-security-v19-unbounded-batch-report'" type="info" :closable="false"
+      title="批次报告无总字符上限：取消台账 JSON 和生成正文的 16000 字符限制，保留完整性、结构与状态校验，以及传输和审计安全配额。调查轮次、报告模式与模型配置不变；与旧限制条件分开统计。" />
+    <el-alert v-if="['static-security-v20-isolated-report-stages', 'static-security-v21-chain-boundaries'].includes(comparison?.protocol)" type="info" :closable="false"
+      title="阶段隔离协议：调查预算不扣批次报告；每批独立一次报告请求，最终另有一次汇总，格式重提交仍受共同额度限制。报告只提供提交工具，汇总无工具；历史调查调用转为带来源的证据，不混入旧调用或续接状态。无报告总字符上限，不与旧条件混算。" />
+
+    <el-alert v-if="['static-security-v21-chain-boundaries', 'static-security-v22-cumulative-boundaries', 'static-security-v23-full-source-boundaries'].includes(comparison?.protocol)" type="info" :closable="false"
+      title="台账 v2：明确路径起终点及局部/外部闭合范围，传播断点与部署条件分开。人工独立评价发现广度、链路核验和结论可信度；历史批次引用可追溯，不因最终请求省略就判为幻觉。与旧契约分开统计。" />
 
     <ExperimentHistory :project-id="projectId" :refresh-key="historyRefresh" @open="openHistory" />
 
@@ -47,8 +59,8 @@
         :disabled="running"
       />
       <div class="setup-actions">
-        <span>两组使用相同分批规则和调查预算；已报告证据不重复选择。</span>
-        <el-input-number v-model="maxSteps" :min="1" :max="24" :disabled="running" aria-label="两组共同调查轮次" />
+        <span>两组调查预算相同；批次报告与最终汇总另计，已报告证据不重复选择。</span>
+        <el-input-number v-model="maxSteps" :min="1" :max="36" :disabled="running" aria-label="两组共同调查轮次" />
         <el-button
           type="primary"
           :loading="running"
@@ -93,6 +105,12 @@
           <div><dt>供应商终止原因</dt><dd>{{ finishReasons(lane) }}</dd></div>
           <div><dt>回答完整性</dt><dd>{{ completenessLabel(lane) }}</dd></div>
           <div><dt>调查轮次上限</dt><dd>{{ laneMetrics(lane).execution_policy?.max_tool_rounds ?? '—' }}</dd></div>
+          <template v-if="laneMetrics(lane).execution_policy?.investigation_budget_excludes_reports">
+            <div><dt>调查请求（应用发起）</dt><dd>{{ laneMetrics(lane).phase_requests?.investigation ?? 0 }}</dd></div>
+            <div><dt>批次报告请求（另计）</dt><dd>{{ laneMetrics(lane).phase_requests?.batch_report ?? 0 }}</dd></div>
+            <div><dt>最终汇总请求（另计）</dt><dd>{{ laneMetrics(lane).phase_requests?.final_report ?? 0 }}</dd></div>
+            <div><dt>格式重提交请求（另计）</dt><dd>{{ laneMetrics(lane).phase_requests?.report_format_retry ?? 0 }}</dd></div>
+          </template>
           <div><dt>最终报告模式</dt><dd>{{ reportModeLabel(lane) }}</dd></div>
           <div>
             <el-tooltip content="所有请求中最大的单次完整请求估算；下方累计值是多轮之和，不是单次上下文大小">
@@ -121,6 +139,10 @@
           </div>
         </dl>
         <p class="audit-note">审计：{{ auditLabel(lane) }}。引用检查仅做机械核对，不代表结论正确。</p>
+        <p v-if="laneMetrics(lane).report_format?.rejections?.length" class="audit-note">
+          曾发生台账格式拒绝；格式重提交 {{ laneMetrics(lane).report_format.retries }} 次。
+          原始回复及全部请求用量保留，未在本地修补 JSON；重提交不代表语义核验通过。
+        </p>
         <p v-if="laneMetrics(lane).assumed_zero_token_attempts" class="audit-note">
           按本次冻结的当前端点声明，{{ laneMetrics(lane).assumed_zero_token_attempts }} 次 429/503 为执行前拒绝，假设模型 Token 为 0；这不是供应商返回的 usage，也不代表所有端点如此。未知成本尝试：{{ metric(lane, 'unknown_cost_http_attempts') }}。
         </p>
@@ -129,6 +151,12 @@
           <pre class="audit-body">{{ JSON.stringify(laneMetrics(lane).findings_ledger.ledger, null, 2) }}</pre>
         </details>
         <p v-if="laneMetrics(lane).failure_diagnosis" class="audit-note">当前诊断：{{ laneMetrics(lane).failure_diagnosis.message }}</p>
+        <details v-if="laneMetrics(lane).citation_check?.notices?.length" class="audit-note">
+          <summary>历史证据来源 {{ laneMetrics(lane).citation_check.notices.length }} 项：此前已展示，最终请求省略；不作为未展示警告或幻觉判定</summary>
+          <ul><li v-for="(notice, index) in laneMetrics(lane).citation_check.notices" :key="index">
+            {{ notice.path }}:{{ notice.start_line }}–{{ notice.end_line }}；请求记录 {{ notice.request_ids?.join(', ') || '旧记录未关联' }}。需回查对应批次，不代表引用支持断言。
+          </li></ul>
+        </details>
         <ul v-if="laneMetrics(lane).citation_check?.warnings?.length" class="citation-warnings">
           <li v-for="(warning, index) in laneMetrics(lane).citation_check.warnings" :key="index">
             {{ warning.path }}<template v-if="warning.start_line != null">:{{ warning.start_line }}–{{ warning.end_line }}</template>：{{ citationReason(warning.reason) }}<template v-if="warning.resolved_path">（核对提示：{{ warning.resolved_path }}，未改写原文）</template>
@@ -157,15 +185,13 @@
     <BlindReviewResult :review="comparison?.review" />
     <div v-if="completed && comparison.valid_for_review && !reveal" class="review">
       <h4>揭盲前评分</h4>
+      <p>发现广度：核实的独立问题与有效调查面；链路核验：明确端点、连接和对应防护；结论可信度：断言与证据、未知条件相符。三项独立评分，不用条目数量或闭合数量代替核验。</p>
       <div class="score-grid">
         <div />
-        <strong>正确性</strong><strong>完整性</strong><strong>证据充分</strong><strong>幻觉控制</strong>
+        <strong v-for="label in reviewDimensions" :key="label">{{ label }}</strong>
         <template v-for="lane in laneNames" :key="'scores-' + lane">
           <strong>{{ lane === 'left' ? '左侧' : '右侧' }}</strong>
-          <el-rate v-model="scores[lane].correctness" />
-          <el-rate v-model="scores[lane].completeness" />
-          <el-rate v-model="scores[lane].evidence" />
-          <el-rate v-model="scores[lane].hallucination_control" />
+          <el-rate v-for="(_, key) in reviewDimensions" :key="key" v-model="scores[lane][key]" />
         </template>
       </div>
       <div class="review-actions">
@@ -188,6 +214,7 @@ import { apiErrorMessage } from '../../services/httpClient.js'
 import ExperimentHistory from './ExperimentHistory.vue'
 import BlindReviewResult from './BlindReviewResult.vue'
 import { historyConditions } from './history.js'
+import { REVIEW_RUBRIC_VERSION, reviewDimensions, emptyReviewScores } from './reviewRubric.js'
 import {
   createExperimentComparison,
   reviewExperimentComparison,
@@ -203,7 +230,7 @@ const props = defineProps({
 
 const laneNames = ['left', 'right']
 const question = ref('')
-const maxSteps = ref(8)
+const maxSteps = ref(12)
 const comparison = ref(null)
 const reveal = ref(null)
 const running = ref(false)
@@ -213,8 +240,8 @@ const auditText = ref('')
 const preferredLane = ref('tie')
 const notes = ref('')
 const scores = reactive({
-  left: { correctness: 3, completeness: 3, evidence: 3, hallucination_control: 3 },
-  right: { correctness: 3, completeness: 3, evidence: 3, hallucination_control: 3 },
+  left: emptyReviewScores(),
+  right: emptyReviewScores(),
 })
 let controller = null
 let generation = 0
@@ -227,7 +254,7 @@ const laneMetrics = (lane) => comparison.value?.lanes?.[lane]?.metrics || {}
 const usageLabel = (lane) => ({ complete: '全部请求已报告', partial: '仅部分请求/字段，非完整总量', unavailable: '供应商未报告或历史未记录' }[laneMetrics(lane).usage_status] || '未知')
 const completenessLabel = (lane) => ({ complete: '生成及格式完整（非覆盖完整）', incomplete: '未通过', unknown: '未知，不能认定完整' }[laneMetrics(lane).answer_completeness?.status] || '未知')
 const finishReasons = (lane) => laneMetrics(lane).finish_reasons?.join(' / ') || '未记录'
-const reportModeLabel = (lane) => ({ tools_none: '保留定义，禁用新工具', history_no_tools: '无工具定义，保留有效历史', single_shot_no_tools: '完整源码，零工具单次报告' }[laneMetrics(lane).execution_policy?.final_report_mode] || '历史未记录')
+const reportModeLabel = (lane) => ({ tools_none: '保留定义，禁用新工具', history_no_tools: '无工具定义，保留有效历史', isolated_text_no_tools: '隔离汇总，无工具；批次仅报告提交', single_shot_no_tools: '完整源码，零工具单次报告' }[laneMetrics(lane).execution_policy?.final_report_mode] || '历史未记录')
 const auditLabel = (lane) => ({ complete: '可见传输记录已保存', incomplete: '审计不完整', expired: '正文已按保留策略过期清理', reserved: '已预留，等待运行', recording: '正在记录', unavailable: '历史未记录' }[laneMetrics(lane).audit?.status] || '历史未记录')
 const citationReason = (reason) => ({ path_outside_snapshot: '路径不在允许范围', path_not_in_snapshot: '快照中无此文件',
   citation_syntax_invalid: '引用格式不规范，未认定为虚构证据', path_abbreviation_resolved: '路径简称可唯一对应，但不符合完整路径规范',
@@ -280,7 +307,7 @@ const reset = () => {
   reviewing.value = false
   preferredLane.value = 'tie'
   notes.value = ''
-  for (const lane of laneNames) Object.assign(scores[lane], { correctness: 3, completeness: 3, evidence: 3, hallucination_control: 3 })
+  for (const lane of laneNames) Object.assign(scores[lane], emptyReviewScores())
 }
 watch(() => props.projectId, reset)
 
@@ -301,7 +328,6 @@ const openHistory = async (comparisonId) => {
     if (result.review) {
       preferredLane.value = result.review.preferred_lane
       notes.value = result.review.notes || ''
-      for (const lane of laneNames) Object.assign(scores[lane], result.review.scores[lane])
     }
     if (result.status !== 'completed') await streamExperimentComparison(result.events_url, (snapshot) => {
       if (ticket === generation) comparison.value = snapshot
@@ -339,11 +365,16 @@ const start = async () => {
 
 const submitReview = async () => {
   if (!comparison.value || reviewing.value) return
+  if (laneNames.some((lane) => Object.values(scores[lane]).some((value) => value < 1 || value > 5))) {
+    ElMessage.warning('请分别完成两组的三项评分。')
+    return
+  }
   reviewing.value = true
   const ticket = generation
   try {
     const result = await reviewExperimentComparison(comparison.value.id, {
       preferred_lane: preferredLane.value,
+      rubric_version: REVIEW_RUBRIC_VERSION,
       left: { ...scores.left },
       right: { ...scores.right },
       notes: notes.value,
@@ -352,7 +383,7 @@ const submitReview = async () => {
     reveal.value = result.reveal
     comparison.value.reviewed = true
     comparison.value.review = { preferred_lane: preferredLane.value,
-      scores: { left: { ...scores.left }, right: { ...scores.right } }, notes: notes.value }
+      scores: { rubric_version: REVIEW_RUBRIC_VERSION, left: { ...scores.left }, right: { ...scores.right } }, notes: notes.value }
     historyRefresh.value++
     ElMessage.success('评分已保存，实验组身份已揭示。')
   } catch (error) {
@@ -384,7 +415,7 @@ onUnmounted(reset)
 .audit-body { max-height: 65vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
 .review { margin-top: 18px; padding-top: 14px; border-top: 1px solid #ebeef5; }
 .review h4 { margin: 0 0 12px; }
-.score-grid { display: grid; grid-template-columns: 80px repeat(4, minmax(130px, 1fr)); align-items: center; gap: 9px; overflow-x: auto; }
+.score-grid { display: grid; grid-template-columns: 80px repeat(3, minmax(130px, 1fr)); align-items: center; gap: 9px; overflow-x: auto; }
 .review-actions { margin-top: 14px; }
 .review-actions .el-input { flex: 1; }
 @media (max-width: 1000px) {

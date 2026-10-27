@@ -9,9 +9,9 @@ from backend.app.agents.tools.base import AgentTool, ToolContext
 
 
 def _detail_result(result: dict[str, Any]) -> ToolResult:
-    """统一详情包装；只有实际交付片段记录源码证据，路径目录不算源码已读。"""
+    """统一详情包装；工具生成的片段不是已送入模型的证明，目录也不算源码已读。"""
     evidence = [AgentEvidence(path=snippet["path"], line=snippet["start_line"],
-                              detail="已交付静态片段；不代表完整实现已核验。") for snippet in result["snippets"].values()]
+                              detail="工具已生成静态片段；模型请求交付另行记录，不代表实现已核验。") for snippet in result["snippets"].values()]
     return ToolResult(content=result, evidence=evidence, truncated=result["has_more"])
 
 
@@ -20,8 +20,8 @@ class SecurityEvidenceTool(AgentTool):
 
     name = "get_static_security_evidence"
     description = (
-        "For a path-summary ID or _coverage, set evidence_id and section with offset/limit to fetch details. "
-        "Empty evidence_id searches ranked path metadata with query/cursor/limit, no source bodies. "
+        "Family ID with overview lists route IDs without selecting them; route ID fetches actual evidence sections. "
+        "Empty evidence_id searches ranked families and unpaired operations with query/cursor/limit, no source bodies. "
         "Structural reachability is not taint flow."
     )
     arguments_model = SecurityEvidenceArguments
@@ -44,6 +44,7 @@ class EvidenceSearchArguments(StrictArguments):
     category: str = Field(default="", max_length=100)
     path: str = Field(default="", max_length=1000)
     trust_class: str = Field(default="", max_length=100)
+    path_group_id: str = Field(default="", max_length=1000)
     cursor: str = Field(default="", max_length=1000)
     limit: int = Field(default=8, ge=1, le=25)
 
@@ -61,7 +62,7 @@ class SearchStaticEvidenceTool(AgentTool):
     """仅检索未报告目录；不把目录定位算作已读取源码。"""
 
     name = "search_static_security_evidence"
-    description = "Search ranked propagation paths, structural leads and operation leads by literal metadata (empty query lists all). priority is investigation order, not vulnerability probability. No source bodies. Completed IDs are excluded; finish active batch before searching again."
+    description = "Search path families and unpaired operations; path_group_id lists remaining route IDs. Literal metadata only, no source. Browsing does not select routes; reported IDs excluded. Submit active batch first."
     arguments_model = EvidenceSearchArguments
 
     async def execute(self, context: ToolContext, arguments: EvidenceSearchArguments) -> ToolResult:
@@ -76,7 +77,7 @@ class SelectStaticEvidenceTool(AgentTool):
     """分批实验的 ID 详情入口；与普通 Agent 共用目录，仅额外约束批次状态。"""
 
     name = "get_static_security_evidence"
-    description = "Select an evidence ID; fetch overview/flow/snippets/protections/unresolved with next_offset. No sampled path. Three active IDs max; reported IDs excluded. _coverage reads global overview, unresolved (limitations/failures), protections (rule coverage), and is not a selected candidate."
+    description = "Family ID + overview browses remaining routes without selection. Route ID selects/fetches overview/flow/snippets/protections/unresolved/conditions with offset/limit. Max 3 active routes; reported IDs excluded. _coverage is global metadata, not a route."
     arguments_model = EvidenceDetailArguments
 
     async def execute(self, context: ToolContext, arguments: EvidenceDetailArguments) -> ToolResult:
@@ -84,7 +85,8 @@ class SelectStaticEvidenceTool(AgentTool):
         if arguments.evidence_id in context.batches.completed_ids:
             raise ValueError("该 ID 已输出报告，请选择尚未报告的证据。")
         result = context.evidence_index.security.detail(arguments.evidence_id, section=arguments.section,
-                                                      offset=arguments.offset, limit=arguments.limit)
+                                                      offset=arguments.offset, limit=arguments.limit,
+                                                      excluded=context.batches.completed_ids)
         if result["items"] and result["view"] == "detail":
             context.batches.select(arguments.evidence_id)
         return _detail_result(result)

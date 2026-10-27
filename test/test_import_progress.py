@@ -108,7 +108,7 @@ class ImportProgressTests(unittest.TestCase):
         class BrokenObserver:
             def phase(self, *_):
                 raise RuntimeError("observer failed")
-        with self.assertLogs("backend.app.services.project_analysis.progress", level="WARNING"):
+        with self.assertLogs("backend.app.core.progress", level="WARNING"):
             report_progress(BrokenObserver(), "dependency")
 
     def test_import_terminal_status_follows_transaction_result(self):

@@ -28,6 +28,7 @@ class AuditRecorder:
         self.sent_count = 0
         self.resolved_count = 0
         self.pending_lines: dict[int, dict[str, set[int]]] = {}
+        self.source_receipts: dict[int, dict[str, set[int]]] = {}
         self.planned_count = 0
         self.elapsed_ms = 0.0
         self.snapshot_ms = 0.0
@@ -122,6 +123,7 @@ class AuditRecorder:
                                   "channel_sizes": response_channel_sizes(payload), "transport": sanitize(diagnostics)})
         self.resolved_count += 1
         self.final_seen = self.pending_lines.pop(request_id, {})
+        self.source_receipts[request_id] = self.final_seen
         for path, numbers in self.final_seen.items():
             self.seen.setdefault(path, set()).update(numbers)
 
@@ -166,7 +168,7 @@ class AuditRecorder:
 
     def citations(self, answer: str) -> dict[str, Any]:
         """根据实际发送过的正文产生机械警告，正文未审计时明确不可确认。"""
-        result = check_citations(answer, self.manifest, self.seen, self.final_seen)
+        result = check_citations(answer, self.manifest, self.seen, self.final_seen, receipts=self.source_receipts)
         result["actual_requests_recorded"] = self.sent_count
         self._append("citations", result)
         return result

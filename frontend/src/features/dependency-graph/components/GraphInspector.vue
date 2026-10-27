@@ -13,6 +13,17 @@
             {{ node.file }}<template v-if="node.line">:{{ node.line }}</template>
           </span>
         </div>
+        <div v-if="node.security" class="detail-section">
+          <div class="section-title">{{ node.security.pathCount ? `属于 ${node.security.pathCount} 条已保存路线（非漏洞计数）` : '尚无已保存的 Source→Sink 路线' }}</div>
+          <el-tag v-for="role in node.security.roles" :key="role" size="small" effect="plain">{{ role }}</el-tag>
+        </div>
+        <div v-if="node.security?.operations?.length" class="detail-section">
+          <div class="section-title">未配对敏感操作（{{ node.security.operations.length }}，非漏洞计数）</div>
+          <div v-for="item in node.security.operations.slice(0, 20)" :key="item.id" class="operation-row">
+            <b>{{ item.sink.name }}</b><br>{{ operationLocation(item.sink.location) }}
+          </div>
+          <div class="detail-empty">尚未建立输入传播链路。<template v-if="node.security.operations.length > 20">此处只展开前 20 项，其余可通过顶部选择器查看。</template></div>
+        </div>
         <div class="detail-actions">
           <el-button size="small" :type="focusMode ? 'primary' : ''" @click="$emit('toggle-focus')">
             {{ focusMode ? '退出单跳聚焦' : '只看单跳邻域' }}
@@ -21,14 +32,14 @@
         </div>
         <div v-if="outgoing.length" class="detail-section">
           <div class="section-title">依赖出去 ({{ outgoing.length }})</div>
-          <div v-for="item in outgoing.slice(0, 40)" :key="`o-${item.id}`" class="detail-row" @click="$emit('select-node', item.id)">
+          <div v-for="item in outgoing.slice(0, 40)" :key="`o-${item.edgeId}`" class="detail-row" @click="$emit('select-node', item.id)">
             <span class="rel-tag" :style="{ color:item.color, borderColor:item.color }">{{ item.rel }}</span>
             <span class="row-name" :title="item.id">{{ item.label }}</span>
           </div>
         </div>
         <div v-if="incoming.length" class="detail-section">
           <div class="section-title">被谁依赖 ({{ incoming.length }})</div>
-          <div v-for="item in incoming.slice(0, 40)" :key="`i-${item.id}`" class="detail-row" @click="$emit('select-node', item.id)">
+          <div v-for="item in incoming.slice(0, 40)" :key="`i-${item.edgeId}`" class="detail-row" @click="$emit('select-node', item.id)">
             <span class="rel-tag" :style="{ color:item.color, borderColor:item.color }">{{ item.rel }}</span>
             <span class="row-name" :title="item.id">{{ item.label }}</span>
           </div>
@@ -55,18 +66,31 @@
           </div>
         </div>
       </template>
+      <div v-if="security?.families?.length" class="detail-section">
+        <div class="section-title">路径族归属<template v-if="security.shared"> · 跨族共享</template></div>
+        <div class="family-tags">
+          <span v-for="family in security.families" :key="family.id" class="family-tag" :title="family.id">
+            <span class="swatch" :style="{ background:family.color }" />{{ family.label }}
+          </span>
+        </div>
+        <div v-if="edge" class="detail-empty">属于 {{ security.pathCount }} 条已保存路线（非漏洞计数）</div>
+      </div>
     </div>
   </transition>
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue'
+
+const props = defineProps({
   node: { type: Object, default: null },
   edge: { type: Object, default: null },
   outgoing: { type: Array, default: () => [] },
   incoming: { type: Array, default: () => [] },
   focusMode: Boolean,
 })
+const security = computed(() => props.node?.security || props.edge?.security)
+const operationLocation = (location) => location ? `${location.path}:${location.line}` : '位置不可用'
 defineEmits(['clear', 'toggle-focus', 'hide-node', 'select-node'])
 </script>
 
@@ -88,6 +112,9 @@ defineEmits(['clear', 'toggle-focus', 'hide-node', 'select-node'])
 .endpoint-row { padding:6px; }
 .endpoint-kind { flex-shrink:0; color:#a8abb2; font-size:10px; }
 .detail-empty { margin-top:10px; font-size:12px; color:#909399; }
+.operation-row { margin:5px 0; font-size:12px; color:#606266; overflow-wrap:anywhere; }
+.family-tags { display:flex; flex-wrap:wrap; gap:6px 10px; }
+.family-tag { display:inline-flex; align-items:center; gap:5px; font-size:11px; color:#475569; }
 .swatch { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
 .swatch.line { width:14px; height:3px; border-radius:2px; }
 .slide-enter-active,.slide-leave-active { transition:all .22s ease; }

@@ -3,17 +3,21 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from collections import defaultdict
+from itertools import chain
 from pathlib import Path
 from typing import Any
+from pydantic import ValidationError
 
 from backend.app.services.program_graph import ProgramGraphService
-from backend.app.services.project_analysis.progress import AnalysisProgressReporter, report_progress
+from backend.app.core.progress import AnalysisProgressReporter, report_progress
 from backend.app.services.semantic_index import (
     ProgramGraphSemanticProvider,
     SemanticIndexArtifact,
     SemanticIndexEnricher,
 )
+from backend.app.services.syntax_analysis.session import reuse_syntax
 
 from .contracts import (
     CodeSnippet,
@@ -25,15 +29,21 @@ from .contracts import (
     StaticSecurityFact,
 )
 from .flow_analysis import DataFlowAnalyzer, ProgramGraphSecurityFlowAnalyzer
+from .flow_analysis.diagnostics import FlowDiagnostics
 from .path_finder import StructuralCallPathFinder, StructuralPath
 from .scanner import SecurityScanner
 from .slicer import SourceSlicer
+from .candidate_search import StructuralCandidateSearch
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_LIMITATIONS = [
     "只有标记为 intra_procedural_dataflow 或 interprocedural_dataflow 的候选包含公共 ProgramGraph 到达定义路径；其余候选只表示结构可达性。",
     "当前 CFG 尚未覆盖全部语言特殊控制语义，也未证明具体分支在运行时可行。",
     "动态派发、反射、运行时导入和未解析引用可能造成漏报或不完整路径。",
-    "当前规则包覆盖 Python/FastAPI、Java/Spring/Servlet、Go net/http、C/C++ 标准库/POSIX/SQLite，以及 JS/TS 的浏览器、Node.js、Express、Vue/React 核心语法；不是全量语言/框架扫描。",
+    "Guard/Sanitizer 是规则匹配观察，未经实际值、危险上下文和执行顺序验证，不作为传播截断或防护有效的证明。",
+    "Source 记录已识别的输入来源，不证明攻击者可控；未确认的权限要求保持 unknown，不因可能由管理员提供而删除路径。无路径、无告警或无诊断均不证明安全或完整覆盖。",
+    "当前规则包覆盖 Python/FastAPI、Java/Spring/Servlet、Go net/http/Gin/net、C/C++ 标准库/POSIX/SQLite，以及 JS/TS 的浏览器、Node.js、Express、Vue/React 核心语法；不是全量语言/框架扫描。",
 ]
 
 
@@ -53,8 +63,11 @@ class SecurityAnalysisService:
         max_sinks: int = 600,
         max_guards: int = 2_000,
         max_sanitizers: int = 1_000,
+        max_structural_queries: int = 2_048,
+        max_structural_seconds: float = 30,
+        max_fact_records: int = 100_000,
     ) -> None:
-        """注入扫描器并设置证据包的路径和体量上限。"""
+        """设置候选、查询和事实存储安全预算；Source/Sink 数量只限制单批窗口。"""
         self.scanner = scanner or SecurityScanner()
         self.program_graph_service = program_graph_service or ProgramGraphService()
         self.semantic_index_enricher = (
@@ -69,6 +82,9 @@ class SecurityAnalysisService:
         self.max_sinks = max(1, max_sinks)
         self.max_guards = max(1, max_guards)
         self.max_sanitizers = max(1, max_sanitizers)
+        self.max_structural_queries = max(1, max_structural_queries)
+        self.max_structural_seconds = max(0.01, max_structural_seconds)
+        self.max_fact_records = max(1, max_fact_records)
 
     def analyze(
         self,
@@ -87,6 +103,7 @@ class SecurityAnalysisService:
         )
         return evidence
 
+    @reuse_syntax
     def analyze_with_semantic_index(
         self,
         *,
@@ -100,18 +117,28 @@ class SecurityAnalysisService:
         enriched_index = SemanticIndexArtifact.model_validate(semantic_index or {})
         report_progress(progress, "security_scan")
         scan = self.scanner.scan(project_root, dependency_graph=dependency_graph)
+        if sum(map(len, (scan.sources, scan.sinks, scan.guards, scan.sanitizers))) > self.max_fact_records:
+            raise ValueError("已识别安全事实超过持久化条数安全上限；请调整存储预算或缩小项目，未保存冒充完整的部分事实包。")
+        flow_diagnostics = FlowDiagnostics()
+        flow_stage = "program_graph"
+        graph_partial = False
         try:
             report_progress(progress, "program_graph")
             program_graph = self.program_graph_service.analyze(
                 project_root,
                 dependency_graph=dependency_graph,
                 languages=set(scan.languages_analyzed),
+                **({"semantic_index": enriched_index} if enriched_index.variable_declarations or enriched_index.variable_references else {}),
             )
+            scan.failures.extend({"stage": "program_graph", **failure} for failure in program_graph.failures)
+            graph_partial = bool(program_graph.failures)
+            flow_stage = "semantic_index"
             enriched_index = self.semantic_index_enricher.enrich(
                 enriched_index,
                 program_graph=program_graph,
             )
             report_progress(progress, "dataflow")
+            flow_stage = "dataflow"
             scan.dataflows = self.flow_analyzer.analyze(
                 program_graph,
                 sources=scan.sources,
@@ -120,15 +147,26 @@ class SecurityAnalysisService:
                 dependency_graph=dependency_graph,
                 semantic_index=enriched_index,
                 value_boundaries=scan.value_boundaries,
+                diagnostics=flow_diagnostics,
             )
         except (OSError, TypeError, ValueError, RuntimeError) as exc:
-            scan.failures.append({
+            failure: dict[str, Any] = {
                 "reason": "program_graph_dataflow_error",
                 "detail": type(exc).__name__,
-            })
+                "stage": flow_stage,
+            }
+            if isinstance(exc, ValidationError):
+                failure["validation_errors"] = [
+                    {"type": error["type"], "path": list(error["loc"])}
+                    for error in exc.errors(include_input=False, include_context=False, include_url=False)[:6]
+                ]
+            scan.failures.append(failure)
+            logger.exception("security.dataflow_failed", extra={"stage": flow_stage})
         report_progress(progress, "evidence")
         entrypoints = self._sorted_entrypoints(scan.entrypoints)
         sources = self._sorted(scan.sources)
+        for source in sources:
+            source.metadata.setdefault("permission_requirement", "unknown")
         sinks = self._sorted(scan.sinks)
         guards = self._sorted(scan.guards)
         sanitizers = self._sorted(scan.sanitizers)
@@ -153,18 +191,16 @@ class SecurityAnalysisService:
                 "尚未注册安全前端的语言：" + ", ".join(scan.unsupported_languages) + "。"
             )
         for values, limit, label in (
-            (sources, self.max_sources, "Source"),
-            (sinks, self.max_sinks, "Sink"),
             (guards, self.max_guards, "Guard"),
             (sanitizers, self.max_sanitizers, "Sanitizer"),
         ):
             if len(values) > limit:
-                limitations.append(f"{label} 事实超过证据包上限，仅保留前 {limit} 条。")
+                limitations.append(f"{label} 关联观察最多选取 {limit} 条；全部已识别事实仍保存。优先保留值流涉及函数的观察，未附加到候选不表示不存在，也不证明防护有效。")
 
-        retained_sources = sources[:self.max_sources]
-        retained_sinks = sinks[:self.max_sinks]
-        retained_guards = guards[:self.max_guards]
-        retained_sanitizers = sanitizers[:self.max_sanitizers]
+        # 防护关联预算不删除事实，也不作为值传播的 kill 屏障。
+        flow_symbols = {step.symbol for flow in scan.dataflows for step in flow.steps}
+        retained_guards = sorted(guards, key=lambda item: item.symbol not in flow_symbols)[:self.max_guards]
+        retained_sanitizers = sorted(sanitizers, key=lambda item: item.symbol not in flow_symbols)[:self.max_sanitizers]
         path_finder = StructuralCallPathFinder(
             dependency_graph,
             max_depth=self.max_path_depth,
@@ -178,56 +214,77 @@ class SecurityAnalysisService:
         call_edges = {}
         snippets = {}
         dataflows = {item.flow_id: item for item in scan.dataflows}
-        dataflow_by_pair = {
-            (item.source_fact_id, item.sink_fact_id): item
-            for item in scan.dataflows
-        }
+        # 先覆盖已有值流端点族，再轮询变体，剩余预算给结构线索；不让低精度线索挤掉已建链。
+        dataflows_by_pair: dict[tuple[str, str], list[Any]] = defaultdict(list)
+        for item in sorted(scan.dataflows, key=lambda flow: (
+            {"satisfiable_under_model": 0, "unknown": 1, "not_checked": 2, "infeasible_under_model": 3}.get(
+                flow.path_conditions[0].status if flow.path_conditions else "not_checked", 2), len(flow.steps), flow.flow_id)):
+            dataflows_by_pair[(item.source_fact_id, item.sink_fact_id)].append(item)
         candidate_limit_reached = False
-        sink_symbols = {sink.symbol for sink in retained_sinks}
-        reachable_by_source: dict[str, dict[str, StructuralPath]] = {}
-
-        for source in retained_sources:
-            if source.symbol not in reachable_by_source:
-                reachable_by_source[source.symbol] = path_finder.find_reachable(
-                    source.symbol,
-                    sink_symbols,
-                )
-            for sink in retained_sinks:
-                path = reachable_by_source[source.symbol].get(sink.symbol)
-                dataflow = dataflow_by_pair.get((source.fact_id, sink.fact_id))
-                if path is None and dataflow is not None:
-                    path = StructuralPath(
-                        nodes=list(dict.fromkeys((source.symbol, sink.symbol))),
-                        edges=path_finder.edges(dataflow.call_edge_ids),
-                    )
-                if path is None:
-                    continue
-                candidate, candidate_snippets = self._candidate(
-                    source=source,
-                    sink=sink,
-                    path=path,
-                    guards_by_symbol=guards_by_symbol,
-                    sanitizers_by_symbol=sanitizers_by_symbol,
-                    unresolved=unresolved,
-                    slicer=slicer,
-                    dataflow=dataflow,
-                )
-                candidates.append(candidate)
-                for edge in path.edges:
-                    call_edges.setdefault(edge.edge_id, edge)
-                for snippet in candidate_snippets:
-                    snippets.setdefault(snippet.snippet_id, snippet)
-                if len(candidates) > self.max_candidates:
-                    candidate_limit_reached = True
-                    break
-            if candidate_limit_reached:
+        search = StructuralCandidateSearch(path_finder, sources, sinks,
+            source_window=self.max_sources, sink_window=self.max_sinks,
+            max_queries=self.max_structural_queries, max_seconds=self.max_structural_seconds)
+        source_order = {item.fact_id: index for index, item in enumerate(sources)}
+        sink_order = {item.fact_id: index for index, item in enumerate(sinks)}
+        preferred_pairs = sorted((source_order[left], sink_order[right]) for left, right in dataflows_by_pair
+            if left in source_order and right in sink_order)
+        first = [(sources[left], sinks[right], dataflows_by_pair[
+            (sources[left].fact_id, sinks[right].fact_id)][0]) for left, right in preferred_pairs]
+        alternatives = ((sources[left], sinks[right], values[index])
+            for index in range(1, max((len(values) for values in dataflows_by_pair.values()), default=1))
+            for left, right in preferred_pairs
+            for values in (dataflows_by_pair[(sources[left].fact_id, sinks[right].fact_id)],)
+            if index < len(values))
+        structural_alternatives: list[tuple[StaticSecurityFact, StaticSecurityFact, StructuralPath]] = []
+        # 包装标记统一流/结构两类输入，避免重复搜索同一源函数与目标窗口。
+        preferred = ((source, sink, dataflow, None) for source, sink, dataflow in chain(first, alternatives))
+        structural = ((source, sink, None, paths) for source, sink, paths in search.pairs(set(dataflows_by_pair)))
+        for source, sink, dataflow, paths in chain(preferred, structural):
+            if dataflow is not None:
+                path = StructuralPath(nodes=list(dict.fromkeys(step.symbol for step in dataflow.steps)),
+                                      edges=path_finder.edges(dataflow.call_edge_ids))
+            else:
+                path = paths[0] if paths else None
+                structural_alternatives.extend((source, sink, item) for item in paths[1:])
+            if path is None:
+                continue
+            if len(candidates) >= self.max_candidates:
+                candidate_limit_reached = True
                 break
+            candidate, candidate_snippets = self._candidate(
+                source=source, sink=sink, path=path,
+                guards_by_symbol=guards_by_symbol, sanitizers_by_symbol=sanitizers_by_symbol,
+                unresolved=unresolved, slicer=slicer, dataflow=dataflow,
+            )
+            candidates.append(candidate)
+            for edge in path.edges:
+                call_edges.setdefault(edge.edge_id, edge)
+            for snippet in candidate_snippets:
+                snippets.setdefault(snippet.snippet_id, snippet)
+
+        for source, sink, path in structural_alternatives:
+            if len(candidates) >= self.max_candidates:
+                candidate_limit_reached = True
+                break
+            candidate, candidate_snippets = self._candidate(source=source, sink=sink, path=path,
+                guards_by_symbol=guards_by_symbol, sanitizers_by_symbol=sanitizers_by_symbol,
+                unresolved=unresolved, slicer=slicer, dataflow=None)
+            candidates.append(candidate)
+            call_edges.update((edge.edge_id, edge) for edge in path.edges)
+            snippets.update((snippet.snippet_id, snippet) for snippet in candidate_snippets)
 
         if candidate_limit_reached:
-            candidates = candidates[:self.max_candidates]
+            search.reason = "candidate_budget"
             limitations.append(
                 f"安全候选达到 {self.max_candidates} 条上限；完整计数需要提高预算后重新分析。"
             )
+        elif search.reason:
+            limitations.append("结构候选查询因 " + search.reason + " 结束；未遍历窗口不表示不存在路径，已识别事实和已建立值流仍完整保存。")
+        retained_flow_ids = {item.dataflow_id for item in candidates if item.dataflow_id}
+        omitted_flow_count = len(dataflows.keys() - retained_flow_ids)
+        if omitted_flow_count:
+            flow_diagnostics.record("established_flows_outside_candidate_budget", count=omitted_flow_count,
+                                    candidate_limit=self.max_candidates)
         coverage = SecurityCoverage(
             files_considered=scan.files_considered,
             files_scanned=scan.files_scanned,
@@ -248,12 +305,23 @@ class SecurityAnalysisService:
             candidate_count=len(candidates),
             dataflow_count=len(dataflows),
             candidate_limit_reached=candidate_limit_reached,
+            facts_complete=True,
+            candidate_source_count=len({item.source_fact_id for item in candidates}),
+            candidate_sink_count=len({item.sink_fact_id for item in candidates}),
+            flows_without_candidate=omitted_flow_count,
+            candidate_search=search.coverage(),
+            dataflow_status=("failed" if any(item.get("reason") == "program_graph_dataflow_error" for item in scan.failures)
+                             else "partial" if graph_partial else "completed"),
         )
         retained_facts = (
-            retained_sources + retained_sinks + retained_guards + retained_sanitizers
+            sources + sinks + guards + sanitizers
         )
         # 即使没有 Source→Sink 候选，也保存已观察输入/危险 API 的位置与脱敏片段。
-        for fact in retained_sources + retained_sinks:
+        snippet_fact_ids = {item.source_fact_id for item in candidates} | {item.sink_fact_id for item in candidates}
+        snippet_fact_ids.update(item.fact_id for item in sources[:self.max_sources] + sinks[:self.max_sinks])
+        for fact in sources + sinks:
+            if fact.fact_id not in snippet_fact_ids:
+                continue
             snippet = slicer.slice_fact(fact, "source" if fact.fact_kind == "source" else "sink")
             if snippet is not None:
                 snippets.setdefault(snippet.snippet_id, snippet)
@@ -270,7 +338,9 @@ class SecurityAnalysisService:
             dataflows=dataflows,
             candidates=candidates,
             coverage=coverage,
+            completed=coverage.dataflow_status != "failed",
             scan_failures=scan.failures,
+            flow_diagnostics=flow_diagnostics.as_dict(),
             limitations=limitations,
             dataflow_verified=bool(dataflows),
         )
@@ -299,10 +369,10 @@ class SecurityAnalysisService:
         relevant_unresolved = relevant_unresolved[:20]
         snippets = self._snippets(source, sink, path_guards, path, slicer)
         edge_ids = ",".join(edge.edge_id for edge in path.edges)
-        material = f"{source.fact_id}\x1f{sink.fact_id}\x1f{edge_ids}"
+        material = f"{source.fact_id}\x1f{sink.fact_id}\x1f{edge_ids}\x1f{dataflow.flow_id if dataflow else 'structural'}"
         candidate_id = "candidate:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
         truncated = (
-            unresolved_truncated
+            unresolved_truncated or path.truncated
             or any(edge.truncated for edge in path.edges)
             or any(snippet.truncated for snippet in snippets)
         )
@@ -317,7 +387,7 @@ class SecurityAnalysisService:
         if dataflow is not None:
             limitations.extend(dataflow.unresolved)
             if dataflow.value_boundary_ids:
-                limitations.append("本路径包含静态适配的 may 状态/闭包值边界，不是普通 CALLS 边，也不证明完整事件或重渲染生命周期。")
+                limitations.append("本路径包含有静态依据的 may 值边界，与既有调用边分开记录；不证明运行路径可行或完整对象、事件及重渲染生命周期。")
             if dataflow.scope == "interprocedural":
                 limitations.append(
                     "跨过程数据流通过已解析调用或有静态依据的有界值边界连接；尚未覆盖完整堆对象、容器别名和运行时生命周期。"
@@ -330,6 +400,7 @@ class SecurityAnalysisService:
             limitations.append("候选路径相关函数中存在未解析引用，路径可能不完整。")
         candidate = SecurityCandidate(
             candidate_id=candidate_id,
+            path_group_id="pathgroup:" + hashlib.sha256(f"{source.fact_id}|{sink.fact_id}".encode()).hexdigest()[:24],
             rule_id=sink.rule_id,
             cwe=sink.cwe,
             category=sink.category,
@@ -359,7 +430,7 @@ class SecurityAnalysisService:
                 dataflow_verified=dataflow is not None,
             ),
             limitations=list(dict.fromkeys(limitations)),
-            truncated=truncated,
+            truncated=truncated or bool(dataflow and dataflow.truncated),
         )
         return candidate, snippets
 

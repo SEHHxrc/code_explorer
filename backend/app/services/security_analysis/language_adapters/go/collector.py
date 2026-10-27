@@ -3,55 +3,35 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from pathlib import PurePosixPath
 from typing import Any
 
 from backend.app.services.program_index import ProgramIdentity
-from backend.app.services.syntax_analysis import extensions_for_language
+from backend.app.services.syntax_analysis import semantic_children
 from backend.app.services.syntax_analysis import field as _field
 from backend.app.services.syntax_analysis import fields as _fields
-from backend.app.services.syntax_analysis import normalize_type as _norm_type
 from backend.app.services.syntax_analysis import parse_static_index_literal
+from backend.app.services.syntax_analysis.go import GO_FUNCTION_NODES, go_callable_parts
 
-from ..ir import (
+from ...ir import (
     IRCall,
+    IRAccess,
     IRCondition,
     IRExpression,
     IRFunction,
     IRParameter,
-    SecurityProgramIR,
 )
-from .treesitter import TreeSitterSecurityFrontend, TreeSitterIRCollector
+from ..treesitter import TreeSitterIRCollector
+from .api import GoAPIBindings, PACKAGES, REQUEST_FIELDS, ROUTERS
 
-_FUNCTION_NODES = {"function_declaration", "method_declaration"}
+_FUNCTION_NODES = GO_FUNCTION_NODES
 _CALL_NODES = {"call_expression"}
 _ASSIGNMENT_NODES = {"short_var_declaration", "assignment_statement"}
 _LITERAL_NODES = {
     "interpreted_string_literal", "raw_string_literal", "rune_literal",
     "int_literal", "float_literal", "imaginary_literal", "true", "false", "nil",
 }
-
-
-class GoSecurityFrontend(TreeSitterSecurityFrontend):
-    """提取 Go 函数、调用、赋值目标、参数类型和条件。"""
-
-    language = "go"
-    parser_name = "go"
-    extensions = extensions_for_language(language)
-
-    def collect_file(
-        self,
-        program: SecurityProgramIR,
-        path: str,
-        source: bytes,
-        root: Any,
-    ) -> None:
-        """将一个 Go 文件的可观察语法事实追加到公共 IR。"""
-        collector = _GoIRCollector(path, source, root)
-        collector.collect(root)
-        program.functions.extend(collector.functions)
-        program.calls.extend(collector.calls)
-        program.conditions.extend(collector.conditions)
 
 
 class _GoIRCollector(TreeSitterIRCollector):
@@ -64,7 +44,9 @@ class _GoIRCollector(TreeSitterIRCollector):
         self.functions: list[IRFunction] = []
         self.calls: list[IRCall] = []
         self.conditions: list[IRCondition] = []
+        self.accesses: list[IRAccess] = []
         self._imports = self._import_aliases(root)
+        self._api = GoAPIBindings(source, self._imports)
         self._assigned_targets = self._collect_assigned_targets(root)
 
     def collect(self, root: Any) -> None:
@@ -75,12 +57,12 @@ class _GoIRCollector(TreeSitterIRCollector):
 
     def _append_function(self, node: Any) -> None:
         """构造函数 IR，并扫描函数体的调用和条件。"""
-        name = self._text(_field(node, "name"))
-        if not name:
+        parts = go_callable_parts(node, self.source)
+        if not parts:
             return
+        name = parts[-1]
         receiver_name, receiver_type = self._receiver(node)
-        scope = (receiver_type,) if receiver_type else ()
-        symbol = ProgramIdentity.symbol_id(self.path, scope + (name,))
+        symbol = ProgramIdentity.symbol_id(self.path, parts)
         parameters = tuple(self._parameters(_field(node, "parameters")))
         self.functions.append(IRFunction(
             symbol=symbol,
@@ -91,7 +73,7 @@ class _GoIRCollector(TreeSitterIRCollector):
             owner_types=(receiver_type,) if receiver_type else (),
         ))
         variable_types = {
-            parameter.name: _norm_type(parameter.annotation)
+            parameter.name: self._api.canonical_type(parameter.annotation)
             for parameter in parameters
             if parameter.annotation
         }
@@ -100,7 +82,6 @@ class _GoIRCollector(TreeSitterIRCollector):
         body = _field(node, "body")
         if body is None:
             return
-        variable_types.update(self._local_variable_types(body))
         self._walk_body(body, symbol, variable_types)
 
     def _walk_body(
@@ -114,17 +95,95 @@ class _GoIRCollector(TreeSitterIRCollector):
             return
         if node.type in _CALL_NODES:
             self.calls.append(self._call(node, symbol, variable_types))
+        if node.type in {"selector_expression", "index_expression"}:
+            self._access(node, symbol, variable_types)
         if node.type == "if_statement":
             condition = _field(node, "condition")
             if condition is not None:
                 self.conditions.append(IRCondition(
                     kind="if",
                     symbol=symbol,
-                    expression=self._expression(condition),
+                    expression=self._expression(condition, variable_types),
                     location=self._location(condition),
                 ))
+        scoped = node.type in {"if_statement", "for_statement", "expression_switch_statement", "select_statement", "block"}
+        environment = dict(variable_types) if scoped else variable_types
         for child in node.named_children:
-            self._walk_body(child, symbol, variable_types)
+            self._walk_body(child, symbol, environment)
+        if node.type in _ASSIGNMENT_NODES or node.type == "var_spec":
+            self._bind_types(node, variable_types)
+        if scoped:
+            # 内层声明不泄漏；已存在变量若被重新绑定则在外层失效，避免跨分支冒充 Request。
+            for name in variable_types.keys() & environment.keys():
+                if environment[name] != variable_types[name]:
+                    variable_types[name] = ""
+
+    def _bind_types(self, node: Any, variables: dict[str, str]) -> None:
+        """按执行词法顺序更新已观察类型；未知重绑定清空角色，错误返回不继承内容类型。"""
+        targets = self._expression_items(_field(node, "left")) if node.type in _ASSIGNMENT_NODES else list(_fields(node, "name"))
+        values = self._expression_items(_field(node, "right" if node.type in _ASSIGNMENT_NODES else "value"))
+        declared = self._api.canonical_type(self._text(_field(node, "type")))
+        roles = (self._api.result_types(values[0], variables) if len(values) == 1 and values[0].type == "call_expression"
+                 else tuple(self._api.expression_type(value, variables) for value in values))
+        prefixes = tuple(self._api.route_prefix(value, variables) if index < len(roles) and roles[index] in ROUTERS else "<dynamic>"
+                         for index, value in enumerate(values))
+        handlers = tuple(self._callable_symbol(value, variables) for value in values)
+        for index, target in enumerate(targets):
+            if target.type == "identifier":
+                name = self._text(target)
+                variables[name] = declared or (roles[index] if index < len(roles) else "")
+                variables["@gin-prefix:" + name] = prefixes[index] if index < len(prefixes) else "<dynamic>"
+                variables["@go-handler:" + name] = handlers[index] if index < len(handlers) else ""
+            elif target.type in {"selector_expression", "index_expression"}:
+                variables["@go-written:" + self._text(target)] = "written"
+
+    def _access(self, node: Any, symbol: str, variables: dict[str, str]) -> None:
+        """记录请求字段/静态索引的原始值槽位，不把本地 Header、输出 Writer 或整个 Context 污染。"""
+        owner = _field(node, "operand")
+        current = node
+        while current.parent is not None and current.parent.type not in _FUNCTION_NODES | {"block"}:
+            parent = current.parent
+            if parent.type in _ASSIGNMENT_NODES:
+                left = _field(parent, "left")
+                if left is not None and left.start_byte <= node.start_byte and node.end_byte <= left.end_byte:
+                    return
+                break
+            current = parent
+        if variables.get("@go-written:" + self._text(node)) == "written":
+            return
+        role = self._api.expression_type(owner, variables)
+        member = self._text(_field(node, "field"))
+        qualified = ""
+        if node.type == "selector_expression" and (
+            role == "http.Request" and member in REQUEST_FIELDS
+            or role == "http.Request.URL" and "URL." + member in REQUEST_FIELDS
+            or role == "multipart.FileHeader" and member == "Filename"
+            or role == "http.Request.Cookie" and member == "Value"
+        ):
+            qualified = role + "." + member
+        elif node.type == "index_expression" and role in {"http.Request.Header", "http.Request.Form", "http.Request.PostForm", "http.Request.QueryValues"}:
+            qualified = role + ".item"
+        if qualified:
+            self.accesses.append(IRAccess(qualified_name=qualified, symbol=symbol, access_kind="read",
+                location=self._location(node), value_identifiers=(self._text(node),), assigned_targets=self._access_targets(node),
+                resolution_method="go_import_and_lexical_type"))
+
+    def _access_targets(self, node: Any) -> tuple[str, ...]:
+        """只返回包含本次读取的 RHS 对应目标；不跨函数、代码块或其他并行分量串值。"""
+        parent = node.parent
+        while parent is not None and parent.type not in _FUNCTION_NODES | {"block"}:
+            if parent.type in _ASSIGNMENT_NODES | {"var_spec", "const_spec"}:
+                right = _field(parent, "right" if parent.type in _ASSIGNMENT_NODES else "value")
+                if right is None or not (right.start_byte <= node.start_byte and node.end_byte <= right.end_byte):
+                    return ()
+                targets = self._expression_items(_field(parent, "left")) if parent.type in _ASSIGNMENT_NODES else list(_fields(parent, "name"))
+                values = self._expression_items(right)
+                if len(values) == len(targets):
+                    return tuple(self._text(target) for target, value in zip(targets, values)
+                                 if value.start_byte <= node.start_byte and node.end_byte <= value.end_byte)
+                return tuple(self._text(target) for target in targets)
+            parent = parent.parent
+        return ()
 
     def _call(
         self,
@@ -136,18 +195,11 @@ class _GoIRCollector(TreeSitterIRCollector):
         function = _field(node, "function")
         receiver_node = _field(function, "operand") if function is not None else None
         receiver = self._text(receiver_node)
-        if function is not None and function.type == "selector_expression":
-            name = self._text(_field(function, "field"))
-            qualified_name = self._qualified_method(receiver, name, variable_types)
-        else:
-            qualified_name = self._text(function)
+        qualified_name = self._api.call_name(node, variable_types)
         arguments_node = _field(node, "arguments")
         arguments = tuple(
-            self._expression(item)
-            for item in (
-                arguments_node.named_children
-                if arguments_node is not None else []
-            )
+            self._expression(item, variable_types)
+            for item in semantic_children(arguments_node)
         )
         location = self._location(node)
         callsite_id = ProgramIdentity.callsite_id(
@@ -165,23 +217,10 @@ class _GoIRCollector(TreeSitterIRCollector):
             arguments=arguments,
             assigned_targets=self._assigned_targets.get(callsite_id, ()),
             receiver=receiver,
+            receiver_api_type=self._api.expression_type(receiver_node, variable_types),
+            route_prefix=self._api.route_prefix(receiver_node, variable_types)
+                if self._api.expression_type(receiver_node, variable_types) in ROUTERS else "",
         )
-
-    def _qualified_method(
-        self,
-        receiver: str,
-        name: str,
-        variable_types: dict[str, str],
-    ) -> str:
-        """用导入包或可观察变量类型限定 selector 调用。"""
-        if not receiver:
-            return name
-        if receiver in self._imports:
-            return f"{self._imports[receiver]}.{name}"
-        receiver_type = variable_types.get(receiver)
-        if receiver_type:
-            return f"{receiver_type}.{name}"
-        return f"{receiver}.{name}"
 
     def _receiver(self, node: Any) -> tuple[str, str]:
         """返回 Go 方法接收者名称和规范类型。"""
@@ -194,16 +233,15 @@ class _GoIRCollector(TreeSitterIRCollector):
             return "", ""
         names = _fields(parameter, "name")
         name = self._text(names[0]) if names else ""
-        receiver_type = _norm_type(self._text(_field(parameter, "type")))
+        receiver_type = self._api.canonical_type(self._text(_field(parameter, "type")))
         return name, receiver_type
 
     def _parameters(self, node: Any | None) -> list[IRParameter]:
         """展开一个声明中包含多个名称的 Go 参数。"""
         result: list[IRParameter] = []
-        for parameter in self._descendants(
-            node,
-            {"parameter_declaration", "variadic_parameter_declaration"},
-        ):
+        for parameter in (node.named_children if node is not None else ()):
+            if parameter.type not in {"parameter_declaration", "variadic_parameter_declaration"}:
+                continue
             annotation = self._text(_field(parameter, "type")) or "?"
             names = _fields(parameter, "name")
             for name_node in names:
@@ -216,19 +254,6 @@ class _GoIRCollector(TreeSitterIRCollector):
                         location=self._location(name_node),
                         kind="variadic_positional" if parameter.type == "variadic_parameter_declaration" else "positional_or_keyword",
                     ))
-        return result
-
-    def _local_variable_types(self, body: Any) -> dict[str, str]:
-        """索引显式 ``var name Type`` 声明供方法限定名解析。"""
-        result: dict[str, str] = {}
-        for spec in self._descendants(body, {"var_spec"}):
-            annotation = _norm_type(self._text(_field(spec, "type")))
-            if not annotation:
-                continue
-            for name_node in _fields(spec, "name"):
-                name = self._text(name_node)
-                if name:
-                    result[name] = annotation
         return result
 
     def _import_aliases(self, root: Any) -> dict[str, str]:
@@ -246,7 +271,7 @@ class _GoIRCollector(TreeSitterIRCollector):
             package = PurePosixPath(import_path).name
             alias = self._text(_field(spec, "name")) or package
             if alias not in {"_", "."}:
-                result[alias] = package
+                result[alias] = PACKAGES.get(import_path, import_path)
         return result
 
     def _collect_assigned_targets(self, root: Any) -> dict[str, tuple[str, ...]]:
@@ -296,9 +321,33 @@ class _GoIRCollector(TreeSitterIRCollector):
             return []
         return list(node.named_children) if node.type == "expression_list" else [node]
 
-    def _expression(self, node: Any) -> IRExpression:
+    def _expression(self, node: Any, variables: dict[str, str] | None = None) -> IRExpression:
         """保留表达式文本、标识符、字面量和调用形态。"""
-        return self._sequence_expression(node, self._literal(node), _LITERAL_NODES, _CALL_NODES)
+        variables = variables or {}
+        if node.type == "func_literal":
+            return IRExpression(text=self._text(node)[:1000], kind="function", callable_symbol=self._callable_symbol(node, variables))
+        if node.type == "call_expression" and self._api.call_name(node, variables) == "http.HandlerFunc":
+            args = semantic_children(_field(node, "arguments"))
+            if len(args) == 1:
+                return self._expression(args[0], variables)
+        expression = self._sequence_expression(node, self._literal(node), _LITERAL_NODES, _CALL_NODES)
+        operand = _field(node, "operand")
+        reference = (self._text(operand) if node.type == "unary_expression" and self._text(node).startswith("&")
+                     and operand is not None and operand.type == "identifier" else "")
+        return replace(expression, api_type=self._api.expression_type(node, variables),
+                       callable_owner_type=self._api.expression_type(operand, variables) if node.type == "selector_expression" else "",
+                       callable_symbol=variables.get("@go-handler:" + self._text(node), "") if node.type == "identifier" else "",
+                       callable_unresolved=node.type == "identifier" and self._text(node) in variables
+                           and not variables.get("@go-handler:" + self._text(node)),
+                       reference_target=reference)
+
+    def _callable_symbol(self, node: Any, variables: dict[str, str]) -> str:
+        """读取已知匿名函数/局部别名身份；不为普通赋值重复遍历整棵表达式子树。"""
+        if node.type == "func_literal":
+            return ProgramIdentity.symbol_id(self.path, go_callable_parts(node, self.source))
+        if node.type == "identifier":
+            return variables.get("@go-handler:" + self._text(node), "")
+        return ""
 
     def _literal(self, node: Any) -> Any:
         """在不执行代码的情况下解析常见 Go 标量字面量。"""

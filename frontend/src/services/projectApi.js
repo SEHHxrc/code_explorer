@@ -8,6 +8,14 @@ export const restoreStoredProject = async (projectId, { signal } = {}) => (
   responseData(await apiClient.get(`/api/projects/${projectId}/snapshot`, { signal }))
 )
 
+/** 只读取已有安全分析；详情按候选 ID 获取，不触发扫描或模型调用。 */
+export const getSecurityPaths = async (projectId, { candidateId, signal } = {}) => (
+  responseData(await apiClient.get(
+    `/api/projects/${encodeURIComponent(projectId)}/security-paths`
+    + (candidateId ? `/${encodeURIComponent(candidateId)}` : ''), { signal },
+  ))
+)
+
 export const createAnalysisProgress = async ({ signal } = {}) => (
   responseData(await apiClient.post('/api/projects/analysis-progress', null, { signal, timeout: 10000 }))
 )

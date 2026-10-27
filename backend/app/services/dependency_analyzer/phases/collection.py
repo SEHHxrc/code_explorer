@@ -6,6 +6,7 @@ import logging
 import tree_sitter
 
 from backend.app.services.syntax_analysis.javascript import parser_for_file
+from backend.app.services.syntax_analysis.session import parse_tree, source_view
 
 from ..constants import CPP_MARKERS, EXT_MAP, IGNORED_DIRS, SKIP_CHILDREN
 from ..context import FileContext
@@ -56,9 +57,8 @@ class CollectionPhase(DependencyAnalyzerState):
         ext = os.path.splitext(full_path)[1].lower()
         lang = EXT_MAP.get(ext)
         if ext == ".vue":
-            from backend.app.services.syntax_analysis.source_units import source_unit
             with open(full_path, "rb") as file:
-                return source_unit(full_path, file.read(), "javascript").language
+                return source_view(full_path, file.read(), "javascript").language
         if lang != "c" or ext != ".h":
             return lang
         stem = os.path.splitext(full_path)[0]
@@ -74,10 +74,6 @@ class CollectionPhase(DependencyAnalyzerState):
             return "c"
         return "cpp" if any(marker in head for marker in CPP_MARKERS) else "c"
 
-    def _get_parser(self, lang: str) -> tree_sitter.Parser:
-        """获取并缓存当前语言的 Tree-sitter 解析器。"""
-        return self._parser_pool.get(lang)
-
     def _analyze_file(self, full_path: str) -> FileContext | None:
         """解析单个源码文件并返回独立文件上下文。"""
         rel_path = os.path.relpath(full_path, self.project_root).replace("\\", "/")
@@ -91,10 +87,9 @@ class CollectionPhase(DependencyAnalyzerState):
                 return None
             with open(full_path, "rb") as fh:
                 src = fh.read()
-            from backend.app.services.syntax_analysis.source_units import source_unit
-            unit = source_unit(rel_path, src, lang)
+            unit = source_view(full_path, src, lang)
             src = unit.source
-            tree = self._get_parser(parser_for_file(lang, rel_path)).parse(src)
+            tree = parse_tree(full_path, src, parser_for_file(lang, rel_path), self._parser_pool)
             ctx = FileContext(rel_path, full_path, lang, src, handler)
             ctx.diagnostics.extend({"file": rel_path, "reason": reason} for reason in unit.diagnostics)
             if tree.root_node.has_error:

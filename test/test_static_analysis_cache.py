@@ -146,7 +146,7 @@ class StaticAnalysisCacheTests(unittest.TestCase):
             scan=SecurityScanner().scan(directory,dependency_graph=graph)
             program=ProgramGraphService().analyze(directory,dependency_graph=graph)
             pack=SecurityAnalysisService().analyze(project_root=directory,dependency_graph=graph)
-            with patch('backend.app.services.security_analysis.frontends.treesitter.javascript_binding_scope',side_effect=lambda *args,**kwargs:nullcontext()), \
+            with patch('backend.app.services.security_analysis.language_adapters.treesitter.javascript_binding_scope',side_effect=lambda *args,**kwargs:nullcontext()), \
                     patch('backend.app.services.program_graph.frontends.treesitter.javascript_binding_scope',side_effect=lambda *args,**kwargs:nullcontext()):
                 self.assertEqual(asdict(scan),asdict(SecurityScanner().scan(directory,dependency_graph=graph)))
                 self.assertEqual(program.model_dump(),ProgramGraphService().analyze(directory,dependency_graph=graph).model_dump())

@@ -90,7 +90,9 @@ class SnippetSharingTests(unittest.TestCase):
                   "-----BEGIN PRIVATE KEY-----\nsecret-value\n-----END PRIVATE KEY-----"]
         for value in values:
             with self.subTest(value=value):
-                self.assertEqual("[REDACTED]", redact_secrets(value).strip("'"))
+                self.assertIn("[REDACTED]", redact_secrets(value))
+                self.assertNotIn("secret-value", redact_secrets(value))
+                self.assertEqual(value.count('\n'), redact_secrets(value).count('\n'))
 
 
 if __name__ == "__main__":

@@ -2,28 +2,31 @@
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+from backend.app.agents.contracts import DEFAULT_INVESTIGATION_ROUNDS, MAX_INVESTIGATION_ROUNDS
 
 
 class ComparisonRequest(BaseModel):
     """同一问题、同一模型预算下创建一组盲态配对运行。"""
 
     question: str = Field(min_length=1, max_length=8000)
-    max_steps: int = Field(default=8, ge=1, le=24)
+    max_steps: int = Field(default=DEFAULT_INVESTIGATION_ROUNDS, ge=1, le=MAX_INVESTIGATION_ROUNDS)
 
 
 class LaneScores(BaseModel):
-    """保存盲评中单条实验通道的各维度评分。"""
-    correctness: int = Field(ge=1, le=5)
-    completeness: int = Field(ge=1, le=5)
-    evidence: int = Field(ge=1, le=5)
-    hallucination_control: int = Field(ge=1, le=5)
+    """三个独立人工维度，不计算可被条目数量抵消的总分；旧记录原样读取。"""
+
+    model_config = ConfigDict(extra="forbid", strict=True)
+    discovery_breadth: int = Field(ge=1, le=5)
+    chain_verification: int = Field(ge=1, le=5)
+    conclusion_credibility: int = Field(ge=1, le=5)
 
 
 class BlindReviewRequest(BaseModel):
     """揭盲前提交的左右答案偏好与独立评分。"""
 
     preferred_lane: Literal["left", "right", "tie"]
+    rubric_version: Literal["independent-review-v2"] = "independent-review-v2"
     left: LaneScores
     right: LaneScores
     notes: str = Field(default="", max_length=4000)

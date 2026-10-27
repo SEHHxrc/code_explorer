@@ -150,6 +150,13 @@ class CHandler(BaseHandler):
         definition = ctx.add_def(node, name, kind, name_node=name_node or node, bases=bases)
         if definition is None:
             return 0
+        for clause in (child for child in node.named_children if child.type == "base_class_clause"):
+            start = clause.start_byte
+            for base in clause.named_children:
+                if base.type in ("type_identifier", "qualified_identifier", "template_type"):
+                    if any(token.type == "virtual" and start <= token.start_byte < base.start_byte for token in clause.children):
+                        definition.virtual_bases.append(ctx.text(base))
+                    start = base.end_byte
         if alias and alias != name:
             # typedef 别名与结构体标签名不同：登记成同义类型
             ctx.add_def(node, alias, "type", name_node=name_node or node, bases=[name])
@@ -182,7 +189,9 @@ class CHandler(BaseHandler):
                 ctx.add_def(node, simple, "method", name_node=name_node, is_declaration=True,
                             owner_literal=owner, type_literal=type_literal)
             else:
-                ctx.add_def(node, name, "field", name_node=name_node, type_literal=type_literal)
+                wrappers = ctx.text(declarator)[:max(0, name_node.start_byte - declarator.start_byte)] if name_node is not None else ""
+                ctx.add_def(node, name, "field", name_node=name_node,
+                            type_literal=type_literal + "*" * wrappers.count("*") + "&" * wrappers.count("&"))
         return SKIP_CHILDREN
 
     def h_declaration(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:

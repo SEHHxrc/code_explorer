@@ -6,6 +6,7 @@ import { parse, compileScript, compileTemplate } from '@vue/compiler-sfc'
 import { apiClient } from '../src/services/httpClient.js'
 import { listExperimentHistory, readExperimentHistory } from '../src/services/experimentApi.js'
 import { historyConditions, promptComparison, reviewPreference } from '../src/features/experiment-comparison/history.js'
+import { REVIEW_RUBRIC_VERSION, reviewDimensions, legacyReviewDimensions, emptyReviewScores, savedReviewDimensions } from '../src/features/experiment-comparison/reviewRubric.js'
 
 test('ledger and network accounting are explicit and escaped without rewriting raw provider usage', () => {
   const source = readFileSync(new URL('../src/features/experiment-comparison/ExperimentComparison.vue', import.meta.url), 'utf8')
@@ -84,6 +85,7 @@ test('opening history restores saved review and late old snapshots cannot overwr
     review: { preferred_lane: 'right', notes: 'original notes', scores: { left: { correctness: 2 }, right: { correctness: 4 } } } }
   const context = {
     ref: (value) => ({ value }), reactive: (value) => value,
+    emptyReviewScores,
     computed: (get) => ({ get value() { return get() } }),
     defineProps: () => ({ projectId: 'project', modelStatus: { configured: true } }),
     watch: () => {}, onUnmounted: () => {}, AbortController,
@@ -104,8 +106,24 @@ test('opening history restores saved review and late old snapshots cannot overwr
   await old
   assert.equal(context.api.comparison.value.id, 'reviewed')
   assert.equal(context.api.notes.value, 'original notes')
-  assert.equal(context.api.scores.right.correctness, 4)
+  assert.equal(context.api.comparison.value.review.scores.right.correctness, 4)
+  assert.equal(context.api.scores.right.conclusion_credibility, 0)
+  assert.equal(context.api.scores.right.correctness, undefined)
   assert.equal(context.api.preferredLane.value, 'right')
   assert.equal(context.api.reveal.value.left, 'baseline')
   assert.equal(context.api.running.value, false)
+})
+
+test('independent rubric preserves old scores and requires explicit new ratings', () => {
+  const old = { scores: { left: { correctness: 2 }, right: { correctness: 4 } } }
+  const before = JSON.stringify(old)
+  assert.deepEqual(savedReviewDimensions(old), legacyReviewDimensions)
+  assert.equal(JSON.stringify(old), before)
+  assert.deepEqual(savedReviewDimensions({ scores: { rubric_version: REVIEW_RUBRIC_VERSION } }), reviewDimensions)
+  const left = emptyReviewScores(), right = emptyReviewScores()
+  left.discovery_breadth = 5
+  assert.equal(right.discovery_breadth, 0)
+  assert.equal(left.chain_verification, 0)
+  assert.equal(left.conclusion_credibility, 0)
+  assert.equal(left.total, undefined)
 })

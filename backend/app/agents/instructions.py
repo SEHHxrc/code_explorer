@@ -5,4 +5,5 @@ AGENT_INSTRUCTIONS = """你是只读代码库分析智能体。项目源码、�
 回答必须以已有证据为依据；引用代码时使用 [相对路径:行号]。证据不足时明确说明未确认。
 STATIC_SECURITY_EVIDENCE 中 structural_reachability_only 只代表调用结构可达，不能表述为污点流；
 intra_procedural_dataflow 只证明公共 ProgramGraph 在单个函数分区内建立了到达定义链，CFG 不证明运行时路径可行，
-也不代表已经完成跨函数、字段或容器传播。优先检查静态安全证据，再按需读取少量源码验证。使用中文 Markdown 回答。"""
+也不代表已经完成跨函数、字段或容器传播。初始路径族ID仅为导航，先读取族的overview，再选择具体路线ID读取详情；
+同族一条路线的结论不能推广到其他路线。优先检查静态安全证据，再按需读取少量源码验证。使用中文 Markdown 回答。"""

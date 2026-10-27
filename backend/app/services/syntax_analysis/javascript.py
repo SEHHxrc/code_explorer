@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from .tree_parser import field, text
+from .tree_parser import field, text, semantic_children
 from .literals import parse_static_index_literal
 
 JAVASCRIPT_FUNCTION_NODES = frozenset(
@@ -46,7 +46,7 @@ def javascript_parameters(target: Any, source: bytes) -> list[tuple[str, str, An
     if container is None:
         return []
     items = (
-        container.named_children
+        semantic_children(container)
         if container.type == "formal_parameters"
         else [container]
     )
@@ -55,6 +55,8 @@ def javascript_parameters(target: Any, source: bytes) -> list[tuple[str, str, An
         pattern = (
             field(item, "pattern") or field(item, "name") or field(item, "left") or item
         )
+        if pattern.type == "this":
+            continue  # TypeScript this: Context 只声明接收者类型，不消耗实际调用参数。
         result.append((text(pattern, source), text(field(item, "type"), source), item))
     return result
 
@@ -66,6 +68,21 @@ def parser_for_file(language: str, path: str) -> str:
         if language == "typescript" and path.lower().endswith(".tsx")
         else language
     )
+
+
+def javascript_parameter_type(parameter: Any, source: bytes) -> str:
+    """提取明确 TS 参数类型的名称，泛型保留基类型；联合/交叉/结构类型不猜测。
+
+    本函数只规范语法，不决定框架、信任来源或执行可达性，也不展开用户类型别名。
+    """
+    node = field(parameter, "type")
+    if node is not None and node.type == "type_annotation" and len(node.named_children) == 1:
+        node = node.named_children[0]
+    if node is not None and node.type == "generic_type":
+        node = field(node, "name")
+    return text(node, source) if node is not None and node.type in {
+        "type_identifier", "nested_type_identifier", "identifier",
+    } else ""
 
 
 def javascript_access_name(node: Any, source: bytes) -> str:

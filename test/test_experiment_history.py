@@ -18,6 +18,7 @@ from backend.app.core.deps import get_current_user
 from backend.app.models import Base, AgentRunModel, AgentEventModel, ExperimentComparisonModel, ExperimentReviewModel, ExperimentAuditRecordModel, ExperimentAuditSessionModel
 from backend.app.experiments.repository import ExperimentRepository
 from backend.app.experiments.service import ExperimentComparisonService
+from backend.app.experiments.metrics import collect_run_metrics
 from backend.app.experiments.contracts import ExperimentError
 from backend.app.experiments.citations import check_citations
 from backend.app.experiments.context import SECURITY_EXPERIMENT_INSTRUCTIONS
@@ -61,6 +62,27 @@ class ExperimentHistoryTests(unittest.TestCase):
     def tearDown(self):
         self.engine.dispose()
 
+    def test_format_resubmission_counts_both_responses_and_keeps_rejection_visible(self):
+        """首次无效 JSON 的用量不能被后续成功覆盖，亦不能重复累加。"""
+        events = [
+            ('run.started', {}), ('model.started', {}),
+            ('model.completed', {'metadata': {'finish_reason': 'stop',
+                'usage': {'input_tokens': 100, 'output_tokens': 40, 'total_tokens': 140}}}),
+            ('report.format_rejected', {'step': 1, 'category': 'syntax'}),
+            ('report.format_retry_started', {'step': 1, 'attempt': 1}), ('model.started', {}),
+            ('model.completed', {'metadata': {'finish_reason': 'stop',
+                'usage': {'input_tokens': 200, 'output_tokens': 60, 'total_tokens': 260}}}),
+            ('run.completed', {'termination_reason': 'model_final_answer'}),
+        ]
+        with self.sessions() as session:
+            session.add_all(AgentEventModel(run_id='b0', sequence=index, event_type=kind, payload=payload)
+                            for index, (kind, payload) in enumerate(events, 1))
+            session.commit()
+        metrics = collect_run_metrics('b0', 'alice', session_factory=self.sessions)
+        self.assertEqual((2, 300, 100, 400), (metrics['model_requests'], metrics['actual_input_tokens'],
+            metrics['actual_output_tokens'], metrics['actual_total_tokens']))
+        self.assertEqual({'retries': 1, 'rejections': [{'step': 1, 'category': 'syntax'}], 'skipped': []}, metrics['report_format'])
+
     def test_pagination_keeps_failures_and_blind_lanes_without_loading_bodies(self):
         page = self.service.history('project','alice',limit=2)
         self.assertEqual(3,page['total'])
@@ -100,6 +122,16 @@ class ExperimentHistoryTests(unittest.TestCase):
         with self.sessions() as session:
             self.assertEqual(before,[(row.id,row.payload) for row in session.query(ExperimentAuditRecordModel).all()])
 
+    def test_new_review_dimensions_round_trip_without_migrating_old_reviews(self):
+        from backend.app.experiments.contracts import BlindReviewRequest, LaneScores
+        original = self.repository.get_review('pair0', 'alice')
+        scores = LaneScores(discovery_breadth=5, chain_verification=1, conclusion_credibility=2)
+        self.repository.save_review('pair1', 'alice', BlindReviewRequest(preferred_lane='tie', left=scores, right=scores))
+        saved = self.repository.get_review('pair1', 'alice')
+        self.assertEqual('independent-review-v2', saved['scores']['rubric_version'])
+        self.assertEqual({'discovery_breadth':5, 'chain_verification':1, 'conclusion_credibility':2}, saved['scores']['left'])
+        self.assertEqual(original, self.repository.get_review('pair0', 'alice'))
+
     def test_missing_audit_is_unknown_and_unreviewed_trial_remains_blind(self):
         view=self.service.history_detail('pair1','alice')
         self.assertIsNone(view['reveal'])
@@ -135,6 +167,17 @@ class ExperimentHistoryTests(unittest.TestCase):
 
 
 class CitationAndPromptRulesTests(unittest.TestCase):
+    def test_independent_scores_are_versioned_and_never_computed_from_counts(self):
+        from backend.app.experiments.contracts import BlindReviewRequest, LaneScores
+        scores = LaneScores(discovery_breadth=5, chain_verification=1, conclusion_credibility=1)
+        review = BlindReviewRequest(preferred_lane='tie', left=scores, right=scores)
+        self.assertEqual('independent-review-v2', review.rubric_version)
+        self.assertEqual({'discovery_breadth':5, 'chain_verification':1, 'conclusion_credibility':1}, review.left.model_dump())
+        for invalid in ({'discovery_breadth':5, 'chain_verification':0, 'conclusion_credibility':1},
+                        {'discovery_breadth':5, 'chain_verification':True, 'conclusion_credibility':1},
+                        {'correctness':5, 'completeness':5, 'evidence':5, 'hallucination_control':5}):
+            with self.assertRaises(ValueError): LaneScores(**invalid)
+
     def test_manual_cases_cover_distinct_projects_without_leaking_answers_into_prompt(self):
         cases=json.loads(Path(__file__).with_name('security_report_cases.json').read_text(encoding='utf-8'))['cases']
         self.assertEqual({'wrong_value_sanitized','guard_before_process','factory_hidden_operation','separate_roots_shared_endpoint'}, {case['id'] for case in cases})
@@ -170,7 +213,7 @@ class CitationAndPromptRulesTests(unittest.TestCase):
             self.assertIn(rule,REPORT_INSTRUCTIONS)
         for sample in ('audio2sheet','Spleeter','safe_id','AES'):
             self.assertNotIn(sample,SECURITY_EXPERIMENT_INSTRUCTIONS)
-        self.assertEqual('ledger-security-v5',REPORT_VERSION)
+        self.assertEqual('ledger-security-v7',REPORT_VERSION)
 
     def test_structural_pass_does_not_validate_wrong_variable_guard_or_missing_implementation(self):
         report='## 结论\n测试。\n## 已核实问题\n附近的清洗使所有值安全。\n## 未确认风险\n未读取被调用实现但认为无风险。\n## 范围与局限\n只读测试。\n'+REPORT_END

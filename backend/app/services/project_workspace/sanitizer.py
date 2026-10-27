@@ -18,7 +18,7 @@ SENSITIVE_FILENAMES = {
     "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519", "credentials.json",
 }
 NOISE_DIRECTORIES = {
-    ".git", "node_modules", "__pycache__", "venv", ".venv", "dist", "build",
+    ".git", "node_modules", "__pycache__", "venv", ".venv", ".goenv", "dist", "build",
     ".idea", ".vscode",
 }
 _REPARSE_POINT = 0x400

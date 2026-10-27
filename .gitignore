@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 .venv/
+.goenv/
 
 # Python 缓存与工具缓存。
 __pycache__/

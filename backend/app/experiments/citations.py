@@ -70,9 +70,12 @@ def visible_lines(payload: dict[str, Any]) -> dict[str, set[int]]:
     return result
 
 
-def check_citations(answer: str, manifest: dict[str, Any], seen: dict[str, set[int]], final_seen: dict[str, set[int]]) -> dict[str, Any]:
-    """区分语法、简称/歧义、真实坐标错误和展示缺口；仅给提示，不修改报告或验证语义。"""
+def check_citations(answer: str, manifest: dict[str, Any], seen: dict[str, set[int]], final_seen: dict[str, set[int]], *,
+                    receipts: dict[int, dict[str, set[int]]] | None = None) -> dict[str, Any]:
+    """核对坐标和历史展示回执；早期批次缺席最终请求只是来源提示，不自动判为幻觉。"""
     warnings = []
+    notices = []
+    references = []
     checked = set()
     malformed = set()
     for bracket in _BRACKET.finditer(answer):
@@ -110,9 +113,16 @@ def check_citations(answer: str, manifest: dict[str, Any], seen: dict[str, set[i
             reason = "line_out_of_range"
         elif reason is None and not all(line in seen.get(path, set()) for line in range(start, end + 1)):
             reason = "source_not_shown"
-        elif reason is None and not all(line in final_seen.get(path, set()) for line in range(start, end + 1)):
-            reason = "seen_earlier_not_in_final_request"
         if reason:
             warnings.append({"path": path, "start_line": start, "end_line": end, "reason": reason})
-    return {"version": "mechanical-citations-v2", "checked": len(checked), "malformed": len(malformed), "warnings": warnings,
+        else:
+            exposure = "final_request" if all(line in final_seen.get(path, set()) for line in range(start, end + 1)) else "earlier_request"
+            receipt = {"path": path, "start_line": start, "end_line": end, "exposure": exposure,
+                       "request_ids": [identifier for identifier, files in (receipts or {}).items()
+                                       if any(line in files.get(path, set()) for line in range(start, end + 1))]}
+            references.append(receipt)
+            if exposure == "earlier_request":
+                notices.append({**receipt, "reason": "seen_earlier_not_in_final_request"})
+    return {"version": "mechanical-citations-v3", "checked": len(checked), "malformed": len(malformed),
+            "warnings": warnings, "notices": notices, "references": references,
             "semantic_validation": "not_performed", "semantic_coverage": "not_proven"}

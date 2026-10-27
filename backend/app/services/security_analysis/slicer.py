@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from backend.app.core.redaction import redact_secrets
+from backend.app.core.redaction import redact_source
 
 from .contracts import CodeSnippet, SnippetRole, StaticSecurityFact
 
@@ -60,25 +60,25 @@ class SourceSlicer:
             f"{line_number}: {line}"
             for line_number, line in enumerate(selected, start=start)
         )
-        text = redact_secrets(numbered)
+        text = redact_source(numbered, path=path)
         truncated = len(text) > self.max_snippet_chars
         if truncated:
             original_start, original_end = start, end
             focus = min(max(line, start), end)
-            selected_lines = [redact_secrets(f"{focus}: {lines[focus - 1]}")]
+            selected_lines = [redact_source(f"{focus}: {lines[focus - 1]}", path=path)]
             if len(selected_lines[0]) > self.max_snippet_chars:
                 selected_lines = [f"{focus}: [整行超过片段预算，请按该位置读取原始源码；未展示正文]"]
             used = len(selected_lines[0])
             start = end = focus
             while end < original_end:
-                next_line = redact_secrets(f"{end + 1}: {lines[end]}")
+                next_line = redact_source(f"{end + 1}: {lines[end]}", path=path)
                 if used + len(next_line) + 1 > self.max_snippet_chars:
                     break
                 selected_lines.append(next_line)
                 used += len(next_line) + 1
                 end += 1
             while start > original_start:
-                previous_line = redact_secrets(f"{start - 1}: {lines[start - 2]}")
+                previous_line = redact_source(f"{start - 1}: {lines[start - 2]}", path=path)
                 if used + len(previous_line) + 1 > self.max_snippet_chars:
                     break
                 selected_lines.insert(0, previous_line)

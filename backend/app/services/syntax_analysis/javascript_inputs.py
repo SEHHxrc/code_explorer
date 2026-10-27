@@ -9,7 +9,7 @@ from typing import Any
 
 from .callback_inputs import CallbackParameterInput
 from .javascript import JAVASCRIPT_FUNCTION_NODES, javascript_function
-from .tree_parser import field, text
+from .tree_parser import field, text, semantic_children
 
 
 def project_uses_react(project_root: Path, path: str) -> bool:
@@ -135,7 +135,7 @@ def javascript_callback_inputs(
             name = qualify(field(node, "function"))
             receiver_key = text(field(field(node, "function"), "object"), source)
             arguments = field(node, "arguments")
-            items = arguments.named_children if arguments is not None else []
+            items = semantic_children(arguments)
             if name in {"http.createServer", "https.createServer"} and items:
                 value, type_name = items[-1], "node.IncomingMessage"
             elif (

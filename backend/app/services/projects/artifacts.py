@@ -76,6 +76,14 @@ class ProjectArtifactRepository:
         """返回项目分析产物字节数。"""
         return analysis_artifact_size(project_id)
 
+    def revision(self, project_id: str) -> tuple[int, int, int] | None:
+        """输入项目 ID，返回修改时间、大小和文件身份供只读缓存失效；缺失时返回 None。"""
+        try:
+            stat = _artifact_path(project_id).stat()
+            return stat.st_mtime_ns, stat.st_size, stat.st_ino
+        except FileNotFoundError:
+            return None
+
     def remove(self, project_id: str) -> None:
         """幂等删除项目分析产物。"""
         remove_analysis_artifact(project_id)

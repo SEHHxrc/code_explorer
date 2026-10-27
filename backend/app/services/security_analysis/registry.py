@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .frontends import LanguageFrontend
+from .language_adapters import LanguageFrontend
 from .rules import RulePack
 from .semantics import LanguageSemantics
 

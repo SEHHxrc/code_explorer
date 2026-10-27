@@ -2,7 +2,7 @@
 
 from .contracts import SecurityEvidencePack
 from .flow_analysis import DataFlowAnalyzer, ProgramGraphSecurityFlowAnalyzer
-from .frontends import JavaSecurityFrontend, LanguageFrontend, PythonSecurityFrontend
+from .language_adapters import JavaSecurityFrontend, LanguageFrontend, PythonSecurityFrontend
 from .knowledge import (
     NullSecurityKnowledgeProvider,
     SecurityKnowledgeDocument,

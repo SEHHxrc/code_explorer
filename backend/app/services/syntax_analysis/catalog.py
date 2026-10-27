@@ -16,7 +16,7 @@ SOURCE_LANGUAGE_BY_EXTENSION = {
 
 IGNORED_SOURCE_DIRECTORIES = frozenset({
     ".git", ".svn", ".hg", "node_modules", "__pycache__", ".mypy_cache", ".pytest_cache",
-    "venv", ".venv", "env", "dist", "build", "out", "target", "vendor", "third_party",
+    "venv", ".venv", ".goenv", "env", "dist", "build", "out", "target", "vendor", "third_party",
     ".idea", ".vscode", ".next", ".nuxt", "coverage", "bin", "obj", "Pods", ".tox",
 })
 """依赖图与程序图回退扫描共同忽略的目录。"""

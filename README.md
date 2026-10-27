@@ -32,7 +32,7 @@ Code Explorer 是一个面向代码安全分析的本地原型平台。从 ZIP �
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-uvicorn backend.app.main:app --reload --env-file backend/.env
+uvicorn backend.app.main:app --reload --reload-dir backend/app --env-file backend/.env
 ```
 
 前端：
@@ -46,6 +46,26 @@ npm run dev
 默认前端通过 `/api` 访问 FastAPI。数据库使用项目根目录的 `database.sqlite`，分析产物写入 `backend/storage/artifacts/<project_id>.json`。 FastAPI 默认嵌入一个 Agent Worker；独立进程部署方式见 [docs/AGENT_QUEUE.md](docs/AGENT_QUEUE.md)。
 
 后端命令应在项目根目录运行。实际 `.env`、数据库、导入源码和实验结果仅保存在本机，不提交 Git；迁移源码或会话并不自动恢复数据库里的项目与 Agent 历史。上述 `--reload` 仅是本系统开发启动示例，不是被分析项目的安全事实。
+
+开发热重载仅监听 `backend/app`，不要省略 `--reload-dir backend/app`；否则 Uvicorn 默认扫描整个
+工作目录，可能访问 `.goenv` 中 Windows 无法遍历的 WSL 链接，也会扫描虚拟环境和导入项目源码。
+PyCharm 等 IDE 的启动参数也需同步设置。没有安装 `watchfiles` 时使用 `StatReload`，
+仅加 `--reload-exclude` 不会生效；限制监听根目录不需要额外依赖。实际 `.env` 修改后仍需手动重启。
+
+### WSL 分析环境
+
+本机已单独准备 `.goenv/python-linux`、Linux Node、Snap Go 及 Linux 私有解析器/Go 缓存。
+在 WSL 终端进入项目目录后，可显式使用同一后端代码进行只读验证：
+
+```bash
+bash backend/tools/wsl.sh python -m unittest test.test_go_semantics test.test_semantic_wire -v
+bash backend/tools/wsl.sh python -m test.validate_static_analysis --project-root /你的/Linux/项目路径 --output backend/storage/runtime/新的验证文件.json
+```
+
+准备细节见 [Go/WSL 工具说明](backend/tools/go_semantics/README.md)。入口只设置当前进程环境，
+不改实际 `.env`、Windows `.venv` 或安全策略；Windows 服务不会自动切换到 WSL。
+若要在 WSL 正式启动 FastAPI，可通过同一入口运行 uvicorn，但应先单独处理旧数据库中的
+Windows 绝对源码路径，并避免同时启动指向同一数据库的两套后端。本轮没有自动迁移历史记录。
 
 ## 验证
 
@@ -65,6 +85,15 @@ npm run build
 ```
 
 离线机器需迁移与所装版本、操作系统匹配的上述缓存。可通过 `CODE_EXPLORER_PARSER_CACHE_DIR` 指定管理员管理的其他缓存根。项目分析期间不下载安装资源：缺少语法立即失败并回滚，不把空图保存为成功分析；环境不完整不能解释为项目没有安全风险，也不能作为有效实验样本。准备完成后重启后端。
+
+JS/TS 可额外使用锁定版本的官方 TypeScript 编译器语义。部署时在项目根目录准备后端工具：
+
+```powershell
+npm --prefix backend/tools/typescript_semantics ci --ignore-scripts --no-audit --no-fund
+```
+
+这不是给上传项目安装依赖，也不执行其构建。缺少工具时显式回退到原解析；安装和能力边界见
+[工具说明](backend/tools/typescript_semantics/README.md)。本机依赖目录不入库，迁移后应重新准备。
 
 ## 安全边界
 

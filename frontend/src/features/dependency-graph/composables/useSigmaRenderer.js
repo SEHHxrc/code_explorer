@@ -1,7 +1,12 @@
 import { reactive, ref, shallowRef } from 'vue'
 import Sigma from 'sigma'
-import EdgeCurveProgram from '@sigma/edge-curve'
+import { createEdgeCurveProgram } from '@sigma/edge-curve'
 import { fadeColor } from '../graphStyle.js'
+
+// 略放大箭头，适配总览缩放下的统一小节点；仍由现有曲线程序渲染，不增加边或标签。
+const DirectedCurveProgram = createEdgeCurveProgram({
+  arrowHead: { extremity: 'target', lengthToThicknessRatio: 5, widenessToThicknessRatio: 3 },
+})
 
 /** Own Sigma, reducers, camera operations, hover state, and pointer interactions. */
 export const useSigmaRenderer = ({
@@ -20,6 +25,7 @@ export const useSigmaRenderer = ({
   const draggingNode = ref(null)
   let dragMoved = false
   let suppressClick = false
+  let savedCamera = null
 
   const hasRenderableContainer = () => (
     Boolean(containerRef.value)
@@ -68,7 +74,8 @@ export const useSigmaRenderer = ({
   }
 
   const create = () => {
-    if (!containerRef.value || !displayGraph.value) return
+    if (!hasRenderableContainer() || !displayGraph.value) return
+    const camera = savedCamera
     destroy()
     renderer.value = new Sigma(displayGraph.value, containerRef.value, {
       renderLabels: true,
@@ -82,8 +89,10 @@ export const useSigmaRenderer = ({
       defaultNodeColor: '#909399',
       defaultEdgeColor: '#dfe3e9',
       enableEdgeEvents: true,
+      // 构造前仍校验尺寸；只容忍已排队的原生 resize 帧遇到短暂的零尺寸过渡。
+      allowInvalidContainer: true,
       defaultEdgeType: 'curved',
-      edgeProgramClasses: { curved: EdgeCurveProgram },
+      edgeProgramClasses: { curved: DirectedCurveProgram },
       minCameraRatio: 0.02,
       maxCameraRatio: 20,
       hideEdgesOnMove: true,
@@ -101,6 +110,7 @@ export const useSigmaRenderer = ({
       },
     })
     const sigma = renderer.value
+    if (camera) sigma.getCamera().setState(camera)
     sigma.on('enterNode', ({ node }) => {
       const attrs = fullGraph.value.getNodeAttributes(node)
       hovered.value = { label: attrs.label, kind: attrs.kind, color: attrs.baseColor, pinned: attrs.pinned }
@@ -170,13 +180,22 @@ export const useSigmaRenderer = ({
   const refresh = () => {
     if (renderer.value && hasRenderableContainer()) renderer.value.refresh()
   }
+  /** 仅尺寸变化时复用缓存、更新视口和标签索引；不重读图属性、不重建图或重置相机。 */
+  const resizeViewport = () => {
+    const sigma = renderer.value
+    if (!sigma || !hasRenderableContainer()) return
+    const { width, height } = sigma.getDimensions()
+    if (width === containerRef.value.offsetWidth && height === containerRef.value.offsetHeight) return
+    sigma.scheduleRefresh({ partialGraph: { nodes: [], edges: [] } })
+  }
   const zoom = (factor) => {
     const camera = renderer.value?.getCamera()
     if (camera) camera.animate({ ratio: camera.ratio * factor }, { duration: 200 })
   }
   const resetCamera = (visibleCount = 0) => {
     renderer.value?.getCamera().animate(
-      { x: 0.5, y: 0.5, ratio: visibleCount > 120 ? 0.78 : 0.92, angle: 0 },
+      // 一两个独立操作节点的类限定名较长，留出标签空间，避免右端文字被裁切或压到缩放控件。
+      { x: 0.5, y: 0.5, ratio: visibleCount <= 2 ? 1.65 : visibleCount <= 20 ? 1.15 : visibleCount > 120 ? 0.78 : 0.92, angle: 0 },
       { duration: 380 },
     )
   }
@@ -197,7 +216,8 @@ export const useSigmaRenderer = ({
       ratio: Math.min(camera.ratio, 0.65),
     }, { duration: 420 })
   }
-  const destroy = () => {
+  const destroy = ({ preserveCamera = false } = {}) => {
+    savedCamera = preserveCamera ? renderer.value?.getCamera().getState() || savedCamera : null
     renderer.value?.kill()
     renderer.value = null
     hovered.value = null
@@ -206,6 +226,6 @@ export const useSigmaRenderer = ({
 
   return {
     renderer, hovered, hoverPos,
-    create, destroy, setGraph, refresh, zoom, resetCamera, focusNode, focusEdge,
+    create, destroy, setGraph, refresh, resizeViewport, zoom, resetCamera, focusNode, focusEdge,
   }
 }

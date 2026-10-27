@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any
 from uuid import uuid4
 
-from backend.app.services.project_analysis.progress import ProgressReader
+from backend.app.core.progress import ProgressReader
 
 from .errors import ProjectAnalysisError
 

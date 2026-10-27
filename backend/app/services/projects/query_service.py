@@ -6,10 +6,12 @@ import asyncio
 import os
 from collections.abc import Callable
 from pathlib import Path
+from threading import Lock
 from typing import Any
 
 from backend.app.schemas.manifest import ProjectManifest
 from backend.app.services.project_analysis.graph_exchange import GraphExchangeNormalizer
+from backend.app.services.project_analysis.security_paths import SecurityPathProjection
 from backend.app.services.project_workspace.paths import ProjectWorkspacePaths
 
 from .artifacts import ProjectArtifactRepository
@@ -42,6 +44,9 @@ class ProjectQueryService:
         self.artifact_loader = artifact_loader or self.artifacts.load
         self.artifact_sizer = artifact_sizer or self.artifacts.size
         self.graph_normalizer = graph_normalizer or GraphExchangeNormalizer()
+        self._security_lock = Lock()
+        self._security_cache: tuple[str, tuple[int, int, int], SecurityPathProjection] | None = None
+        self._cache_security = artifact_loader is None
 
     async def list(self, user_id: str) -> dict[str, Any]:
         """异步返回当前用户项目库存以及总占用字节数。"""
@@ -50,6 +55,41 @@ class ProjectQueryService:
     async def snapshot(self, project_id: str, user_id: str) -> dict[str, Any]:
         """异步恢复指定项目的前端分析快照。"""
         return await asyncio.to_thread(self._snapshot_sync, project_id, user_id)
+
+    async def security_paths(self, project_id: str, user_id: str, candidate_id: str | None = None) -> dict[str, Any]:
+        """校验项目所有权后在线程中读取静态路径并集或指定候选详情；不重新分析。"""
+        return await asyncio.to_thread(self._security_paths_sync, project_id, user_id, candidate_id)
+
+    def _security_paths_sync(self, project_id: str, user_id: str, candidate_id: str | None) -> dict[str, Any]:
+        """输入项目/用户和可选候选 ID，输出白名单 DTO；缺失、越权或损坏分别返回明确错误。"""
+        if self.projects.get_owned(project_id, user_id) is None:
+            raise ProjectQueryError("Project not found or unauthorized.", status_code=404, stage="query")
+        try:
+            projection = self._security_projection(project_id)
+            return (projection.detail(candidate_id) if candidate_id is not None else projection.build()).model_dump()
+        except KeyError as exc:
+            raise ProjectQueryError("该静态候选不存在或引用不完整。", status_code=404, stage="query") from exc
+        except (OSError, ValueError, TypeError) as exc:
+            raise ProjectQueryError("静态分析产物无法读取，请重新分析项目。", status_code=409, stage="query") from exc
+
+    def _security_projection(self, project_id: str) -> SecurityPathProjection:
+        """输入已授权项目，最多缓存一个轻量投影；按产物版本失效，锁内加载避免并发重读巨型文件。"""
+        with self._security_lock:
+            revision = self.artifacts.revision(project_id) if self._cache_security else None
+            if revision is not None and self._security_cache is not None:
+                cached_id, cached_revision, projection = self._security_cache
+                if (cached_id, cached_revision) == (project_id, revision):
+                    return projection
+            self._security_cache = None
+            artifact = self.artifact_loader(project_id)
+            if not artifact:
+                raise ProjectQueryError("分析产物不存在，请重新导入项目。", status_code=409, stage="query")
+            if not isinstance(artifact, dict):
+                raise ValueError("分析产物必须是对象。")
+            projection = SecurityPathProjection(artifact, self.graph_normalizer)
+            if revision is not None and self.artifacts.revision(project_id) == revision:
+                self._security_cache = project_id, revision, projection
+            return projection
 
     def _list_sync(self, user_id: str) -> dict[str, Any]:
         """同步扫描受控项目目录和分析产物元数据。"""

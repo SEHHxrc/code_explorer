@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tree_sitter
+from backend.app.services.syntax_analysis.go import go_function_name
 
 from ..ast_utils import (
     _field,
@@ -146,8 +147,10 @@ class GoHandler(BaseHandler):
         return 0
 
     def h_func_literal(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
-        """解析函数字面量语法节点并把结果写入文件上下文。"""
-        ctx.push(ctx.top.fqn, "function", "")
+        """匿名处理器拥有独立身份；不能把其中的调用算到注册函数的立即执行路径。"""
+        definition = ctx.add_def(node, go_function_name(node, ctx.src), "function")
+        if definition is not None:
+            ctx.push(definition.fqn, "function", definition.name, definition)
         return 0
 
     def h_var_spec(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:

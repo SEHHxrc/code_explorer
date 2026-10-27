@@ -95,10 +95,19 @@ class SecurityRuleEngine:
         access_rules = tuple(rule for pack in applicable for rule in pack.access_rules)
         unresolved_condition_calls: set[str] = set()
         for call in program.calls:
+            if call.callee_shadowed:
+                result.failures.append({"path": call.location.path, "line": call.location.line,
+                    "callsite_id": call.callsite_id, "reason": "api_name_shadowed"})
+                continue
             for rule in call_rules:
                 if program.language not in rule.languages:
                     continue
                 if not rule.matches_name(call.qualified_name):
+                    continue
+                if rule.receiver_api_types and call.receiver_api_type not in rule.receiver_api_types:
+                    continue
+                if any(not 0 <= index < len(call.arguments) or call.arguments[index].api_type not in types
+                       for index, types in rule.argument_api_types):
                     continue
                 if rule.required_headers:
                     if call.callee_is_project_defined:
@@ -125,7 +134,7 @@ class SecurityRuleEngine:
                     continue
                 if not condition_match:
                     continue
-                if rule.output_argument_positions and not all(0 <= index < len(call.arguments) and call.arguments[index].kind in {"identifier", "name"} and len(call.arguments[index].identifiers) == 1 for index in rule.output_argument_positions):
+                if rule.output_argument_positions and not all(0 <= index < len(call.arguments) and call.arguments[index].output_name() for index in rule.output_argument_positions):
                     result.failures.append({
                         "path": call.location.path,
                         "line": call.location.line,
@@ -170,6 +179,13 @@ class SecurityRuleEngine:
                         "value_identifiers": list(access.value_identifiers),
                         "parameter_seed": access.parameter_seed,
                         **({"binding_certainty": "may"} if access.binding_certainty == "may" else {}),
+                        **({"resolution_method": access.resolution_method,
+                            "limitations": ["导入类型注解只提供静态 API 线索，未执行完整类型检查，也不证明路由注册或实际攻击者控制。"]}
+                           if access.resolution_method == "imported_parameter_annotation" else {}),
+                        **({"resolution_method": access.resolution_method,
+                            "api_binding_callsite_ids": list(access.api_binding_callsite_ids),
+                            "limitations": ["API 角色沿已解析调用和具名参数有界转发，按 may 识别字段；未证明完整运行时路由、类型或攻击者控制。"]}
+                           if access.resolution_method == "resolved_parameter_forwarding" else {}),
                         "preconditions": list(rule.preconditions),
                         "value_flow": {
                             "result": "parameter" if access.parameter_seed else "",
@@ -224,22 +240,18 @@ class SecurityRuleEngine:
                     function.owner_types,
                     rule,
                 )
-            if route is None:
-                route = self._registered_function_entrypoint(
-                    function,
-                    registration_calls,
-                    rule,
-                )
-            if route is None:
+            routes = [route] if route is not None else self._registered_function_entrypoints(function, registration_calls, rule)
+            if not routes:
                 continue
-            method, route_path = route
-            self._append_entrypoint(result, function.symbol, function.location, method, route_path, rule)
+            for method, route_path in routes:
+                self._append_entrypoint(result, function.symbol, function.location, method, route_path, rule)
+            method, route_path = routes[0]
             for position, parameter in enumerate(function.parameters):
                 if rule.source_parameter_positions is not None and position not in rule.source_parameter_positions:
                     continue
                 if parameter.name in {"self", "cls"}:
                     continue
-                if any(
+                if parameter.annotation in rule.excluded_annotation_names or any(
                     fragment in parameter.annotation
                     for fragment in rule.excluded_annotation_fragments
                 ):
@@ -328,14 +340,15 @@ class SecurityRuleEngine:
         return method, "<container-mapped>"
 
     @staticmethod
-    def _registered_function_entrypoint(
+    def _registered_function_entrypoints(
         function: IRFunction,
         calls: list[IRCall],
         rule: EntrypointRule,
-    ) -> tuple[str, str] | None:
-        """匹配 ``register(path, handler)`` 形式的显式函数注册入口。"""
+    ) -> list[tuple[str, str]]:
+        """单次扫描保留全部显式注册入口，稳定去重而不丢失第二个路由。"""
+        routes: list[tuple[str, str]] = []
         if not rule.registration_call_methods:
-            return None
+            return routes
         for call in calls:
             method = next((
                 http_method
@@ -344,6 +357,11 @@ class SecurityRuleEngine:
             ), None)
             if method is None:
                 continue
+            if call.handler_symbols:
+                if function.symbol not in call.handler_symbols:
+                    continue
+            elif rule.require_exact_handler:
+                continue
             handler_position = rule.registration_handler_position
             if handler_position < 0:
                 handler_position += len(call.arguments)
@@ -351,7 +369,7 @@ class SecurityRuleEngine:
                 continue
             handler = call.arguments[handler_position]
             handler_names = set(handler.identifiers) | {handler.text}
-            if not any(
+            if not call.handler_symbols and not any(
                 name == function.name
                 or name.endswith(f".{function.name}")
                 or name.endswith(f"::{function.name}")
@@ -364,8 +382,13 @@ class SecurityRuleEngine:
                 route = call.arguments[path_position]
                 if route.is_literal:
                     route_path = str(route.literal)
-            return method, route_path
-        return None
+                    if call.route_prefix:
+                        route_path = ("<dynamic>" if call.route_prefix == "<dynamic>" else
+                                      call.route_prefix.rstrip("/") + "/" + route_path.lstrip("/"))
+            if method == "<dynamic-method>" and call.arguments and call.arguments[0].is_literal:
+                method = str(call.arguments[0].literal)
+            routes.append((method, route_path))
+        return list(dict.fromkeys(routes))
 
     @staticmethod
     def _append_entrypoint(
@@ -453,6 +476,9 @@ class SecurityRuleEngine:
         if fact_id in fact_ids:
             return
         fact_ids.add(fact_id)
+        metadata = dict(metadata or {})
+        if fact_kind in {"guard", "sanitizer"}:
+            metadata["protection_effectiveness"] = "not_verified"
         fact = StaticSecurityFact(
             fact_id=fact_id,
             fact_kind=fact_kind,
@@ -464,7 +490,7 @@ class SecurityRuleEngine:
             cwe=cwe,
             trust_class=trust_class,
             severity=severity,
-            metadata=metadata or {},
+            metadata=metadata,
         )
         collection = {
             "source": result.sources,
@@ -513,11 +539,21 @@ class SecurityRuleEngine:
             )
         if rule.preconditions:
             metadata["preconditions"] = list(rule.preconditions)
+        if rule.receiver_api_types or rule.argument_api_types:
+            metadata["api_binding"] = {
+                "receiver_role": call.receiver_api_type,
+                "argument_roles": {str(index): call.arguments[index].api_type for index, _types in rule.argument_api_types},
+                "resolution_method": "frontend_import_and_lexical_type",
+                "runtime_boundary_verified": False,
+            }
+            metadata.setdefault("limitations", []).append(
+                "API 角色由导入、显式类型或有限已知返回推断；未证明运行时调用边界、攻击者控制或完整别名关系。"
+            )
         if rule.output_argument_positions:
             metadata["binding_certainty"] = "may"
-            metadata["value_flow"]["output_targets"] = {str(index): call.arguments[index].identifiers[0] for index in rule.output_argument_positions if 0 <= index < len(call.arguments) and call.arguments[index].kind in {"identifier", "name"} and len(call.arguments[index].identifiers) == 1}
+            metadata["value_flow"]["output_targets"] = {str(index): call.arguments[index].output_name() for index in rule.output_argument_positions if 0 <= index < len(call.arguments) and call.arguments[index].output_name()}
             metadata.setdefault("limitations", []).append(
-                "输出参数只支持独立调用的具名缓冲区 may 写入；返回状态码不是输入内容，复杂指针、同操作多调用、字节范围及成功条件未建模。"
+                "输出参数仅支持独立或确定最外层调用的具名目标 may 写入；返回状态不是输入内容，复杂指针、多平级调用顺序、字节范围和成功条件未建模。"
             )
         if rule.result_positions:
             metadata["value_flow"]["result_positions"] = list(rule.result_positions)
@@ -546,6 +582,3 @@ class SecurityRuleEngine:
                 mode = call.arguments[1]
             metadata["mode"] = mode.literal if mode and mode.is_literal else "r"
         return metadata
-
-
-PythonSecurityRuleEngine = SecurityRuleEngine

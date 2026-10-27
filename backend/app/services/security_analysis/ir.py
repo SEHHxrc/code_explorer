@@ -31,6 +31,15 @@ class IRExpression:
     kind: str = "expression"
     contains_call: bool = False
     binding_value: BindingValue | None = None
+    api_type: str = ""
+    callable_symbol: str = ""
+    callable_owner_type: str = ""
+    reference_target: str = ""
+    callable_unresolved: bool = False
+
+    def output_name(self) -> str:
+        """返回明确具名输出目标；显式取址由前端确认，不推断动态指针或任意表达式。"""
+        return self.reference_target or (self.identifiers[0] if self.kind in {"identifier", "name"} and len(self.identifiers) == 1 else "")
 
 
 @dataclass(frozen=True)
@@ -43,6 +52,8 @@ class IRParameter:
     location: IRLocation
     binding_pattern: BindingPattern | None = None
     kind: ParameterKind = "positional_or_keyword"
+    api_type: str = ""
+    reassigned: bool = False
 
 
 @dataclass(frozen=True)
@@ -80,6 +91,10 @@ class IRCall:
     visible_headers: tuple[str, ...] = ()
     callee_is_project_defined: bool = False
     unknown_keywords: bool = False
+    receiver_api_type: str = ""
+    handler_symbols: tuple[str, ...] = ()
+    route_prefix: str = ""
+    callee_shadowed: bool = False
 
     def keyword(self, name: str) -> IRExpression | None:
         """按关键字名称返回调用参数。"""
@@ -108,6 +123,8 @@ class IRAccess:
     value_identifiers: tuple[str, ...] = ()
     parameter_seed: str = ""
     binding_certainty: Literal["must", "may"] = "must"
+    resolution_method: str = ""
+    api_binding_callsite_ids: tuple[str, ...] = ()
 
 
 @dataclass
@@ -135,6 +152,11 @@ class IRValueBoundary:
     kind: 适配器提供的绑定类别，共享传播器不按框架分支。
     source_at_exit: 从公共 CFG 的退出值导出槽位，而非直接拼接某次中间写入。
     limitations: 框架语义的局限；所有此类连接均按 inferred/may 处理。
+    reference_edge_id/callsite_id/object_allocation_id: 可选的既有实例化证据引用；不新增调用关系。
+    resume_callsite_id: 返回型边界仅恢复对应调用点；没有上下文的函数内 Source 可反向到真实调用者。
+    source_reads_input: 缺省核实操作读取值；False 核实该操作完成后的写回值，适用于直接创建并返回。
+    source_node_id/target_node_id: 可选精确公共节点身份，用于同源码位置的正常出口/后置操作；
+    显式身份缺失或不可达时拒绝，不退回最近行号。不改变调用前读取、调用后写入时序。
     """
 
     boundary_id: str
@@ -148,3 +170,11 @@ class IRValueBoundary:
     capture: bool = False
     limitations: tuple[str, ...] = ()
     source_at_exit: bool = False
+    reference_edge_id: str | None = None
+    callsite_id: str | None = None
+    object_allocation_id: str | None = None
+    resume_callsite_id: str | None = None
+    source_reads_input: bool = True
+    object_type_symbol: str | None = None
+    source_node_id: str | None = None
+    target_node_id: str | None = None

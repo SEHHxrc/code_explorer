@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
-from typing import Any
 from dataclasses import replace
-from backend.app.services.syntax_analysis import DEFAULT_TREE_SITTER_PARSER_POOL
+from typing import Any
+
+from backend.app.services.syntax_analysis import DEFAULT_TREE_SITTER_PARSER_POOL, semantic_children
 from backend.app.services.program_index import ProgramIdentity
 from backend.app.services.syntax_analysis.source_units import SourceUnit
 from backend.app.services.syntax_analysis.javascript_inputs import javascript_scope_nodes
 from backend.app.services.syntax_analysis.vue_bindings import vue_model_target, vue_setup_bindings, vue_template_expression_nodes, vue_template_names
 from backend.app.services.value_binding import BindingValue
+from backend.app.services.value_binding.returns import ReturnBinding
 from backend.app.services.syntax_analysis.javascript_bindings import javascript_pattern, javascript_value, resolve_javascript_binding
 from ..control_ir import ControlValueTransfer
 from backend.app.services.syntax_analysis.static_sequences import static_sequence_value
-from ..frontends.access_paths import AccessPath, AccessPathSegment
+from backend.app.services.syntax_analysis.go import GO_FUNCTION_NODES, go_callable_parts
+from backend.app.services.value_binding.access_paths import AccessPath, AccessPathSegment
 
 from backend.app.services.syntax_analysis.javascript import (
     JAVASCRIPT_FUNCTION_NODES, javascript_function, javascript_parameters,
@@ -38,6 +41,8 @@ from .treesitter import (
     TreeSitterFunctionCollector,
     TreeSitterProgramGraphFrontend,
 )
+from .objects import CppInstanceSyntax, GoInstanceSyntax, JavaScriptInstanceSyntax
+from .storage import StorageSyntax
 
 
 def _descendants(node: Any | None, node_types: set[str]) -> list[Any]:
@@ -58,6 +63,7 @@ class _JavaScriptCollector(TreeSitterFunctionCollector):
     """共享 JavaScript 与 TypeScript 的函数和语句降级。"""
 
     language = "javascript"
+    instance_syntax = JavaScriptInstanceSyntax()
     block_node_types = TreeSitterFunctionCollector.block_node_types | frozenset({"program"})
     function_node_types = JAVASCRIPT_FUNCTION_NODES
     declaration_node_types = frozenset({
@@ -156,7 +162,9 @@ class _JavaScriptCollector(TreeSitterFunctionCollector):
             result = resolve_javascript_binding(name_node, value, self.source, self.path)
             self._limitations.extend(result.diagnostics)
             definitions.extend(item.output for item in result.projections)
-            uses.extend(name for item in result.projections for name in item.inputs)
+            dynamic = self._identifiers(value)
+            uses.extend(dynamic if name_node.type == "identifier" and any("[?" in name for name in dynamic)
+                        else (name for item in result.projections for name in item.inputs))
         return self._unique(definitions), self._unique(uses)
 
     def _paired_bindings(self, target: Any, value: Any) -> tuple[tuple[Any, Any], ...]:
@@ -167,19 +175,31 @@ class _JavaScriptCollector(TreeSitterFunctionCollector):
         """输出逐字段值流，保留字面量的空输入，防止兄弟字段污点串流。"""
         if compound:
             return super()._binding_transfers(target, value, compound=True)
+        outputs, inputs = self._identifiers(target), self._identifiers(value)
+        if any("[?" in name for name in (*outputs, *inputs)) and target.type in {"identifier", "member_expression", "subscript_expression"}:
+            calls = self._call_sites(value)
+            return tuple(ControlValueTransfer(output_variable=name, input_variables=inputs,
+                transfer_kind="call_result" if calls else "assignment", callsite_ids=tuple(call.callsite_id for call in calls),
+                reference_source=self._direct_reference(value), certainty="may" if calls else "must") for name in outputs)
         result = resolve_javascript_binding(target, value, self.source, self.path)
         self._limitations.extend(result.diagnostics)
         calls = self._call_sites(value)
+        reference = self._direct_reference(value)
         return tuple(ControlValueTransfer(
             output_variable=item.output, input_variables=item.inputs,
             transfer_kind="call_result" if calls else "assignment",
             callsite_ids=tuple(call.callsite_id for call in calls),
             certainty="may" if calls else item.certainty,
+            reference_source=reference if item.inputs == (reference,) else "",
         ) for item in result.projections)
 
     def _assignment_data(self, node: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """让赋值解构和声明解构使用相同字段身份；复合赋值保持原有保守行为。"""
         if node.type == "assignment_expression":
+            target, value = _field(node, "left"), _field(node, "right")
+            outputs, inputs = self._identifiers(target), self._identifiers(value)
+            if target is not None and target.type in {"identifier", "member_expression", "subscript_expression"} and any("[?" in name for name in (*outputs, *inputs)):
+                return outputs, inputs
             result = resolve_javascript_binding(_field(node, "left"), _field(node, "right"), self.source, self.path)
             self._limitations.extend(result.diagnostics)
             return self._unique(item.output for item in result.projections), self._unique(name for item in result.projections for name in item.inputs)
@@ -193,7 +213,8 @@ class _JavaScriptCollector(TreeSitterFunctionCollector):
 
     def _call_values(self, arguments: list[Any]) -> tuple[BindingValue, ...]:
         """把实参结构交给公共调用绑定器，避免把对象安全字段映射为整个对象。"""
-        return tuple(javascript_value(item, self.source, self.path) for item in arguments)
+        return tuple(BindingValue(variables=self._identifiers(item)) if any("[?" in name for name in self._identifiers(item))
+                     else javascript_value(item, self.source, self.path) for item in arguments)
 
     def _identifiers(self, node: Any | None) -> tuple[str, ...]:
         """JSX 对象型 HTML 属性只读取 __html 字段，保留传入容器的词法字段身份。"""
@@ -282,7 +303,10 @@ class _GoCollector(TreeSitterFunctionCollector):
     """Go 函数、接收者方法和结构化语句降级。"""
 
     language = "go"
-    function_node_types = frozenset({"function_declaration", "method_declaration"})
+    instance_syntax = GoInstanceSyntax()
+    storage_language = True
+    memory_access_node_types = frozenset({"unary_expression"})
+    function_node_types = GO_FUNCTION_NODES
     declaration_node_types = frozenset({
         "short_var_declaration", "var_declaration", "const_declaration",
     })
@@ -295,24 +319,28 @@ class _GoCollector(TreeSitterFunctionCollector):
     index_access_node_types = frozenset({"index_expression"})
     value_sequence_node_types = frozenset({"expression_list"})
 
+    def resolve_access_path(self, node: Any | None) -> AccessPath | None:
+        """Go 显式 * 为独立解引用段，& 只保留取址操作数；隐式字段解引用交给存储环境。"""
+        operator = StorageSyntax.operator(node)
+        if operator:
+            owner = self.resolve_access_path(StorageSyntax.operand(node))
+            return owner.attribute("*") if owner is not None and operator == "*" else owner
+        return super().resolve_access_path(node)
+
+    def _identifiers(self, node: Any | None) -> tuple[str, ...]:
+        """Go 空白标识符没有存储身份，不能成为跨赋值、循环或调用的值连接点。"""
+        return tuple(name for name in super()._identifiers(node) if name != "_")
+
     def _function_descriptor(
         self,
         node: Any,
         scope: tuple[str, ...],
     ) -> FunctionDescriptor | None:
         """将接收者类型纳入方法 FQN，并保留签名参数类型。"""
-        name = self._text(_field(node, "name"))
+        parts = go_callable_parts(node, self.source)
+        name = parts[-1]
         parameters = self._go_parameters(_field(node, "parameters"))
-        method_scope = scope
-        if node.type == "method_declaration":
-            receiver = _field(node, "receiver")
-            receiver_parameter = next(iter(_descendants(
-                receiver,
-                {"parameter_declaration"},
-            )), None)
-            receiver_type = _norm_type(self._text(_field(receiver_parameter, "type")))
-            if receiver_type:
-                method_scope = (receiver_type,)
+        method_scope = parts[:-1]
         return FunctionDescriptor(
             name=name,
             scope=method_scope,
@@ -325,7 +353,9 @@ class _GoCollector(TreeSitterFunctionCollector):
     def _go_parameters(self, node: Any | None) -> list[tuple[str, str]]:
         """展开 Go 一个声明中可能包含的多个参数名。"""
         result: list[tuple[str, str]] = []
-        for item in _descendants(node, {"parameter_declaration", "variadic_parameter_declaration"}):
+        for item in (node.named_children if node is not None else ()):
+            if item.type not in {"parameter_declaration", "variadic_parameter_declaration"}:
+                continue
             type_literal = self._text(_field(item, "type")) or "?"
             names = [self._text(name) for name in _fields(item, "name")]
             if not names:
@@ -343,16 +373,16 @@ class _GoCollector(TreeSitterFunctionCollector):
     def _call_result_targets(self, node: Any) -> tuple[str, ...]:
         """仅直接调用的 Go 并行接收保留顺序；嵌套调用不归给外层结果。"""
         parent = node.parent
-        if parent is None or parent.type != "expression_list" or len(parent.named_children) != 1:
+        if parent is None or parent.type != "expression_list" or len(semantic_children(parent)) != 1:
             return ()
         statement = parent.parent
         if statement is None:
             return ()
         if statement.type in {"short_var_declaration", "assignment_statement"} and _field(statement, "right") == parent:
             left = _field(statement, "left")
-            return tuple(self._text(item) for item in left.named_children) if left is not None else ()
+            return tuple("" if self._text(item) == "_" else self._text(item) for item in semantic_children(left))
         if statement.type in {"var_spec", "const_spec"} and _field(statement, "value") == parent:
-            return tuple(self._text(item) for item in _fields(statement, "name"))
+            return tuple("" if self._text(item) == "_" else self._text(item) for item in _fields(statement, "name"))
         return ()
 
     def _return_values(self, node: Any) -> tuple[tuple[str, ...], ...]:
@@ -361,7 +391,20 @@ class _GoCollector(TreeSitterFunctionCollector):
         if values is None:
             self._limitations.append("Go 裸 return 的命名返回值及隐式多返回转发尚未建模。")
             return ()
-        return tuple(self._identifiers(item) for item in values.named_children)
+        return super()._return_values(node)
+
+    def _return_binding(self, node: Any) -> ReturnBinding:
+        """Go 显式多表达式 return 是多个 ABI 分量，不是一个元组对象。"""
+        expressions = self._return_expressions(node)
+        return ReturnBinding(
+            mode="multiple" if len(expressions) > 1 else "single" if expressions else "unknown",
+            values=tuple(self._return_value(item) for item in expressions),
+        )
+
+    def _return_expressions(self, node: Any) -> list[Any]:
+        """Go 多返回的有序分量共用公共表达式位置协议。"""
+        values = next((item for item in node.named_children if item.type == "expression_list"), None)
+        return semantic_children(values)
 
     def _declaration_data(self, node: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """处理 := 以及 var/const spec 的并行绑定。"""
@@ -374,7 +417,7 @@ class _GoCollector(TreeSitterFunctionCollector):
         uses: list[str] = []
         for spec in _descendants(node, {"var_spec", "const_spec"}):
             definitions.extend(
-                self._text(name) for name in _fields(spec, "name")
+                self._text(name) for name in _fields(spec, "name") if self._text(name) != "_"
             )
             uses.extend(self._identifiers(_field(spec, "value")))
         return self._unique(definitions), self._unique(uses)
@@ -422,12 +465,24 @@ class _CCollector(TreeSitterFunctionCollector):
     """C/C++ 共享的声明符、赋值和调用降低。"""
 
     language = "c"
+    storage_language = True
+    memory_access_node_types = frozenset({"pointer_expression"})
     function_node_types = frozenset({"function_definition"})
     declaration_node_types = frozenset({"declaration"})
     throw_node_types = frozenset({"throw_statement"})
     identifier_node_types = frozenset({"identifier", "field_identifier"})
     member_access_node_types = frozenset({"field_expression"})
     index_access_node_types = frozenset({"subscript_expression"})
+
+    def resolve_access_path(self, node: Any | None) -> AccessPath | None:
+        """C/C++ 的 * 与 ->/. 保留可验证存储路径；指针运算和转换不伪装为直接引用。"""
+        operator = StorageSyntax.operator(node)
+        if operator:
+            owner = self.resolve_access_path(StorageSyntax.operand(node))
+            return owner.attribute("*") if owner is not None and operator == "*" else owner
+        if node is not None and node.type == "parenthesized_expression" and len(node.named_children) == 1:
+            return self.resolve_access_path(node.named_children[0])
+        return super().resolve_access_path(node)
 
     def _scope_for_node(
         self,
@@ -507,6 +562,20 @@ class _CppCollector(_CCollector):
     """在 C 声明符基础上补充 C++ 类和命名空间作用域。"""
 
     language = "cpp"
+    instance_syntax = CppInstanceSyntax()
+    self_node_types = frozenset({"this"})
+
+    def _append_function(self, node: Any, descriptor: FunctionDescriptor) -> None:
+        """仅当前类实际声明的裸字段转为 this 槽；不从整个仓库猜字段或覆盖局部声明。"""
+        self._cpp_fields = self.instance_syntax.member_fields(node, self.source)
+        super()._append_function(node, descriptor)
+
+    def _identifiers(self, node: Any | None) -> tuple[str, ...]:
+        """显式 this 和未被词法局部变量遮蔽的裸字段共用字段身份。"""
+        names = super()._identifiers(node)
+        storage = getattr(self, "_storage_context", None)
+        return tuple("this." + name if name in getattr(self, "_cpp_fields", ()) and storage is not None
+                     and node is not None and not storage.type_at(name, node) else name for name in names)
 
     def _scope_for_node(
         self,

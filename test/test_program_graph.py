@@ -20,6 +20,17 @@ from backend.app.services.syntax_analysis import extensions_for_language
 class ProgramGraphTests(unittest.TestCase):
     """验证公共 CFG/DDG Pass 不依赖 Python 专用语法。"""
 
+    def test_python_all_elif_and_else_returns_enter_public_cfg(self) -> None:
+        """多个兄弟 elif 和最终 else 均须成为控制节点及可达 return，不能降为普通调用。"""
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory, "app.py").write_text("def choose(value):\n if value==1:\n  return first(value)\n elif value==2:\n  return second(value)\n elif value==3:\n  return third(value)\n else:\n  return fourth(value)\n", encoding="utf8")
+            graph = ProgramGraphService().analyze(directory)
+        function = next(iter(graph.functions.values()))
+        self.assertEqual(3, sum(node.kind == "condition" for node in function.nodes.values()))
+        returns = [node for node in function.nodes.values() if node.kind == "return"]
+        self.assertEqual({3, 5, 7, 9}, {node.location.line for node in returns})
+        self.assertEqual({node.node_id for node in returns}, {edge.source for edge in function.edges if edge.kind == "cfg" and edge.branch == "return"})
+
     def test_access_path_has_stable_cross_language_serialization(self):
         """公共访问路径应稳定编码属性、字符串下标和整数下标。"""
         path = AccessPath("payload").index("command").index(0).attribute("value")
@@ -91,7 +102,7 @@ class ProgramGraphTests(unittest.TestCase):
         self.assertTrue(all(item.symbol_id in dependency_node_ids for item in methods))
         method = next(item for item in methods if item.method_id.endswith("(int,boolean)"))
         cfg = [edge for edge in method.edges if edge.kind == "cfg"]
-        branches = {edge.branch for edge in cfg}
+        branches = {edge.branch for edge in cfg} | ({"back"} if any(edge.loop_back for edge in cfg) else set())
         self.assertTrue({"true", "false", "back", "break", "return", "exception"} <= branches)
         self.assertTrue(all(
             edge.source in method.nodes and edge.target in method.nodes
@@ -297,11 +308,11 @@ class ProgramGraphTests(unittest.TestCase):
             for edge in method.edges
             if edge.kind == "value_flow"
         }
-        self.assertIn(("input", "values[0]"), mappings)
-        self.assertIn(("safe", "values[1]"), mappings)
-        self.assertNotIn(("input", "values[1]"), mappings)
+        self.assertIn(("input", "this.values[0]"), mappings)
+        self.assertIn(("safe", "this.values[1]"), mappings)
+        self.assertNotIn(("input", "this.values[1]"), mappings)
         return_node = next(node for node in method.nodes.values() if node.kind == "return")
-        self.assertEqual(["values[1]"], return_node.uses)
+        self.assertEqual(["this.values[1]"], return_node.uses)
 
     def test_dependency_graph_limits_program_graph_file_scope(self):
         """公共程序图复用依赖分析文件范围，不重新发现额外文件。"""

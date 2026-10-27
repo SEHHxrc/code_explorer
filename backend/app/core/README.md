@@ -5,7 +5,8 @@
 | 文件 | 函数 | 输入与输出 |
 | --- | --- | --- |
 | `deps.py` | `get_current_user(x_user_id)` | 输入 `X-User-Id` 请求头；仅接受 1～64 位字母、数字、下划线或连字符，输出包含 `user_id` 与 `roles` 的用户上下文。 |
-| `redaction.py` | `redact_secrets(text)` | 静态源码切片、Agent 工具和审计共用的纯文本脱敏；取原两套规则的并集，不执行输入，也不提供通用 DLP 保证。 |
+| `progress.py` | `AnalysisProgressReporter.phase()`、`report_progress()` | 通用阶段及计数读取接口，隔离观测异常；不依赖项目事务或分析实现。原 project_analysis.progress 仅转出同一接口。 |
+| `redaction.py` | `redact_source(text, path=...)`、`redact_secrets(text)` | 源码、切片和审计遮蔽凭据字面量、已知密钥格式和私钥，保留标识符、赋值、引号及换行；明确的配置文件另遮蔽裸值。日志用后者继续遮蔽裸凭据。两者复用同一组规则，不执行输入、不提供通用 DLP 保证。 |
 | `logging.py` | `configure_logging(role)`、`log_context(**fields)` | 配置安全 JSON 控制台/轮转日志，绑定请求和任务关联字段；API 和独立 Worker 使用同一入口，不接管第三方 root logger。 |
 
 当前实现用于原型系统的用户隔离，不等同于正式认证。若接入 JWT/OAuth，应保留 `get_current_user()` 这一注入入口，使各路由无需感知认证实现变化。

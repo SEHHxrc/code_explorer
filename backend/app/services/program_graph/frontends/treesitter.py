@@ -8,14 +8,17 @@ from typing import Any
 from collections.abc import Iterable
 
 from backend.app.services.program_index import ProgramIdentity
-from backend.app.services.value_binding import BindingPattern, BindingValue
+from backend.app.services.value_binding import BindingPattern, BindingValue, PatternMember
+from backend.app.services.value_binding.returns import ReturnBinding
 from backend.app.services.value_binding.parameters import ParameterKind
 from backend.app.services.syntax_analysis.javascript import parser_for_file
-from backend.app.services.syntax_analysis.source_units import SourceUnit, source_unit
+from backend.app.services.syntax_analysis.source_units import SourceUnit
+from backend.app.services.syntax_analysis.session import parse_tree, source_view
 from backend.app.services.syntax_analysis.javascript_bindings import javascript_binding_scope
 from backend.app.services.syntax_analysis import (
     DEFAULT_TREE_SITTER_PARSER_POOL,
     TreeSitterParserPool,
+    semantic_children,
 )
 from backend.app.services.syntax_analysis import (
     field as _field,
@@ -31,13 +34,20 @@ from ..control_ir import (
     ControlStatementKind,
     ControlValueTransfer,
 )
-from .access_paths import (
+from backend.app.services.value_binding.access_paths import (
     AccessPath,
+    canonical_path,
     parse_static_index_literal,
     render_access_path,
 )
 from .base import FrontendFileResult, ProgramGraphFrontend
 from .common import location_from_tree_sitter, statement_id
+from .objects import InstanceSyntax
+from .storage import StorageSyntax
+from .collections import CollectionSyntax
+from .selectors import indexed_path
+from .conditions import condition_expression, decorate_conditions, loop_condition, parameter_defaults
+from ..contracts import ReturnValueForm
 
 
 @dataclass(frozen=True)
@@ -71,10 +81,12 @@ class TreeSitterProgramGraphFrontend(ProgramGraphFrontend):
         relative_path: str,
     ) -> FrontendFileResult:
         """解析一个 Tree-sitter 文件并返回函数和恢复性语法诊断。"""
-        source = (project_root / relative_path).read_bytes()
-        unit = source_unit(relative_path, source, self.language)
+        target = project_root / relative_path
+        source = target.read_bytes()
+        identity = str(target.absolute())
+        unit = source_view(identity, source, self.language)
         source = unit.source
-        tree = self.parser_pool.get(parser_for_file(self.parser_name, relative_path)).parse(source)
+        tree = parse_tree(identity, source, parser_for_file(self.parser_name, relative_path), self.parser_pool)
         failures = []
         if tree.root_node.has_error:
             failures.append({
@@ -97,6 +109,7 @@ class TreeSitterFunctionCollector:
     """复用函数遍历、控制结构、调用点与词法 Def/Use 的公共实现。"""
 
     language = ""
+    instance_syntax: InstanceSyntax | None = None
     function_node_types: frozenset[str] = frozenset()
     block_node_types = frozenset({
         "block", "statement_block", "compound_statement", "constructor_body",
@@ -129,6 +142,8 @@ class TreeSitterFunctionCollector:
     index_access_node_types: frozenset[str] = frozenset()
     self_node_types: frozenset[str] = frozenset()
     value_sequence_node_types: frozenset[str] = frozenset()
+    storage_language = False
+    memory_access_node_types: frozenset[str] = frozenset()
 
     def __init__(self, path: str, source: bytes) -> None:
         """保存规范路径、源码字节和收集结果。"""
@@ -194,6 +209,10 @@ class TreeSitterFunctionCollector:
         self._limitations = [
             f"{self.language} 的变量 uses 当前按词法标识符或访问路径近似；字段语义、指针和别名需由后续 Overlay 解析。"
         ]
+        self._storage_context = None
+        self._access_selectors = {}
+        if self.storage_language:
+            self._storage_context = StorageSyntax(self, node)
         body = self._lower_body(descriptor.body, method_id)
         self.functions.append(ControlFunction(
             method_id=method_id,
@@ -202,9 +221,17 @@ class TreeSitterFunctionCollector:
             name=descriptor.name,
             location=location,
             parameters=descriptor.parameters,
+            object_assignment=self.instance_syntax.object_assignment if self.instance_syntax else "unknown",
             parameter_patterns=descriptor.parameter_patterns,
             parameter_kinds=descriptor.parameter_kinds,
+            parameter_defaults=parameter_defaults(self, node),
+            instance_context=self.instance_syntax.describe(node, self.source, self.path, descriptor.scope,
+                                                          descriptor.name, descriptor.parameters) if self.instance_syntax else None,
+            deferred_return=any(child.type in {"async", "*"} for child in node.children)
+                or "generator" in node.type or self._contains_types(descriptor.body, frozenset({"yield", "yield_expression", "yield_statement"})),
             body=body,
+            normal_exit_writes_modelled=len(self._limitations) == 1,
+            storage_parameters=self._storage_context.parameters() if self._storage_context is not None else {},
             limitations=tuple(dict.fromkeys(self._limitations)),
         ))
 
@@ -240,8 +267,9 @@ class TreeSitterFunctionCollector:
                 code=code,
                 uses=self._identifiers(condition),
                 calls=self._call_sites(condition),
+                condition=condition_expression(self, condition),
                 body=self._lower_body(self._consequence(node), method_id),
-                alternative=self._lower_body(self._alternative(node), method_id),
+                alternative=self._lower_alternative(node, method_id),
             ),)
         if node.type in self.loop_node_types:
             condition = self._condition(node)
@@ -259,15 +287,13 @@ class TreeSitterFunctionCollector:
                 definitions=definitions,
                 uses=uses,
                 calls=self._call_sites(condition or node),
+                condition=loop_condition(self, node, condition),
                 body=self._lower_body(self._body(node), method_id),
-                alternative=self._lower_body(self._alternative(node), method_id),
+                alternative=self._lower_alternative(node, method_id),
             ),)
         if node.type in self.try_node_types:
             finalizer = self._child_of_type(node, {"finally_clause", "finally_block"})
-            if finalizer is not None:
-                self._limitations.append(
-                    f"{self.language} try/finally 对突然退出的重放采用保守近似。"
-                )
+            catches = [child for child in node.named_children if child.type in self.catch_node_types]
             handlers = tuple(
                 self._lower_handler(child, method_id)
                 for child in node.named_children if child.type in self.catch_node_types
@@ -279,6 +305,9 @@ class TreeSitterFunctionCollector:
                 code=code,
                 body=self._lower_body(self._body(node), method_id),
                 handlers=handlers,
+                handler_catch_all=tuple(self.language in {"javascript", "typescript"} or
+                    (self.language == "python" and _field(child, "value") is None) for child in catches),
+                alternative=self._lower_alternative(node, method_id),
                 finalizer=self._lower_body(self._clause_body(finalizer), method_id),
             ),)
         if node.type in self.return_node_types:
@@ -326,22 +355,27 @@ class TreeSitterFunctionCollector:
         """构造一个无嵌套控制体的操作节点。"""
         location = location_from_tree_sitter(self.path, node)
         calls = self._call_sites(node)
-        return ControlStatement(
+        transfers = self._value_transfers(node, definitions, uses, calls)
+        statement = ControlStatement(
             statement_id=statement_id(method_id, location, kind),
             kind=kind,
             location=location,
             code=self._text(node),
-            definitions=definitions,
-            uses=uses,
+            # 结构绑定可产生词法读取器未直接看到的成员路径；Def/Use 必须同步，
+            # 否则 a,b=pair 的 pair[0] 投影没有到达定义边。
+            definitions=self._unique((*definitions, *(item.output_variable for item in transfers))),
+            uses=self._unique((*uses, *(name for item in transfers for name in item.input_variables))),
             calls=calls,
             return_values=self._return_values(node) if kind == "return" else (),
-            value_transfers=self._value_transfers(
-                node,
-                definitions,
-                uses,
-                calls,
-            ),
+            return_value_locations=tuple(location_from_tree_sitter(self.path, item) for item in self._return_expressions(node)) if kind == "return" else (),
+            return_value_forms=tuple(self._return_form(item) for item in self._return_expressions(node)) if kind == "return" else (),
+            return_binding=self._return_binding(node) if kind == "return" else None,
+            value_transfers=transfers,
         )
+        storage = getattr(self, "_storage_context", None)
+        statement = storage.decorate(statement, node) if storage is not None else statement
+        statement = decorate_conditions(self, statement, self._operation_bindings(node))
+        return CollectionSyntax(self).decorate(statement, node) if self.language in {"python", "java", "go", "javascript", "typescript", "tsx"} else statement
 
     def _value_transfers(
         self,
@@ -381,9 +415,17 @@ class TreeSitterFunctionCollector:
         node: Any,
     ) -> tuple[ControlValueTransfer, ...]:
         """提取声明绑定和赋值表达式中可由语法确定的输入输出配对。"""
-        result: list[ControlValueTransfer] = []
-        for target, value in self._declaration_bindings(node):
-            result.extend(self._binding_transfers(target, value, compound=False))
+        result = [transfer for target, value, compound in self._operation_bindings(node)
+                  for transfer in self._binding_transfers(target, value, compound=compound)]
+        return tuple(dict.fromkeys(result))
+
+    def _operation_bindings(self, node: Any) -> tuple[tuple[Any, Any, bool], ...]:
+        """唯一的操作赋值配对；值流、集合和条件提取复用单操作缓存，不各扫一遍 AST。"""
+        key = (node.start_byte, node.end_byte, node.type)
+        cached = getattr(self, "_operation_bindings_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        result = [(target, value, False) for target, value in self._declaration_bindings(node)]
         pending = [node]
         while pending:
             current = pending.pop()
@@ -400,13 +442,15 @@ class TreeSitterFunctionCollector:
             right = _field(current, "right") or _field(current, "value")
             if right is None:
                 target = left or next(iter(current.named_children), None)
-                result.extend(self._binding_transfers(target, target, compound=True))
+                if target is not None:
+                    result.append((target, target, True))
                 continue
             pairs = self._paired_bindings(left, right)
             compound = self._is_compound_assignment_node(current, left, right)
-            for target, value in pairs:
-                result.extend(self._binding_transfers(target, value, compound=compound))
-        return tuple(dict.fromkeys(result))
+            result.extend((target, value, compound) for target, value in pairs)
+        value = tuple(result)
+        self._operation_bindings_cache = (key, value)
+        return value
 
     def _declaration_bindings(self, node: Any) -> tuple[tuple[Any, Any], ...]:
         """返回声明中的目标和值节点；具体语言按声明语法覆盖。"""
@@ -453,6 +497,8 @@ class TreeSitterFunctionCollector:
         calls = self._call_sites(value)
         if calls:
             transfer_kind = "call_result"
+        elif compound:
+            transfer_kind = "expression"
         elif render_access_path(self, value) or value.type in self.identifier_node_types:
             transfer_kind = "assignment"
         else:
@@ -464,6 +510,7 @@ class TreeSitterFunctionCollector:
                 transfer_kind=transfer_kind,
                 callsite_ids=tuple(call.callsite_id for call in calls),
                 certainty="may" if calls or len(targets) > 1 else "must",
+                reference_source=self._direct_reference(value) if not compound else "",
             )
             for target_name in targets
         )
@@ -518,13 +565,21 @@ class TreeSitterFunctionCollector:
                     ),
                     receiver_identifiers=self._identifiers(receiver_node),
                     argument_values=self._call_values(positional),
+                    positional_conditions=tuple(condition_expression(self, item) for item in positional),
+                    keyword_conditions=tuple((key, condition_expression(self, item)) for key, item in keywords),
                     positional_spread_positions=tuple(
                         index for index, argument in enumerate(positional)
                         if argument.type == "variadic_argument"
                     ),
                     result_targets=self._call_result_targets(current),
+                    result_pattern=self._call_result_pattern(current),
                     positional_argument_locations=tuple(location_from_tree_sitter(self.path, item) for item in positional),
                     keyword_argument_locations=tuple((name, location_from_tree_sitter(self.path, item)) for name, item in keywords),
+                    positional_references=tuple(self._direct_reference(item) for item in positional),
+                    addressed_argument_positions=tuple(index for index, item in enumerate(positional)
+                        if self.storage_language and StorageSyntax.operator(item) == "&"),
+                    keyword_references=tuple((name, self._direct_reference(item)) for name, item in keywords),
+                    initializer_kind=self.instance_syntax.initializer_call(current, self.source) if self.instance_syntax else "",
                 ))
             pending.extend(reversed(current.named_children))
         return tuple(sorted(result, key=lambda item: (
@@ -532,6 +587,15 @@ class TreeSitterFunctionCollector:
             item.location.column,
             item.callsite_id,
         )))
+
+    def _direct_reference(self, node: Any) -> str:
+        """只接受 AST 确认的名称、字段或固定下标；运算、调用、动态下标不冒充引用。"""
+        while node is not None and node.type == "parenthesized_expression" and len(semantic_children(node)) == 1:
+            node = semantic_children(node)[0]
+        if self.storage_language and StorageSyntax.operator(node) == "&":
+            node = StorageSyntax.operand(node)
+        name = render_access_path(self, node)
+        return name if canonical_path(name, selectors=True) is not None else ""
 
     def _call_values(self, arguments: list[Any]) -> tuple[BindingValue, ...]:
         """可选结构化实参协议；尚未适配的语言保持原来的位置参数行为。"""
@@ -589,6 +653,10 @@ class TreeSitterFunctionCollector:
     def _consequence(node: Any) -> Any | None:
         """返回 if 的真分支。"""
         return _field(node, "consequence") or _field(node, "body")
+
+    def _lower_alternative(self, node: Any, method_id: str) -> tuple[ControlStatement, ...]:
+        """默认降级单个替代分支；语言可把多个兄弟 else-if 规范为同一控制 IR。"""
+        return self._lower_body(self._alternative(node), method_id)
 
     @staticmethod
     def _alternative(node: Any) -> Any | None:
@@ -694,15 +762,53 @@ class TreeSitterFunctionCollector:
     @staticmethod
     def _argument_nodes(arguments: Any | None) -> list[Any]:
         """返回调用参数容器中的具名参数节点。"""
-        return list(arguments.named_children) if arguments is not None else []
+        return semantic_children(arguments)
 
     def _call_result_targets(self, node: Any) -> tuple[str, ...]:
         """可选的有序多返回值接收槽位；普通语言默认不声明 tuple ABI。"""
         return ()
 
     def _return_values(self, node: Any) -> tuple[tuple[str, ...], ...]:
-        """可选的各返回分量使用；默认单返回值兼容原图协议。"""
-        return ()
+        """共享返回表达式的词法使用；常量保留空分量，不能退回整句 uses。"""
+        return tuple(self._identifiers(item) for item in self._return_expressions(node))
+
+    def _call_result_pattern(self, node: Any) -> BindingPattern | None:
+        """使用前端已有接收槽，普通单值赋值仍可由调用结果索引补齐。"""
+        targets = self._call_result_targets(node)
+        if len(targets) == 1:
+            return BindingPattern(kind="name", name=targets[0])
+        if targets:
+            return BindingPattern(kind="array", members=tuple(
+                PatternMember(index, BindingPattern(kind="name", name=name))
+                for index, name in enumerate(targets)
+            ))
+        return None
+
+    def _return_binding(self, node: Any) -> ReturnBinding:
+        """默认仅声明单表达式；多返回 ABI 必须由语言适配器明确声明。"""
+        expressions = self._return_expressions(node)
+        if len(expressions) != 1:
+            return ReturnBinding()
+        return ReturnBinding(mode="single", values=(self._return_value(expressions[0]),))
+
+    def _return_value(self, node: Any) -> BindingValue:
+        """保留直接调用身份，使返回边界等待调用结果，而不把实参冒充返回值。"""
+        origins = (ProgramIdentity.callsite_for_location(
+            location_from_tree_sitter(self.path, node).location_id,
+        ),) if node.type in self.call_node_types else ()
+        return BindingValue(variables=self._identifiers(node), origins=origins, expression=condition_expression(self, node))
+
+    def _return_form(self, node: Any) -> ReturnValueForm:
+        """共用语法分类，避免把容器/变换中引用的对象误判为直接返回该对象。"""
+        while node.type == "parenthesized_expression" and len(semantic_children(node)) == 1:
+            node = semantic_children(node)[0]
+        if node.type in self.identifier_node_types or self._direct_reference(node):
+            return "reference"
+        return "call" if node.type in self.call_node_types else "other"
+
+    def _return_expressions(self, node: Any) -> list[Any]:
+        """返回真实 AST 表达式范围，供精确嵌套结果绑定，不按源码字符串猜测。"""
+        return semantic_children(node)
 
     def _call_arguments(
         self,
@@ -731,7 +837,7 @@ class TreeSitterFunctionCollector:
                 for _, value in keywords:
                     result.extend(self._identifiers(value))
                 continue
-            if current.type in self.member_access_node_types | self.index_access_node_types:
+            if current.type in self.member_access_node_types | self.index_access_node_types | self.memory_access_node_types:
                 access_path = render_access_path(self, current)
                 if access_path:
                     result.append(access_path)
@@ -768,7 +874,7 @@ class TreeSitterFunctionCollector:
         owner_node, index_node = self._index_access_parts(node)
         owner = self.resolve_access_path(owner_node)
         index = self._static_index(index_node)
-        return owner.index(index) if owner is not None and index is not None else None
+        return indexed_path(self, owner, index_node, node, index)
 
     def _member_access_parts(self, node: Any) -> tuple[Any | None, Any | None]:
         """返回常见成员访问节点的拥有者和字段节点。"""

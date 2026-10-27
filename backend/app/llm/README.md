@@ -4,6 +4,49 @@
 
 ## 最重要的入口
 
+### 第三方 API 知识建议（显式调用，默认不启用）
+
+`api_knowledge.LlmApiKnowledgeProvider(provider).describe(request)` 复用当前供应商接入，
+只发送 API 包名、限定名、版本与已知参数/返回形状，不发送项目源码、实参值或认证信息。
+独立 `agents.api_knowledge.ApiKnowledgeAgent` 已复用此接口，HTTP 入口为 `POST /api/agent/api-knowledge`，
+有自己的逻辑请求上限和用量/退避记录，详见 Agent README。
+它没有自动接入静态扫描器、主分析工具或 A/B 默认流程；下例只有显式执行 describe 才调用模型并产生用量。
+
+```python
+from backend.app.llm.registry import create_model_provider
+from backend.app.llm.api_knowledge import LlmApiKnowledgeProvider
+from backend.app.services.security_analysis.api_contracts import ApiKnowledgeRequest
+
+provider = create_model_provider()
+if provider is not None:
+    advice = await LlmApiKnowledgeProvider(provider).describe(ApiKnowledgeRequest(
+        language="python", package="待核实的实际包名", qualified_name="实际包名.函数名",
+        library_version="", argument_count=1, return_mode="single", return_count=1,
+    ))
+    # advice.proposal 仅为建议；error_code 非空时不能作为完整建议。
+    # advice.metadata 保留供应商用量、终止状态；失败不能按零消耗处理。
+```
+
+公共类型在 `security_analysis/api_contracts.py`：
+
+- `ApiKnowledgeRequest`：API 身份、形参槽位数量（不含接收者）、已知返回 ABI。未知版本/形状不猜造。
+- `ApiReturnEffect`：component/member_path、role、depends_on_arguments/receiver、propagation_kind、sanitized_for。
+- `ApiCondition/ApiValueSlot`：required_conditions 的有限槽位比较，支持 eq/not_eq/is_null/is_not_null；仅做类型与范围校验，不执行模型表达式。
+- `validity_conditions` 仍保留不能形式化的文本条件；required_conditions 为空不能自动解释为无条件安全。
+- `ApiModelProposal`：逐分量建议和局限/未经核验的参考来源。只做结构、重复槽位和已知参数范围校验。
+- `ApiKnowledgeAdvice` 位于 LLM 层，标记 `llm_proposal`、提示词版本/哈希、请求哈希与实际模型元数据。
+
+例如一个假想 Python API 返回 `(cleaned, valid, original)`，三者都属于 component=0，
+分别是 member_path=[0]/[1]/[2]；Go 的原生多返回使用不同 component。
+过滤结果仍可能依赖用户输入，且只在特定上下文/成功条件下具有安全效果；原值分量不因此净化。
+状态/error 也可能依赖输入，必须保留与控制条件的关系，不能按变量名跳过。
+`depends_on_arguments=null` 是未知，`[]` 只是模型声称无依赖，不是静态安全证明。
+接收者使用现有 ReturnBinding/BindingPattern 投影；当前尚未把模型建议自动转成传播/过滤规则。
+
+空白、截断、拒答、工具调用、非法 JSON 和越界槽位均返回失败建议并保留供应商元数据；
+不修补响应、不执行模型给出的指令。不改变实际 .env、输出配置、公共报告提示词或历史实验。
+一旦未来把该建议交付 Agent，应单独冻结新实验条件、统计额外调用，并保留纯静态证据与模型观点的来源区分。
+
 1. `registry.get_model_configuration()`：读取环境变量并返回可公开的配置状态。
 2. `registry.create_model_provider(model=None)`：根据配置创建 `ModelProvider`；可用请求级模型覆盖默认模型，未配置时返回 `None`。
 3. `ModelProvider.generate(...)`：普通文本生成。
@@ -45,7 +88,7 @@ if provider is not None:
 | `CODE_EXPLORER_LLM_TOKENIZER` | 否 | `auto` 或 `utf8`，均使用标准库 UTF-8 字节保守估算，不依赖外部分词库。 |
 | `CODE_EXPLORER_LLM_OUTPUT_TOKEN_PARAMETER` | 否 | Chat API 的 `max_tokens`（默认）或 `max_completion_tokens`。 |
 | `CODE_EXPLORER_LLM_REASONING_EFFORT` | 否 | 供应商明确支持的思考强度；默认不发送，不自动禁用思考。 |
-| `CODE_EXPLORER_LLM_FINAL_REPORT_MODE` | 否 | `tools_none`（默认：保留定义并发送 `tool_choice=none`）或 `history_no_tools`（不提供定义/工具选择字段，保留有效配对历史）。由 Agent 冻结，不作为同名 API 参数发送，不在失败后切换。 |
+| `CODE_EXPLORER_LLM_FINAL_REPORT_MODE` | 否 | 非分批流程使用 `tools_none`（默认：保留定义并发送 `tool_choice=none`）或 `history_no_tools`（不提供定义/工具选择字段，保留有效配对历史）。按需实验 v20 固定为阶段隔离：批次只提供提交工具，最终汇总无工具；此配置值仅作原配置审计，不改变该策略。不作为同名 API 参数发送，不在失败后切换。 |
 | `CODE_EXPLORER_LLM_PRE_MODEL_REJECTION_ENDPOINT_SHA256` | 否 | 管理员声明的供应商/端点/模型指纹；匹配时仅把明确 429/503 当作执行前拒绝，单列零模型 Token 假设与时间剔除。默认空，换端点/模型失效。不发送平台，不改供应商 usage、重试或预算。 |
 
 收尾兼容性用 `test/probe_final_report_modes.py --send` 显式验证：两次合成请求、无重试、不执行工具、不读取实验记录；默认不带 `--send` 只打印计划。测试分别核对真实调用载荷、供应商结束原因、非空文本和报告契约；不会把 `tool_calls` 改成 `stop`。小用例通过不保证大项目正常收尾。当前端点固定用例两模式都可完成，不足以据此强制改实际配置。

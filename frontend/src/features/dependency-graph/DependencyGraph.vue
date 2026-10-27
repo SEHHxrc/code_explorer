@@ -3,7 +3,8 @@
     <GraphControls
       :search-text="searchText"
       :search-match-count="searchMatches.length"
-      :presets="VIEW_PRESETS"
+      :presets="graphData.pathFamilies ? [] : VIEW_PRESETS"
+      :path-mode="Boolean(graphData.pathFamilies)"
       :view-preset="viewPreset"
       :node-levels="NODE_LEVELS"
       :edge-relations="EDGE_RELATIONS"
@@ -55,9 +56,17 @@
       </div>
 
       <div class="legend">
-        <div v-for="level in visibleLegend" :key="level.key" class="legend-item">
-          <span class="swatch" :style="{ background:level.color }" />{{ level.label }}
+        <div class="legend-title">{{ graphData.pathFamilies ? '颜色：路径族 · 箭头：调用方向' : '节点类型 · 箭头：关系方向' }}</div>
+        <div v-for="item in visibleLegend" :key="item.id || item.key" class="legend-item" :title="item.id">
+          <span class="swatch" :style="{ background:item.color }" />{{ item.label }}
         </div>
+        <div v-if="graphData.hasSharedFamilies" class="legend-item" title="同一节点或边属于多个路径族；选择单条路线后使用所属族颜色">
+          <span class="swatch" :style="{ background:SHARED_PATH_COLOR }" />跨族共享
+        </div>
+        <div v-if="graphData.operationCount" class="legend-item" title="仅有敏感操作事实，未建立 Source 到该操作的传播路线；不属于路径族">
+          <span class="swatch" :style="{ background:UNPAIRED_OPERATION_COLOR }" />未配对操作（非路径族）
+        </div>
+        <div v-if="remainingFamilies" class="legend-more">另 {{ remainingFamilies }} 族，可选路查看</div>
       </div>
 
       <div class="stat-bar">
@@ -89,7 +98,8 @@ import { useGraphLayout } from './composables/useGraphLayout.js'
 import { useGraphModel, VIEW_PRESETS } from './composables/useGraphModel.js'
 import { resolveSymbolNodeId } from './domain/graphModel.js'
 import { useSigmaRenderer } from './composables/useSigmaRenderer.js'
-import { EDGE_RELATIONS, NODE_LEVELS } from './graphStyle.js'
+import { observeGraphSize } from './composables/observeGraphSize.js'
+import { EDGE_RELATIONS, NODE_LEVELS, SHARED_PATH_COLOR, UNPAIRED_OPERATION_COLOR } from './graphStyle.js'
 
 const props = defineProps({ graphData: { type: Object, default: () => ({ nodes: [], edges: [] }) } })
 const emit = defineEmits(['select', 'select-edge'])
@@ -140,7 +150,9 @@ layout = useGraphLayout({
 })
 
 const degreeSliderMax = computed(() => Math.max(1, Math.min(summary.maxDegree, 30)))
-const visibleLegend = computed(() => NODE_LEVELS.filter((level) => (summary.levelCounts[level.key] || 0) > 0))
+const visibleLegend = computed(() => props.graphData.pathFamilies?.slice(0, 6)
+  || NODE_LEVELS.filter((level) => (summary.levelCounts[level.key] || 0) > 0))
+const remainingFamilies = computed(() => Math.max(0, (props.graphData.pathFamilies?.length || 0) - 6))
 const hoverChipStyle = computed(() => ({ left: `${sigma.hoverPos.x}px`, top: `${sigma.hoverPos.y}px` }))
 
 const resetRenderSelection = () => {
@@ -283,7 +295,6 @@ const revealSymbol = async (target) => {
   model.restoreHidden()
   model.configurePreset('all')
   applyVisibility()
-  sigma.setGraph()
   await nextTick()
   selectNode(id)
   return true
@@ -297,7 +308,10 @@ const destroyAll = () => {
   model.destroy()
 }
 
+let buildGeneration = 0
+let active = true
 const rebuild = async () => {
+  const generation = ++buildGeneration
   destroyAll()
   resetRenderSelection()
   searchText.value = ''
@@ -310,31 +324,50 @@ const rebuild = async () => {
     return
   }
   model.build(props.graphData)
+  applyVisibility()
   ready.value = true
   await nextTick()
-  applyVisibility()
+  if (generation !== buildGeneration || !active || !containerRef.value) return
   sigma.create()
-  layout.start()
+  if (sigma.renderer.value) layout.start()
 }
 
-const onResize = () => sigma.refresh()
+let stopObservingSize = () => {}
+const observeContainer = () => {
+  stopObservingSize()
+  stopObservingSize = observeGraphSize(containerRef.value, sigma.resizeViewport)
+}
 watch(() => props.graphData, rebuild)
 let resumeLayoutOnActivate = false
-onMounted(() => { rebuild(); window.addEventListener('resize', onResize) })
+onMounted(() => {
+  rebuild()
+  observeContainer()
+})
 onDeactivated(() => {
+  active = false
+  stopObservingSize()
   resumeLayoutOnActivate = layout.running.value
   layout.destroy()
+  sigma.destroy({ preserveCamera: true })
 })
 onActivated(async () => {
+  active = true
   await nextTick()
-  sigma.refresh()
+  if (!active) return
+  observeContainer()
+  if (ready.value && !sigma.renderer.value) {
+    sigma.create()
+  }
+  sigma.resizeViewport()
   if (resumeLayoutOnActivate) {
     resumeLayoutOnActivate = false
     layout.start()
   }
 })
 onUnmounted(() => {
-  window.removeEventListener('resize', onResize)
+  active = false
+  ++buildGeneration
+  stopObservingSize()
   clearTimeout(searchTimer)
   destroyAll()
 })
@@ -357,6 +390,8 @@ onUnmounted(() => {
 .zbtn:hover { background:#ecf5ff; border-color:#a0cfff; color:#409eff; }.zbtn.active { border-color:#b88ef5; color:#7c4dff; }
 .legend { position:absolute; left:12px; bottom:12px; display:flex; flex-wrap:wrap; gap:4px 12px; max-width:46%; padding:8px 10px; background:rgba(255,255,255,.92); border:1px solid #ebeef5; border-radius:6px; }
 .legend-item { display:flex; align-items:center; gap:5px; font-size:11px; color:#606266; }.swatch { width:10px; height:10px; border-radius:50%; flex-shrink:0; }
+.legend-title { width:100%; font-size:11px; color:#475569; margin-bottom:2px; }
+.legend-more { font-size:11px; color:#909399; }
 .stat-bar { position:absolute; top:12px; left:12px; display:flex; gap:6px; padding:4px 10px; font-size:11px; color:#909399; background:rgba(255,255,255,.92); border:1px solid #ebeef5; border-radius:999px; }.stat-bar .sep { color:#c0c4cc; }
 .fade-enter-active,.fade-leave-active { transition:opacity .25s; }.fade-enter-from,.fade-leave-to { opacity:0; }
 </style>

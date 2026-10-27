@@ -154,6 +154,8 @@ class FileContext:
                         existing.implements.append(itf)
             if type_literal and not existing.type_literal:
                 existing.type_literal = type_literal
+            if type_literal and kind == "field" and not existing.declared_type_literal:
+                existing.declared_type_literal = type_literal
             if return_type and not existing.return_type:
                 existing.return_type = _norm_type(return_type)
             if existing.is_declaration and not is_declaration:
@@ -168,6 +170,7 @@ class FileContext:
             parent_fqn=parent, owner_literal=owner_literal,
             bases=list(bases or []), implements=list(implements or []),
             type_literal=_norm_type(type_literal), return_type=_norm_type(return_type),
+            declared_type_literal=type_literal if kind == "field" else "",
             is_declaration=is_declaration,
         )
         self.defs.append(definition)

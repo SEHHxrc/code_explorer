@@ -64,9 +64,9 @@ class SecurityAnalysisTests(unittest.TestCase):
             )
 
         self.assertTrue(pack.dataflow_verified)
-        self.assertEqual("2.4", pack.schema_version)
+        self.assertEqual("2.11", pack.schema_version)
         self.assertEqual("1.3", pack.ir_version)
-        self.assertEqual(["python-core/1.0", "python-fastapi/1.0"], pack.rule_packs)
+        self.assertEqual(["python-core/1.1", "python-fastapi/1.1"], pack.rule_packs)
         self.assertEqual("static_security_evidence", pack.analysis_kind)
         self.assertEqual(1, len(pack.entrypoints))
         self.assertEqual("http_route", next(iter(pack.entrypoints.values())).kind)
@@ -179,8 +179,8 @@ class SecurityAnalysisTests(unittest.TestCase):
         )
         self.assertEqual(list(range(len(flow.steps))), [item.order for item in flow.steps])
 
-    def test_known_sanitizer_breaks_python_def_use_flow(self):
-        """规则声明的净化返回值不得继续产生已验证数据流。"""
+    def test_html_escape_does_not_block_shell_value_flow(self):
+        """HTML 转义不是 Shell 防护；观察到净化调用不能自动删除值流。"""
         source = (
             "from fastapi import FastAPI\n"
             "from markupsafe import escape\n"
@@ -201,8 +201,9 @@ class SecurityAnalysisTests(unittest.TestCase):
             )
 
         candidate = next(item for item in pack.candidates if item.rule_id == "PY-SINK-SHELL")
-        self.assertFalse(candidate.dataflow_verified)
-        self.assertEqual("not_analyzed", candidate.taint_status)
+        self.assertTrue(candidate.dataflow_verified)
+        self.assertEqual("may_reach_sink", candidate.taint_status)
+        self.assertTrue(candidate.sanitizer_fact_ids)
 
     def test_python_unpacking_does_not_cross_contaminate_safe_output(self):
         """位置敏感解包不得把不可信输入传播到对应常量的安全输出。"""
@@ -357,8 +358,8 @@ class SecurityAnalysisTests(unittest.TestCase):
         self.assertFalse(candidate.dataflow_verified)
         self.assertEqual("not_analyzed", candidate.taint_status)
 
-    def test_known_sanitizer_blocks_interprocedural_argument_flow(self):
-        """调用前净化的返回值不得通过实参到形参边重新变成污点。"""
+    def test_html_escape_keeps_interprocedural_shell_argument_flow(self):
+        """跨过程也不能把 HTML 转义误当作 Shell 上下文的有效防护。"""
         source = (
             "from fastapi import FastAPI\n"
             "from markupsafe import escape\n"
@@ -381,8 +382,8 @@ class SecurityAnalysisTests(unittest.TestCase):
             )
 
         candidate = next(item for item in pack.candidates if item.rule_id == "PY-SINK-SHELL")
-        self.assertFalse(candidate.dataflow_verified)
-        self.assertEqual("structural_call_path", candidate.path_kind)
+        self.assertTrue(candidate.dataflow_verified)
+        self.assertEqual("interprocedural_dataflow", candidate.path_kind)
         self.assertTrue(candidate.sanitizer_fact_ids)
 
     def test_llm_projection_is_self_contained_compact_and_truthful(self):
@@ -409,13 +410,13 @@ class SecurityAnalysisTests(unittest.TestCase):
         payload = __import__("json").loads(rendered)
         finding = payload["items"][0]
         self.assertLessEqual(len(rendered), 12_000)
-        self.assertEqual("propagation_path", finding["kind"])
-        self.assertEqual("intra_procedural_dataflow", finding["relation"])
+        self.assertEqual("path_group", finding["kind"])
+        self.assertEqual({"propagation_path": 1}, finding["route_kinds"])
         self.assertEqual("command", finding["source"]["name"])
         self.assertEqual("FASTAPI-ROUTE-PARAM", pack.facts[finding["source"]["id"]].rule_id)
         self.assertEqual("os.system", finding["sink"]["name"])
         self.assertEqual("PY-SINK-SHELL", finding["rule_id"])
-        self.assertEqual("bounded_model_path", finding["path_status"])
+        self.assertEqual({"bounded_model_path": 1}, finding["route_statuses"])
         self.assertFalse(any(item["kind"] == "scan_failure" for item in catalog.detail("_coverage", section="unresolved", limit=10)["items"]))
         self.assertNotIn("dependency_graph", rendered)
         self.assertNotIn("repo_map", rendered)
@@ -434,7 +435,7 @@ class SecurityAnalysisTests(unittest.TestCase):
             },
         )
         self.assertIn("STATIC_SECURITY_EVIDENCE", packet.prompt_context)
-        self.assertIn("intra_procedural_dataflow", packet.prompt_context)
+        self.assertIn("propagation_path", packet.prompt_context)
 
     def test_candidate_limit_marks_only_actual_truncation(self):
         """Exactly filling the budget is complete; an additional candidate is truncation."""
@@ -743,8 +744,8 @@ class SecurityAnalysisTests(unittest.TestCase):
         self.assertEqual("main.go::handler", handler.symbol)
         self.assertEqual(("command",), source_call.assigned_targets)
         self.assertEqual(["go"], pack.languages_analyzed)
-        self.assertIn("go-core/1.1", pack.rule_packs)
-        self.assertIn("go-net-http/1.0", pack.rule_packs)
+        self.assertIn("go-core/1.3", pack.rule_packs)
+        self.assertIn("go-net-http/1.1", pack.rule_packs)
         entrypoint = next(iter(pack.entrypoints.values()))
         self.assertEqual("net/http", entrypoint.framework)
         self.assertEqual("/run", entrypoint.metadata["route_path"])

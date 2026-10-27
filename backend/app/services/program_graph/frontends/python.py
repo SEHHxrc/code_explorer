@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from typing import Any
 
-from backend.app.services.syntax_analysis import extensions_for_language
+from backend.app.services.syntax_analysis import extensions_for_language, semantic_children
 from backend.app.services.syntax_analysis import field as _field
 from backend.app.services.syntax_analysis.parameters import python_parameter_kinds
+from backend.app.services.value_binding import BindingPattern, BindingValue, PatternMember, ValueMember
+from backend.app.services.value_binding.returns import ReturnBinding, resolve_return
 
 from ..contracts import ValueTransferKind
 from ..control_ir import ControlCallSite, ControlStatement, ControlValueTransfer
-from .access_paths import (
+from backend.app.services.value_binding.access_paths import (
     AccessPath,
     normalize_static_index,
     render_access_path,
@@ -21,13 +24,17 @@ from .treesitter import (
     TreeSitterFunctionCollector,
     TreeSitterProgramGraphFrontend,
 )
+from .objects import PythonInstanceSyntax
+from .selectors import indexed_path
 
 
 class _PythonFunctionCollector(TreeSitterFunctionCollector):
     """保留 Python 参数、关键字调用、for 绑定和异常语义的适配器。"""
 
     language = "python"
+    instance_syntax = PythonInstanceSyntax()
     function_node_types = frozenset({"function_definition"})
+    if_node_types = TreeSitterFunctionCollector.if_node_types | frozenset({"elif_clause"})
     assignment_node_types = TreeSitterFunctionCollector.assignment_node_types | frozenset({
         "assignment", "augmented_assignment", "named_expression",
     })
@@ -44,6 +51,62 @@ class _PythonFunctionCollector(TreeSitterFunctionCollector):
     _SEQUENCE_VALUES = frozenset({
         "expression_list", "list", "list_expression", "tuple", "tuple_expression",
     })
+
+    def _call_result_pattern(self, node: Any) -> BindingPattern | None:
+        """只绑定直接赋值 RHS；单变量接收元组不等于多个 ABI 接收槽。"""
+        parent = node.parent
+        while parent is not None and parent.type == "parenthesized_expression":
+            node, parent = parent, parent.parent
+        if parent is None or parent.type != "assignment" or _field(parent, "right") != node:
+            return None
+        return self._receiver_pattern(_field(parent, "left"))
+
+    def _receiver_pattern(self, node: Any | None, depth: int = 0) -> BindingPattern:
+        """把名称/静态路径及嵌套解包交给公共绑定器；未知目标不猜测变量。"""
+        if node is None or depth > 24:
+            return BindingPattern(kind="unknown", reason="return_receiver_pattern_not_modelled")
+        if node.type in self._SEQUENCE_TARGETS:
+            children = semantic_children(node)
+            if any(item.type == "list_splat_pattern" for item in children[:-1]):
+                return BindingPattern(kind="unknown", reason="python_return_rest_suffix_not_modelled")
+            return BindingPattern(kind="array", members=tuple(
+                PatternMember(index, self._receiver_pattern(item, depth + 1))
+                for index, item in enumerate(children)
+            ))
+        if node.type == "list_splat_pattern":
+            children = semantic_children(node)
+            return BindingPattern(kind="rest", members=(PatternMember(
+                None, self._receiver_pattern(children[0] if children else None, depth + 1),
+            ),))
+        path = render_access_path(self, node)
+        return BindingPattern(kind="name", name=path) if path else BindingPattern(
+            kind="unknown", reason="return_receiver_pattern_not_modelled",
+        )
+
+    def _return_binding(self, node: Any) -> ReturnBinding:
+        """Python 的逗号/元组/列表 return 都是一个值，成员身份单独保留。"""
+        expressions = self._return_expressions(node)
+        if len(expressions) != 1:
+            return ReturnBinding()
+        return ReturnBinding(mode="single", values=(self._return_value(expressions[0]),))
+
+    def _return_value(self, node: Any, depth: int = 0) -> BindingValue:
+        """有界提取直接序列结构和固定值，不执行表达式或推断动态别名。"""
+        inputs = self._identifiers(node)
+        if depth > 24:
+            return BindingValue(variables=inputs, uncertain=True, diagnostics=("return_shape_depth_limit",))
+        children = semantic_children(node)
+        if node.type == "parenthesized_expression" and len(children) == 1:
+            return self._return_value(children[0], depth + 1)
+        if node.type in self._SEQUENCE_VALUES:
+            if len(children) > 512 or any(item.type == "list_splat" for item in children):
+                return BindingValue(variables=inputs, uncertain=True, diagnostics=("return_sequence_expansion_unknown",))
+            return BindingValue(kind="array", variables=inputs, members=tuple(
+                ValueMember(index, self._return_value(item, depth + 1))
+                for index, item in enumerate(children)
+            ))
+        literal = node.type in {"string", "integer", "float", "true", "false", "none"} and not inputs
+        return replace(super()._return_value(node), kind="literal") if literal else super()._return_value(node)
 
     def _scope_for_node(
         self,
@@ -100,6 +163,19 @@ class _PythonFunctionCollector(TreeSitterFunctionCollector):
             return _field(node, "right")
         return super()._condition(node)
 
+    def _lower_alternative(self, node: Any, method_id: str) -> tuple[ControlStatement, ...]:
+        """Python 的 elif/else 是 if 的兄弟字段，逆序折叠为公共嵌套 if，不能只取第一个。"""
+        if node.type not in {"if_statement", "elif_clause"}:
+            return super()._lower_alternative(node, method_id)
+        alternative: tuple[ControlStatement, ...] = ()
+        for clause in reversed(node.named_children):
+            if clause.type == "else_clause":
+                alternative = self._lower_body(_field(clause, "body"), method_id)
+            elif clause.type == "elif_clause":
+                branch = self._lower_statement(clause, method_id)[0]
+                alternative = (replace(branch, alternative=alternative),)
+        return alternative
+
     def _loop_definitions(self, node: Any) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """提取 for 左侧绑定和迭代值使用。"""
         if node.type != "for_statement":
@@ -119,11 +195,11 @@ class _PythonFunctionCollector(TreeSitterFunctionCollector):
         if arguments is None:
             return positional, keywords
         unknown_positions = False
-        for item in arguments.named_children:
+        for item in semantic_children(arguments):
             if item.type == "list_splat":
                 value = next(iter(item.named_children), None)
                 if not unknown_positions and value is not None and value.type in {"list", "tuple"} and not any(child.type == "list_splat" for child in value.named_children):
-                    positional.extend(value.named_children)
+                    positional.extend(semantic_children(value))
                 else:
                     self._limitations.append("Python 动态 *实参展开长度未建模，仅绑定此前的位置参数。")
                     unknown_positions = True
@@ -211,7 +287,7 @@ class _PythonFunctionCollector(TreeSitterFunctionCollector):
             return None
         owner = self.resolve_access_path(_field(node, "value"))
         index = self._static_subscript(_field(node, "subscript"))
-        return owner.index(index) if owner is not None and index is not None else None
+        return indexed_path(self, owner, _field(node, "subscript"), node, index)
 
     def _static_subscript(self, node: Any | None) -> str | int | None:
         """安全解析 Python 字符串或整数常量下标，不执行项目代码。"""
@@ -338,6 +414,7 @@ class _PythonFunctionCollector(TreeSitterFunctionCollector):
                     transfer_kind=transfer_kind,
                     callsite_ids=tuple(call.callsite_id for call in calls),
                     certainty="may" if uncertain else "must",
+                    reference_source=self._direct_reference(right) if not is_augmented else "",
                 )
                 for target in targets
                 if inputs
@@ -349,7 +426,18 @@ class _PythonFunctionCollector(TreeSitterFunctionCollector):
         left: Any | None,
         right: Any,
     ) -> tuple[ControlValueTransfer, ...]:
-        """对等长的简单序列解包执行位置敏感配对。"""
+        """直接序列逐项配对；已具名聚合值的解包复用公共常量位置投影。"""
+        if left is not None and left.type in self._SEQUENCE_TARGETS:
+            source = render_access_path(self, right)
+            if source:
+                resolution = resolve_return(ReturnBinding(mode="single", values=(
+                    BindingValue(variables=(source,)),
+                )), self._receiver_pattern(left))
+                self._limitations.extend(resolution.diagnostics)
+                return tuple(ControlValueTransfer(
+                    output_variable=item.output, input_variables=item.inputs,
+                    transfer_kind="assignment", certainty=item.certainty,
+                ) for item in resolution.projections)
         if (
             left is None
             or left.type not in self._SEQUENCE_TARGETS
@@ -373,6 +461,7 @@ class _PythonFunctionCollector(TreeSitterFunctionCollector):
                 transfer_kind=self._expression_transfer_kind(value_node, calls),
                 callsite_ids=tuple(call.callsite_id for call in calls),
                 certainty="may" if calls else "must",
+                reference_source=self._direct_reference(value_node),
             ))
         return tuple(result)
 

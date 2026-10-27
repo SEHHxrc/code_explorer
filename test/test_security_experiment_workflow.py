@@ -209,7 +209,7 @@ class SecurityExperimentWorkflowTests(unittest.IsolatedAsyncioTestCase):
     def _review() -> BlindReviewRequest:
         """两个通道评分相同也是合法实验结果；测试不预设实验组获胜。"""
         scores = LaneScores(
-            correctness=3, completeness=3, evidence=3, hallucination_control=3
+            discovery_breadth=3, chain_verification=3, conclusion_credibility=3
         )
         return BlindReviewRequest(preferred_lane="tie", left=scores, right=scores)
 
@@ -246,8 +246,8 @@ class SecurityExperimentWorkflowTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(await self.worker.run_once())
         completed = self.comparisons.get(view["id"], "user1")
         self.assertTrue(completed["valid_for_review"])
-        self.assertEqual("static-security-v14-review-ledger", completed["protocol"])
-        first, second = self.model_calls[0], self.model_calls[3]
+        self.assertEqual("static-security-v21-chain-boundaries", completed["protocol"])
+        first, second = self.model_calls[0], self.model_calls[4]
         self.assertEqual(SECURITY_EXPERIMENT_INSTRUCTIONS, first["instructions"])
         self.assertEqual(first["instructions"], second["instructions"])
         first_tools = {item["name"] for item in first["tools"]}
@@ -272,9 +272,10 @@ class SecurityExperimentWorkflowTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(1, metrics["tool_calls"])
             self.assertEqual("complete", metrics["usage_status"])
-            self.assertEqual(300, metrics["actual_input_tokens"])
-            self.assertEqual(100, metrics["actual_output_tokens"])
-            self.assertEqual(["tool_calls", "stop", "stop"], metrics["finish_reasons"])
+            self.assertEqual(400, metrics["actual_input_tokens"])
+            self.assertEqual(140, metrics["actual_output_tokens"])
+            self.assertEqual(["tool_calls", "stop", "stop", "stop"], metrics["finish_reasons"])
+            self.assertEqual({'investigation': 2, 'batch_report': 1, 'final_report': 1}, metrics['phase_requests'])
             self.assertEqual(1, len(metrics["batch_reports"]))
             self.assertGreater(
                 metrics["request_characters"], metrics["context_characters"]

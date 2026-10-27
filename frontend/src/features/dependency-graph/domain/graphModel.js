@@ -2,6 +2,7 @@ import Graph from 'graphology'
 import {
   DYNAMIC_CALL_COLOR,
   LEVEL_ALIASES,
+  PATH_EDGE_WIDTH,
   edgeStyle,
   edgeWeight,
   nodeColor,
@@ -14,7 +15,7 @@ const structuralRelations = new Set(['contains', 'declares'])
 export const createGraph = (payload = {}) => {
   const rawNodes = payload.nodes || []
   const rawEdges = payload.edges || []
-  const graph = new Graph({ type: 'directed', multi: false, allowSelfLoops: false })
+  const graph = new Graph({ type: 'directed', multi: true, allowSelfLoops: false })
   const levelCounts = {}
   const relationCounts = {}
 
@@ -22,7 +23,7 @@ export const createGraph = (payload = {}) => {
     const id = node?.id == null ? '' : String(node.id)
     if (!id || graph.hasNode(id)) continue
     const level = LEVEL_ALIASES[node.level] || node.level || 'variable'
-    const color = nodeColor({ ...node, level })
+    const color = node.security?.color || nodeColor({ ...node, level })
     levelCounts[level] = (levelCounts[level] || 0) + 1
     graph.addNode(id, {
       label: node.name || id.split('::').pop(),
@@ -31,6 +32,7 @@ export const createGraph = (payload = {}) => {
       file: node.file || '',
       line: Number(node.line) || 0,
       lang: node.lang || '',
+      security: node.security || null,
       baseColor: color,
       color,
       size: 3,
@@ -41,23 +43,32 @@ export const createGraph = (payload = {}) => {
     })
   }
 
-  for (const edge of rawEdges) {
+  const pairCounts = new Map()
+  for (const [index, edge] of rawEdges.entries()) {
     const source = String(typeof edge.source === 'object' ? edge.source?.id ?? '' : edge.source ?? '')
     const target = String(typeof edge.target === 'object' ? edge.target?.id ?? '' : edge.target ?? '')
     if (!graph.hasNode(source) || !graph.hasNode(target) || source === target) continue
-    if (graph.hasEdge(source, target)) continue
+    const id = String(edge.id ?? `edge:${index}`)
+    if (graph.hasEdge(id)) continue
     const relation = edge.relation || edge.type || 'calls'
     const style = edgeStyle(relation)
     const dynamic = edge.dispatch === 'dynamic'
+    const color = edge.security?.color || (dynamic && relation === 'calls' ? DYNAMIC_CALL_COLOR : style.color)
+    const width = edge.security ? Math.max(PATH_EDGE_WIDTH, style.width) : style.width
     relationCounts[relation] = (relationCounts[relation] || 0) + 1
-    graph.addDirectedEdge(source, target, {
+    const pair = JSON.stringify([source, target])
+    const parallelIndex = pairCounts.get(pair) || 0
+    pairCounts.set(pair, parallelIndex + 1)
+    graph.addDirectedEdgeWithKey(id, source, target, {
       relation,
       dispatch: edge.dispatch || '',
-      baseColor: dynamic && relation === 'calls' ? DYNAMIC_CALL_COLOR : style.color,
-      color: style.color,
-      baseWidth: style.width,
-      size: style.width,
+      security: edge.security || null,
+      baseColor: color,
+      color,
+      baseWidth: width,
+      size: width,
       weight: edgeWeight(relation),
+      curvature: 0.15 + parallelIndex * 0.18,
       type: 'curved',
       hidden: false,
     })
@@ -142,7 +153,7 @@ export const seedPositions = (graph, parents = collectParents(graph)) => {
 
 /** Copy only visible nodes and edges for Sigma and ForceAtlas2. */
 export const createVisibleGraph = (source) => {
-  const visible = new Graph({ type: 'directed', multi: false, allowSelfLoops: false })
+  const visible = new Graph({ type: 'directed', multi: true, allowSelfLoops: false })
   source.forEachNode((id, attrs) => {
     if (!attrs.hidden) visible.addNode(id, { ...attrs, hidden: false })
   })
@@ -199,7 +210,8 @@ export const filterGraph = (graph, options) => {
 export const nodeView = (graph, id) => {
   if (!graph?.hasNode(id)) return null
   const attrs = graph.getNodeAttributes(id)
-  return { id, label: attrs.label, kind: attrs.kind, color: attrs.baseColor, file: attrs.file, line: attrs.line }
+  return { id, label: attrs.label, kind: attrs.kind, color: attrs.baseColor, file: attrs.file, line: attrs.line,
+    security: attrs.security }
 }
 
 export const edgeView = (graph, id) => {
@@ -210,6 +222,7 @@ export const edgeView = (graph, id) => {
     id,
     relation: attrs.relation,
     relationLabel: edgeStyle(attrs.relation).label,
+    security: attrs.security,
     dispatch: attrs.dispatch,
     color: attrs.baseColor,
     source: nodeView(graph, sourceId),
@@ -224,6 +237,7 @@ export const relationRows = (graph, edgeIds, endpointPicker) => edgeIds
     const attrs = graph.getEdgeAttributes(edgeId)
     return {
       id: endpoint,
+      edgeId,
       label: graph.getNodeAttribute(endpoint, 'label'),
       rel: edgeStyle(attrs.relation).label,
       color: attrs.baseColor,

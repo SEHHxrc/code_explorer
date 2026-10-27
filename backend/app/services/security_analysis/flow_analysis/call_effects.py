@@ -10,6 +10,7 @@ from backend.app.services.program_graph.passes import (
 )
 
 from ..contracts import StaticSecurityFact
+from .post_calls import append_post_operations
 
 
 class CallOutputEffects:
@@ -32,7 +33,7 @@ class CallOutputEffects:
         """输入原图和 Source 角色，返回仅在可定位调用后插入 may 输出定义的私有视图。
 
         调用返回状态码与缓冲区定义使用不同节点；重算现有到达定义和值流，不修改原图。
-        单操作含多个调用时不猜测求值顺序，保留局限而不建立错误传播。
+        可处理包含纯接收者/实参嵌套求值的最外层输出调用；多个平级调用或嵌套输出仍不猜顺序。
         """
         facts = {
             str(fact.metadata.get("callsite_id")): fact
@@ -46,9 +47,16 @@ class CallOutputEffects:
             effects = defaultdict(set)
             positions = {}
             for node in function.nodes.values():
-                if len(node.calls) != 1:
+                candidates = [call for call in node.calls if call.callsite_id in facts]
+                if len(candidates) != 1:
                     continue
-                call = node.calls[0]
+                call = candidates[0]
+                start = (call.location.line, call.location.column)
+                end = (call.location.end_line, call.location.end_column)
+                if any(not (start <= (other.location.line, other.location.column)
+                            and (other.location.end_line, other.location.end_column) <= end)
+                       for other in node.calls):
+                    continue
                 fact = facts.get(call.callsite_id)
                 if fact is None or fact.symbol != function.symbol_id:
                     continue
@@ -67,46 +75,22 @@ class CallOutputEffects:
                     positions[node.node_id] = (identity, call)
             if not effects:
                 continue
-            nodes = dict(function.nodes)
-            edges = [edge for edge in function.edges if edge.kind == "cfg"]
+            operations: dict[str, list[ProgramGraphNode]] = {}
             for original, names in effects.items():
                 identity, call = positions[original]
-                nodes[identity] = ProgramGraphNode(
+                operations[original] = [ProgramGraphNode(
                     node_id=identity,
                     kind="operation",
                     language=function.language,
                     method_id=function.method_id,
                     location=call.location,
-                    code=nodes[original].code,
+                    code=function.nodes[original].code,
                     definitions=sorted(names),
                     certainty="may",
                     provenance="inferred",
-                )
-                outgoing = [edge for edge in edges if edge.source == original]
-                edges = [edge for edge in edges if edge.source != original]
-                edges.extend(
-                    edge.model_copy(
-                        update={"source": identity, "edge_id": edge.edge_id + ":output"}
-                    )
-                    for edge in outgoing
-                )
-                if outgoing:
-                    # 沿用已有边协议和确定的顺序，只把写入本身标记为 may。
-                    edges.append(
-                        outgoing[0].model_copy(
-                            update={
-                                "source": original,
-                                "target": identity,
-                                "edge_id": identity + ":cfg",
-                                "branch": "normal",
-                                "certainty": "must",
-                            }
-                        )
-                    )
-            view = function.model_copy(
+                )]
+            view = append_post_operations(function, operations).model_copy(
                 update={
-                    "nodes": nodes,
-                    "edges": edges,
                     "limitations": list(
                         dict.fromkeys(
                             (

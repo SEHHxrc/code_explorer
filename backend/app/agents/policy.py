@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from backend.app.core.redaction import redact_secrets as redact_secrets
 
 MAX_SOURCE_BYTES = 1024 * 1024
 MAX_READ_LINES = 200
 IGNORED_DIRECTORIES = {
+    ".goenv",
     ".git", ".svn", ".hg", "node_modules", "__pycache__", ".venv", "venv",
     "dist", "build", "target", ".idea", ".vscode", ".pytest_cache",
 }

@@ -51,6 +51,8 @@ class CallRule:
     preconditions: tuple[str, ...] = ()
     result_positions: tuple[int, ...] = ()
     result_count: int = 1
+    receiver_api_types: tuple[str, ...] = ()
+    argument_api_types: tuple[tuple[int, tuple[str, ...]], ...] = ()
 
     def matches_name(self, qualified_name: str) -> bool:
         """判断规范化调用名是否符合本规则。"""
@@ -98,9 +100,11 @@ class EntrypointRule:
     dependency_suffixes: tuple[str, ...] = ()
     annotation_categories: tuple[tuple[str, str], ...] = ()
     excluded_annotation_fragments: tuple[str, ...] = ()
+    excluded_annotation_names: tuple[str, ...] = ()
     default_parameter_category: str = "framework_parameter"
     websocket_methods: tuple[str, ...] = ("websocket",)
     source_parameter_positions: tuple[int, ...] | None = None
+    require_exact_handler: bool = False
 
 
 @dataclass(frozen=True)

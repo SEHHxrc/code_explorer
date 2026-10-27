@@ -2,7 +2,18 @@
 
 本目录定义大模型唯一可调用的项目工具。普通入口是 `registry.create_project_tool_registry()`，注册七个工具。`AgentTool.schema()` 把 Pydantic 参数模型转换为严格 JSON Schema，`ToolRegistry.execute(name, context, arguments)` 校验工具名和参数后才执行。新实验通过 `experiments.tools.create_experiment_tool_registry(with_evidence=...)` 注册共同原始文件工具和报告工具，仅证据组追加静态查询。
 
+按需实验 v20 的注册表表示全部能力，不表示每轮全部开放：`agents.reporting.phase_tools()` 从中选择当轮 Schema。
+调查不开放报告提交，批次报告只开放 `submit_analysis_batch`，最终汇总无工具；编排器执行前也核对阶段允许列表，
+防止模型请求未提供但注册表中存在的工具。报告请求和调查请求分开计量。报告只接受唯一提交调用或完整台账文本，
+不执行混合调用、不推测错误参数的含义，沿用同一个 Pydantic 参数和 AnalysisBatches 发布实现。
+
 ## 模型可见工具
+
+路径族 v4：初始摘要和空 ID 查询返回族目录与未配对操作。按族 ID 读取 overview（offset/limit）
+或 `search_static_security_evidence(path_group_id=...)` 查询剩余路线；族浏览返回 view=group，不选中、不记为已读源码。
+具体路线仍通过原有 get 工具选择和分页；提交只推进路线 ID，同族其他路线不会被一并标记完成。
+详情上限与每批三个路线限制不变，族计数只代表当前产物保留项，非全路径或漏洞数。
+普通 Agent 仍使用七个只读工具；独立第三方知识 Agent 不混入这些工具或实验工具。
 
 | 工具名 | 实现类 | 参数 | 返回内容 |
 | --- | --- | --- | --- |
@@ -15,7 +26,7 @@
 
 ## 文件与类
 
-新实验有 `search_static_security_evidence(query, category, path, trust_class, cursor, limit)` 与 `get_static_security_evidence(evidence_id, section, offset, limit)`；前者给统一排序的路径目录，后者分页提供 overview/flow/snippets/protections/unresolved，复用 `SecurityEvidenceCatalog`。普通 Agent 的同名工具也支持 evidence_id/section（无批次状态限制）；空 ID 用 query/cursor/limit 查询同一目录，offset 仅用于详情，不再回到旧事实包。每个运行首次使用才验证目录，后续复用；目录不算源码已读，不执行源码反向切片。
+新实验有 `search_static_security_evidence(query, category, path, trust_class, cursor, limit)` 与 `get_static_security_evidence(evidence_id, section, offset, limit)`；前者给统一排序的路径目录，后者分页提供 overview/flow/snippets/protections/unresolved/conditions，复用 `SecurityEvidenceCatalog`。conditions 提供有界模型核验及分支位置，不代表漏洞成立或净化正确。普通 Agent 的同名工具也支持 evidence_id/section（无批次状态限制）；空 ID 用 query/cursor/limit 查询同一目录，offset 仅用于详情，不再回到旧事实包。每个运行首次使用才验证目录，后续复用；目录不算源码已读，不执行源码反向切片。
 
 两组共同的 `submit_analysis_batch(ledger_json, evidence_ids, scopes)` 保存本批发现台账并由后台生成四段报告。ledger_json 是共同契约 JSON 字符串，不另交 Markdown；scopes 使用阶段台账中的 `path:start-end`，证据 ID 必须已交付且覆盖本批选择。长度/状态/展示错误不提交，也不消耗 ID；reported 只表示已生成报告，非漏洞确认。事件保留台账及报告，下一批仅携台账避免重复正文，已报告 ID 自动排除。工具不写项目文件。
 

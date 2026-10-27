@@ -38,6 +38,7 @@ class JavaHandler(BaseHandler):
             "constant_declaration": self.h_field,
             "method_declaration": self.h_method,
             "constructor_declaration": self.h_method,
+            "explicit_constructor_invocation": self.h_initializer,
             "enum_constant": self.h_enum_constant,
             "local_variable_declaration": self.h_local_var,
             "formal_parameter": self.h_param,
@@ -50,6 +51,11 @@ class JavaHandler(BaseHandler):
         """解析包声明语法节点并把结果写入文件上下文。"""
         ctx.package = ctx.text(_first_of(node, {"scoped_identifier", "identifier"}))
         return SKIP_CHILDREN
+
+    def h_initializer(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
+        """显式 super/this 构造委派仍是一处真实调用，依赖解析负责选择项目目标。"""
+        ctx.add_ref(node, "call", "super" if any(child.type == "super" for child in node.children) else "this")
+        return 0
 
     def h_import(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析导入声明语法节点并把结果写入文件上下文。"""

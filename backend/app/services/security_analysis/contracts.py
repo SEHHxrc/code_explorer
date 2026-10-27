@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
+from backend.app.services.program_graph.conditions import PathConditionProof
 
 FactKind = Literal["source", "sink", "guard", "sanitizer"]
 TrustClass = Literal[
@@ -70,7 +71,9 @@ class PathEdgeEvidence(BaseModel):
     target_certainty: TargetCertainty = "unresolved"
     confidence: Confidence = "low"
     truncated: bool = False
+
     unresolved_reason: str | None = None
+    fallback_reason: str | None = None
     provenance: Literal["observed", "inferred"] = "inferred"
     callsite: EvidenceLocation | None = None
 
@@ -89,6 +92,15 @@ class CodeSnippet(BaseModel):
     requested_end_line: int | None = None
 
 
+class SinkArgumentBinding(BaseModel):
+    """已到达值对应的敏感槽位；位置从零计数，不代表该值可被攻击者控制。"""
+
+    kind: Literal["position", "keyword", "receiver", "value"]
+    position: int | None = None
+    keyword: str | None = None
+    value_names: list[str] = Field(default_factory=list)
+
+
 class FlowStepEvidence(BaseModel):
     """一条有序 Def-Use 路径中的源码事实和推断关系。"""
 
@@ -100,9 +112,14 @@ class FlowStepEvidence(BaseModel):
     expression: str
     input_names: list[str] = Field(default_factory=list)
     output_names: list[str] = Field(default_factory=list)
+    argument_bindings: list[SinkArgumentBinding] = Field(default_factory=list)
     provenance: Literal["observed", "inferred"] = "observed"
     certainty: Literal["must", "may"] = "must"
     importance: Literal["essential", "important", "unimportant"] = "important"
+    object_allocation_id: str | None = None
+    callsite_id: str | None = None
+    reference_edge_id: str | None = None
+    object_type_symbol: str | None = None
 
 
 class DataFlowEvidence(BaseModel):
@@ -119,6 +136,7 @@ class DataFlowEvidence(BaseModel):
     steps: list[FlowStepEvidence]
     call_edge_ids: list[str] = Field(default_factory=list)
     value_boundary_ids: list[str] = Field(default_factory=list)
+    path_conditions: list[PathConditionProof] = Field(default_factory=list, description="函数内或已选跨过程路线的有界条件核验；未建模边界显式 unknown，不等于漏洞确认。")
     unresolved: list[str] = Field(default_factory=list)
     truncated: bool = False
 
@@ -127,6 +145,7 @@ class SecurityCandidate(BaseModel):
     """只引用去重实体的安全结构候选，而非已确认漏洞。"""
 
     candidate_id: str
+    path_group_id: str | None = Field(default=None, description="同一 Source/Sink 的路径族，不等同于已证明的独立根因；旧产物缺省为空。")
     rule_id: str
     cwe: str | None = None
     category: str
@@ -170,12 +189,18 @@ class SecurityCoverage(BaseModel):
     candidate_count: int = Field(default=0, ge=0)
     dataflow_count: int = Field(default=0, ge=0)
     candidate_limit_reached: bool = False
+    facts_complete: bool | None = Field(default=None, description="仅指全部已识别事实均已保存，不证明规则识别了所有输入/操作；旧产物未知。")
+    candidate_source_count: int | None = Field(default=None, ge=0)
+    candidate_sink_count: int | None = Field(default=None, ge=0)
+    flows_without_candidate: int | None = Field(default=None, ge=0)
+    candidate_search: dict[str, Any] | None = None
+    dataflow_status: Literal["completed", "partial", "failed", "not_recorded"] = "not_recorded"
 
 
 class SecurityEvidencePack(BaseModel):
     """使用 ID 注册表去重且不含完整图和 Repo Map 的安全证据包。"""
 
-    schema_version: Literal["2.1", "2.2", "2.3", "2.4"] = "2.4"
+    schema_version: Literal["2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.8", "2.9", "2.10", "2.11"] = "2.11"
     ir_version: Literal["1.2", "1.3"] = "1.3"
     analysis_kind: Literal["static_security_evidence"] = "static_security_evidence"
     rule_packs: list[str] = Field(default_factory=list)
@@ -192,4 +217,5 @@ class SecurityEvidencePack(BaseModel):
     candidates: list[SecurityCandidate] = Field(default_factory=list)
     coverage: SecurityCoverage = Field(default_factory=SecurityCoverage)
     scan_failures: list[dict[str, Any]] = Field(default_factory=list)
+    flow_diagnostics: dict[str, Any] = Field(default_factory=dict)
     limitations: list[str] = Field(default_factory=list)

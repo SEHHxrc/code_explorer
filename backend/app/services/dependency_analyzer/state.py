@@ -10,6 +10,7 @@ import networkx as nx
 from backend.app.services.syntax_analysis import TreeSitterParserPool
 
 from .models import Definition, ImportRec, Reference
+from .compiler import CompilerBindingIndex
 
 
 class DependencyAnalyzerState:
@@ -22,7 +23,7 @@ class DependencyAnalyzerState:
     BUILTIN_PREFIX: str
     STDLIB_PREFIX: str
     EXTERNAL_PREFIX: str
-    MAX_VIRTUAL_TARGETS: int
+    max_virtual_targets: int
 
     project_root: str
     max_workers: int
@@ -73,6 +74,7 @@ class DependencyAnalyzerState:
     stats: defaultdict[str, int]
     global_index: dict[str, Any]
     diagnostics: dict[str, list[Any]]
+    _compiler_bindings: CompilerBindingIndex | None
 
     def _canonical(self, fqn: str) -> str:
         """返回经过别名归一化的符号标识。"""

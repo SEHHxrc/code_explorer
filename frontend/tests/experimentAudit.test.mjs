@@ -43,3 +43,40 @@ test('audit body is escaped text and reading is limited to reviewed or invalid t
   assert.equal(button.props.find((prop) => prop.name === 'if').exp.content,
     'reveal || (completed && !comparison.valid_for_review)')
 })
+
+test('format rejections and resubmission counts remain visible without rewriting reports', () => {
+  const source = readFileSync(new URL('../src/features/experiment-comparison/ExperimentComparison.vue', import.meta.url), 'utf8')
+  assert.ok(source.includes('report_format?.rejections?.length'))
+  assert.ok(source.includes('report_format.retries'))
+  assert.ok(source.includes('原始回复及全部请求用量保留'))
+  assert.ok(source.includes('未在本地修补 JSON'))
+})
+
+test('family navigation uses an explicit new protocol and a common expanded round budget', () => {
+  const source = readFileSync(new URL('../src/features/experiment-comparison/ExperimentComparison.vue', import.meta.url), 'utf8')
+  assert.ok(source.includes('static-security-v17-path-families'))
+  assert.ok(source.includes('const maxSteps = ref(12)'))
+  assert.ok(source.includes(':max="36"'))
+  assert.ok(source.includes('max_steps: maxSteps.value'))
+  assert.ok(source.includes('recordedSteps[0] === recordedSteps[1]'))
+})
+
+test('unbounded batch reports have a separate protocol and retain historical limit labels', () => {
+  const source = readFileSync(new URL('../src/features/experiment-comparison/ExperimentComparison.vue', import.meta.url), 'utf8')
+  assert.ok(source.includes('static-security-v19-unbounded-batch-report'))
+  assert.ok(source.includes('批次报告无总字符上限'))
+  assert.ok(source.includes('保留完整性、结构与状态校验'))
+  assert.ok(source.includes("comparison?.protocol === 'static-security-v18-source-delivery'"))
+  assert.ok(source.includes('每批台账及生成正文各限 16000 字符'))
+})
+
+test('isolated report stages display budgets separately without rewriting historical conditions', () => {
+  const source = readFileSync(new URL('../src/features/experiment-comparison/ExperimentComparison.vue', import.meta.url), 'utf8')
+  assert.ok(source.includes('static-security-v20-isolated-report-stages'))
+  assert.ok(source.includes('investigation_budget_excludes_reports'))
+  for (const name of ['investigation', 'batch_report', 'final_report', 'report_format_retry']) {
+    assert.ok(source.includes(`phase_requests?.${name}`))
+  }
+  assert.ok(source.includes('isolated_text_no_tools'))
+  assert.ok(source.includes('应用发起'))
+})

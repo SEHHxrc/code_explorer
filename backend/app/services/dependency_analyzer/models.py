@@ -19,6 +19,8 @@ class Definition:
     owner_literal: str = ""      # 成员所属类型字面量（Go 接收者 / Rust impl / C++ 类外定义）
     bases: list = field(default_factory=list)        # 继承 / 嵌入
     implements: list = field(default_factory=list)   # 接口实现
+    virtual_bases: list[str] = field(default_factory=list)
+    declared_type_literal: str = ""  # 原始字段修饰供存储语义消费；type_literal 仍供既有规范化类型查找。
     type_literal: str = ""       # 字段或变量的声明类型，用于属性类型推断
     return_type: str = ""        # 函数/方法返回值类型，用于跨调用的类型推断
     is_declaration: bool = False  # C/C++ 的原型声明（无函数体）
@@ -51,6 +53,7 @@ class ReferenceResolution:
     confidence: str
     unresolved_reason: str | None = None
     truncated: bool = False
+    fallback_reason: str | None = None
 
 @dataclass
 class ImportRec:

@@ -126,7 +126,7 @@ class ProjectImportServiceTests(unittest.TestCase):
             self.assertTrue(artifacts.saved[1]["security_evidence"]["completed"])
             self.assertFalse(artifacts.saved[1]["security_evidence"]["dataflow_verified"])
             self.assertEqual(
-                "2.4",
+                "2.10",
                 artifacts.saved[1]["analysis_metadata"]["security_schema_version"],
             )
             self.assertEqual(

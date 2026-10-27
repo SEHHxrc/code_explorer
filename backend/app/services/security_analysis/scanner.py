@@ -6,8 +6,9 @@ from pathlib import Path
 from typing import Any
 
 from backend.app.services.program_index import ProgramIdentity
+from backend.app.services.semantic_index import CallTransitionIndex
 
-from .frontends import (
+from .language_adapters import (
     CSecurityFrontend,
     CppSecurityFrontend,
     GoSecurityFrontend,
@@ -18,6 +19,7 @@ from .frontends import (
 )
 from .registry import FrontendRegistry, RulePackRegistry, SemanticsRegistry
 from .rule_engine import SecurityRuleEngine, SecurityScanResult
+from .parameter_apis import forward_parameter_apis
 from .rules import C_FAMILY_RULE_PACKS, GO_RULE_PACKS, JAVA_RULE_PACKS, PYTHON_RULE_PACKS, JAVASCRIPT_RULE_PACKS
 from .semantics import (
     CLanguageSemantics,
@@ -87,6 +89,7 @@ class SecurityScanner:
             return aggregate
 
         files_by_language = self._files_by_language(dependency_graph)
+        transitions: CallTransitionIndex | None = None
         for language in sorted(files_by_language):
             paths = files_by_language[language]
             frontend = self.frontends.get(language)
@@ -100,9 +103,16 @@ class SecurityScanner:
                 })
                 continue
             program = frontend.build(project_root, file_paths=paths)
+            semantics = self.semantics.get(language)
+            packs = self.rule_packs.for_language(language)
+            if semantics is not None and any(parameter.api_type for function in program.functions for parameter in function.parameters):
+                if transitions is None:
+                    transitions = CallTransitionIndex.from_dependency_graph(dependency_graph)
+                forward_parameter_apis(program, transitions, semantics,
+                                       {name for pack in packs for rule in pack.access_rules if rule.fact_kind == "source" for name in rule.names})
             result = self.rule_engine.evaluate(
                 program,
-                self.rule_packs.for_language(language),
+                packs,
             )
             aggregate.merge(result)
         aggregate.unsupported_languages = sorted(set(aggregate.unsupported_languages))

@@ -15,11 +15,15 @@ from backend.app.services.semantic_index import (
     DependencyAnalysisSemanticProvider,
     SemanticIndexProvider,
 )
+from backend.app.services.semantic_index.resolution import ProjectSemanticResolver
+from backend.app.services.language_backends import project_resolvers
 from backend.app.services.syntax_analysis import DEFAULT_TREE_SITTER_PARSER_POOL
+from backend.app.services.syntax_analysis.session import reuse_syntax
 from backend.app.services.syntax_analysis.javascript import parser_for_file
 
 from .constants import EXT_MAP
 from .models import Definition, ImportRec, Reference
+from .compiler import CompilerBindingIndex
 
 logger = logging.getLogger(__name__)
 from .phases import (
@@ -44,7 +48,6 @@ class UnifiedCodeAnalyzer(
     BUILTIN_PREFIX = "<builtin>"
     STDLIB_PREFIX = "<stdlib>"
     EXTERNAL_PREFIX = "<external>"
-    MAX_VIRTUAL_TARGETS = 8
 
     def __init__(self, project_root: str, max_workers: int = 4, *,
                  max_file_bytes: int = 2 * 1024 * 1024,
@@ -53,7 +56,9 @@ class UnifiedCodeAnalyzer(
                  include_fields: bool = True,
                  include_type_refs: bool = True,
                  include_virtual_dispatch: bool = True,
-                 semantic_index_provider: SemanticIndexProvider | None = None) -> None:
+                 max_virtual_targets: int = 128,
+                 semantic_index_provider: SemanticIndexProvider | None = None,
+                 semantic_resolver: ProjectSemanticResolver | None = None) -> None:
         """输入项目根目录、并发上限和图节点选项，初始化分析流水线。"""
         self.project_root = os.path.abspath(project_root)
         self.max_workers = max(1, int(max_workers or 1))
@@ -63,9 +68,14 @@ class UnifiedCodeAnalyzer(
         self.include_fields = include_fields
         self.include_type_refs = include_type_refs
         self.include_virtual_dispatch = include_virtual_dispatch
+        if type(max_virtual_targets) is not int or not 1 <= max_virtual_targets <= 512:
+            raise ValueError("虚调用目标预算必须为 1～512 的整数")
+        self.max_virtual_targets = max_virtual_targets
         self.semantic_index_provider = (
             semantic_index_provider or DependencyAnalysisSemanticProvider()
         )
+        self.semantic_resolver = semantic_resolver
+        self._compiler_bindings: CompilerBindingIndex | None = None
 
         # 同一节点对可能在不同调用点、以不同关系相连；内部分析图必须无损保存。
         # 前端展示所需的聚合由 GraphExchangeNormalizer 单独负责。
@@ -124,6 +134,7 @@ class UnifiedCodeAnalyzer(
             "truncations": [],
         }
 
+    @reuse_syntax
     def run_full_analysis(self) -> dict:
         """扫描项目并执行收集、索引和关系解析，输出符号表、依赖图与统计。"""
         target_files = self._collect_files()
@@ -133,7 +144,7 @@ class UnifiedCodeAnalyzer(
         if not target_files:
             return {
                 "file_symbols": {},
-                "dependency_graph": nx.node_link_data(self.global_graph),
+                "dependency_graph": self._graph_payload(),
                 "semantic_index": self._build_semantic_index(),
                 "stats": dict(self.stats),
                 "diagnostics": self._diagnostics_snapshot(),
@@ -177,17 +188,42 @@ class UnifiedCodeAnalyzer(
         self._build_graph_nodes()
         self._link_definitions()
         self._resolve_overrides()
+        semantic_files = sorted(path for path, language in self.file_lang.items()
+                                if language in {"javascript", "typescript", "go"})
+        if semantic_files:
+            resolvers = ([(self.semantic_resolver, semantic_files)] if self.semantic_resolver is not None
+                         else project_resolvers(self.file_lang))
+            compiler_results = []
+            for resolver, paths in resolvers:
+                self._set_progress_stage("解析语言编译器语义与 Go SSA（只读）")
+                compiler_result = resolver.resolve(
+                    self.project_root, file_paths=paths, max_file_bytes=self.max_file_bytes)
+                compiler_results.append(compiler_result)
+                if compiler_result.status in {"failed", "unavailable"}:
+                    logger.warning("analysis.semantic_backend_fallback", extra={
+                        "semantic_backend": compiler_result.backend,
+                        "semantic_status": compiler_result.status,
+                        "reason": compiler_result.diagnostics[0].get("reason") if compiler_result.diagnostics else "unknown"})
+            self._compiler_bindings = CompilerBindingIndex(compiler_results, self.definitions)
+            self.diagnostics["semantic_backends"] = [result.summary() for result in compiler_results]
         self._set_progress_stage("解析调用、引用和派发关系")
         self._resolve_references()
 
         self._set_progress_stage("生成依赖图和语义索引产物")
         return {
             "file_symbols": self.file_symbols_map,
-            "dependency_graph": nx.node_link_data(self.global_graph),
+            "dependency_graph": self._graph_payload(),
             "semantic_index": self._build_semantic_index(),
             "stats": dict(self.stats),
             "diagnostics": self._diagnostics_snapshot(),
         }
+
+    def _graph_payload(self) -> dict:
+        """固定内部产物的 links 契约，隔离 NetworkX 新版默认改名为 edges 的变化。"""
+        payload = nx.node_link_data(self.global_graph)
+        if "edges" in payload:
+            payload["links"] = payload.pop("edges")
+        return payload
 
     def _build_semantic_index(self) -> dict:
         """把已有解析状态投影为公共语义事实，不再次读取或解析源码。"""
@@ -198,6 +234,9 @@ class UnifiedCodeAnalyzer(
             graph=self.global_graph,
             unresolved=self.global_index["unresolved"],
         )
+        if self._compiler_bindings is not None:
+            artifact = self._compiler_bindings.enrich(artifact)
+            self.diagnostics["semantic_backends"] = artifact.backend_runs
         return artifact.model_dump()
 
     def _diagnostics_snapshot(self) -> dict:
@@ -208,6 +247,7 @@ class UnifiedCodeAnalyzer(
             "parse_failures": list(self.diagnostics["parse_failures"]),
             "skipped_files": list(self.diagnostics["skipped_files"]),
             "truncations": list(self.diagnostics["truncations"]),
+            "semantic_backends": list(self.diagnostics.get("semantic_backends", [])),
             "coverage": {
                 "total_files": self.total_files_count,
                 "attempted_files": self.parsed_files_count,

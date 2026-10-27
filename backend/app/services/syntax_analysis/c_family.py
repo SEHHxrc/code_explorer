@@ -19,7 +19,8 @@ def unwrap_c_declarator(node: Any | None) -> tuple[Any | None, Any | None]:
         if current is None:
             break
         if current.type in wrappers:
-            current = field(current, "declarator")
+            current = field(current, "declarator") or (next(iter(current.named_children), None)
+                if current.type == "reference_declarator" else None)
         elif current.type == "function_declarator":
             parameters = field(current, "parameters")
             current = field(current, "declarator")

@@ -16,9 +16,12 @@ from test.test_on_demand_evidence import LEDGER_JSON, STOP
 
 def finding(status='source_supported_risk', name='输入未经边界约束进入危险实现'):
     return {'root_cause':name, 'behavior':'包装层把参数传给已读取的危险实现。','behavior_status':'observed',
-        'chain':{'status':'closed','description':'入口参数→包装层→真实危险实现。'},
-        'protections':[], 'impact':{'status':'conditional','description':'影响依赖部署与攻击者可达性。'},
-        'confirmed_conditions':['源码中存在调用方。'],'unresolved_conditions':['实际暴露面未知。'],
+        'chain':{'status':'closed','scope':'external_to_sink',
+            'start':{'kind':'external_input','description':'已读取的请求参数。','evidence':[{'path':'app.py','start_line':1,'end_line':1}]},
+            'end':{'kind':'sensitive_operation','description':'参数进入已读取的敏感操作。','evidence':[{'path':'app.py','start_line':2,'end_line':2}]},
+            'description':'入口参数→包装层→真实危险实现。'},
+        'protections':[], 'impact':{'status':'conditional','scope':'external','description':'影响依赖部署与攻击者可达性。'},
+        'confirmed_conditions':['源码中存在调用方。'],'unresolved_conditions':[{'kind':'deployment','description':'实际暴露面未知。'}],
         'evidence':[{'path':'app.py','start_line':1,'end_line':2}], 'status':status,
         'exclusion_reason':'已读取实现使用固定参数且不经 shell。' if status=='excluded' else ''}
 
@@ -75,8 +78,8 @@ class FindingsLedgerTests(unittest.TestCase):
         self.assertIn('源码支持的风险 7 项',report)
 
     def test_open_chain_unknown_behavior_and_conditional_effect_are_not_silently_upgraded(self):
-        for patch in ({'chain':{'status':'open','description':'未读取危险实现。'}},
-                      {'behavior_status':'inferred'}, {'impact':{'status':'not_established','description':'未知。'}},
+        for patch in ({'chain':finding()['chain']|{'status':'open','description':'未读取危险实现。'}},
+                      {'behavior_status':'inferred'}, {'impact':{'status':'not_established','scope':'unknown','description':'未知。'}},
                       {'unresolved_conditions':[]}):
             with self.subTest(patch=patch),self.assertRaises(ValueError):
                 parse_ledger(json.dumps(self.ledger(finding()|patch)))
@@ -85,6 +88,40 @@ class FindingsLedgerTests(unittest.TestCase):
     def test_duplicate_literal_roots_and_model_supplied_counts_are_rejected(self):
         with self.assertRaises(ValueError):parse_ledger(json.dumps(self.ledger(finding(),finding())))
         with self.assertRaises(ValueError):parse_ledger(json.dumps(self.ledger(finding())|{'confirmed_count':9}))
+
+    def test_closed_requires_bounded_endpoints_and_local_cannot_prove_http_effect(self):
+        for field in ('start', 'end'):
+            item=finding();item['chain'][field]=None
+            with self.subTest(field=field),self.assertRaises(ValueError):
+                parse_ledger(json.dumps(self.ledger(item)))
+        item=finding();item['chain']['start']['kind']='internal_parameter'
+        with self.assertRaises(ValueError):parse_ledger(json.dumps(self.ledger(item)))
+        item['chain']['scope']='local_segment'
+        with self.assertRaises(ValueError):parse_ledger(json.dumps(self.ledger(item)))
+        item['impact']['scope']='local'
+        report=parse_ledger(json.dumps(self.ledger(item))).render()
+        self.assertIn('外部输入到敏感操作 0 项；局部区间 1 项', report)
+        self.assertIn('起点（internal_parameter）', report)
+
+    def test_chain_gaps_and_unknown_requirements_do_not_pass_as_deployment(self):
+        item=finding();item['unresolved_conditions']=[{'kind':'chain_gap','description':'HTTP 到内部形参的连接未读取。'}]
+        with self.assertRaises(ValueError):parse_ledger(json.dumps(self.ledger(item)))
+        item['chain']['status']='open';item['status']='unclosed_candidate'
+        item['impact'].update(status='not_established',scope='unknown')
+        self.assertEqual('open',parse_ledger(json.dumps(self.ledger(item))).findings[0].chain.status)
+        item=finding();item['unresolved_conditions']=[{'kind':'security_requirement','description':'资源是否应公开未知。'}]
+        with self.assertRaises(ValueError):parse_ledger(json.dumps(self.ledger(item)))
+        item['status']='unclosed_candidate'
+        self.assertEqual('unclosed_candidate',parse_ledger(json.dumps(self.ledger(item))).findings[0].status)
+        item=finding();item['unresolved_conditions']=['不能隐式推测旧字符串是哪种条件']
+        with self.assertRaises(ValueError):parse_ledger(json.dumps(self.ledger(item)))
+
+    def test_nonapplicable_cannot_hide_unresolved_propagation(self):
+        item=finding();item['chain'].update(status='not_applicable',scope='not_applicable',start=None,end=None)
+        item['impact']['scope']='local'
+        self.assertEqual('not_applicable',parse_ledger(json.dumps(self.ledger(item))).findings[0].chain.status)
+        item['unresolved_conditions']=[{'kind':'chain_gap','description':'参数来源未知。'}]
+        with self.assertRaises(ValueError):parse_ledger(json.dumps(self.ledger(item)))
 
     def test_coverage_cannot_omit_categories_or_claim_checks_without_evidence(self):
         raw=self.ledger();raw['coverage'].pop('authentication')

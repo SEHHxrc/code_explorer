@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+from dataclasses import replace
 from typing import Any
 
 from backend.app.services.program_index import ProgramIdentity
@@ -10,6 +11,8 @@ from backend.app.services.syntax_analysis.parameters import java_parameter_parts
 from backend.app.services.syntax_analysis.static_sequences import static_sequence_value
 from backend.app.services.syntax_analysis import (
     extensions_for_language,
+    semantic_children,
+    walk_named,
 )
 from backend.app.services.syntax_analysis import (
     field as _field,
@@ -25,17 +28,19 @@ from ..control_ir import (
     ControlCallSite,
     ControlFunction,
     ControlStatement,
-    ControlStatementKind,
     ControlValueTransfer,
 )
 from ..contracts import ValueTransferKind
-from .access_paths import (
+from backend.app.services.value_binding.access_paths import (
     AccessPath,
     normalize_static_index,
     render_access_path,
 )
 from .common import location_from_tree_sitter, statement_id
 from .treesitter import TreeSitterFunctionCollector, TreeSitterProgramGraphFrontend
+from .objects import JavaInstanceSyntax
+from .selectors import indexed_path
+from .conditions import condition_expression, loop_condition
 
 _CLASS_NODES = {
     "class_declaration", "interface_declaration", "enum_declaration",
@@ -46,6 +51,9 @@ _METHOD_NODES = {"method_declaration", "constructor_declaration"}
 
 class _JavaFunctionCollector(TreeSitterFunctionCollector):
     """收集 Java 方法，并把方法体降低到公共控制语句。"""
+    language = "java"
+    instance_syntax = JavaInstanceSyntax()
+    call_node_types = frozenset({"method_invocation", "object_creation_expression", "explicit_constructor_invocation"})
 
     def __init__(self, path: str, source: bytes) -> None:
         """保存文件身份和源码字节。"""
@@ -53,6 +61,7 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
         self.source = source
         self.functions: list[ControlFunction] = []
         self._limitations: list[str] = []
+        self._implicit_fields: set[str] = set()
 
     def collect(self, root: Any) -> None:
         """从语法树根开始收集具名类型中的方法和构造器。"""
@@ -83,9 +92,14 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
         symbol_id = ProgramIdentity.symbol_id(self.path, scope + (name,))
         method_id = symbol_id + "(" + ",".join(parameter_types) + ")"
         body_node = _field(node, "body")
+        context = self.instance_syntax.describe(node, self.source, self.path, scope, name, parameters)
+        shadowed = set(parameters) | {self._text(_field(item, "name")) for item in (walk_named(body_node) if body_node is not None else ())
+                                     if item.type == "variable_declarator"}
+        self._implicit_fields = self.instance_syntax.member_fields(node, self.source) - shadowed if context else set()
         self._limitations = [
             "Java 的变量 uses 当前按词法标识符或字段访问路径近似，别名解析将在语义 Overlay 补充。"
         ]
+        self._access_selectors = {}
         body = self._lower_body(body_node, method_id)
         self.functions.append(ControlFunction(
             method_id=method_id,
@@ -94,8 +108,12 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
             name=name,
             location=location_from_tree_sitter(self.path, node),
             parameters=parameters,
+            instance_context=context,
+            object_assignment=self.instance_syntax.object_assignment,
             parameter_kinds={name: "variadic_positional" for item, (name, _) in zip(parameter_nodes, parts) if name and item.type == "spread_parameter"},
             body=body,
+            normal_exit_writes_modelled=len(self._limitations) == 1,
+            has_body=body_node is not None,
             limitations=tuple(dict.fromkeys(self._limitations)),
         ))
 
@@ -123,6 +141,7 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
                 code=code,
                 uses=self._identifiers(condition),
                 calls=self._call_sites(condition),
+                condition=condition_expression(self, condition),
                 body=self._lower_body(_field(node, "consequence"), method_id),
                 alternative=self._lower_body(_field(node, "alternative"), method_id),
             ),)
@@ -146,6 +165,7 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
                 definitions=definitions,
                 uses=self._identifiers(condition or node),
                 calls=self._call_sites(condition or node),
+                condition=loop_condition(self, node, condition),
                 body=self._lower_body(_field(node, "body"), method_id),
             ),)
         if node_type == "try_statement":
@@ -153,10 +173,6 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
                 (item for item in node.named_children if item.type == "finally_clause"),
                 None,
             )
-            if finalizer_node is not None:
-                self._limitations.append(
-                    "Java try/finally 对突然退出的 finally 重放仍为保守近似。"
-                )
             handlers = tuple(
                 self._lower_catch(item, method_id)
                 for item in node.named_children if item.type == "catch_clause"
@@ -232,34 +248,6 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
         )
         return (entry,) + self._lower_body(body, method_id)
 
-    def _leaf(
-        self,
-        method_id: str,
-        kind: ControlStatementKind,
-        node: Any,
-        *,
-        definitions: tuple[str, ...] = (),
-        uses: tuple[str, ...] = (),
-    ) -> ControlStatement:
-        """构造无嵌套控制体的 Java 操作节点。"""
-        location = location_from_tree_sitter(self.path, node)
-        calls = self._call_sites(node)
-        return ControlStatement(
-            statement_id=statement_id(method_id, location, kind),
-            kind=kind,
-            location=location,
-            code=self._text(node),
-            definitions=definitions,
-            uses=uses,
-            calls=calls,
-            value_transfers=self._value_transfers(
-                node,
-                definitions,
-                uses,
-                calls,
-            ),
-        )
-
     def _value_transfers(
         self,
         node: Any,
@@ -298,8 +286,15 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
                 transfer_kind=self._expression_transfer_kind(value, calls),
                 callsite_ids=tuple(call.callsite_id for call in calls),
                 certainty="may" if calls else "must",
+                reference_source=self._direct_reference(value),
             ))
         return tuple(result)
+
+    def _declaration_bindings(self, node: Any) -> tuple[tuple[Any, Any], ...]:
+        """与公共集合适配器共享 Java 声明配对，非 Java 集合类 API 的安全模型。"""
+        return tuple((name, value) for declarator in _fields(node, "declarator")
+                     if (name := _field(declarator, "name")) is not None
+                     and (value := _field(declarator, "value")) is not None)
 
     def _assignment_value_transfers(
         self,
@@ -315,10 +310,11 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
                 right = _field(current, "right")
                 targets = self._identifiers(left)
                 inputs = self._identifiers(right)
-                if self._is_compound_assignment(left, right):
+                compound = self._is_compound_assignment(left, right)
+                if compound:
                     inputs = tuple(dict.fromkeys((*targets, *inputs)))
                 calls = self._call_sites(right)
-                transfer_kind = self._expression_transfer_kind(right, calls)
+                transfer_kind = "expression" if compound and not calls else self._expression_transfer_kind(right, calls)
                 result.extend(
                     ControlValueTransfer(
                         output_variable=target,
@@ -326,6 +322,7 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
                         transfer_kind=transfer_kind,
                         callsite_ids=tuple(call.callsite_id for call in calls),
                         certainty="may" if calls or len(targets) > 1 else "must",
+                        reference_source=self._direct_reference(right) if not compound else "",
                     )
                     for target in targets
                     if inputs
@@ -399,6 +396,10 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
                     receiver_node=None,
                     arguments=arguments,
                 ))
+            elif current.type == "explicit_constructor_invocation":
+                kind = "base" if any(child.type == "super" for child in current.children) else "same"
+                result.append(replace(self._call_site(current, name="super" if kind == "base" else "this",
+                    receiver="", receiver_node=None, arguments=_field(current, "arguments")), initializer_kind=kind))
             pending.extend(reversed(current.named_children))
         return tuple(sorted(result, key=lambda item: (
             item.location.line, item.location.column, item.callsite_id,
@@ -415,7 +416,7 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
     ) -> ControlCallSite:
         """把一个 Java 调用表达式转换为公共调用点。"""
         location = location_from_tree_sitter(self.path, node)
-        argument_nodes = list(arguments.named_children) if arguments is not None else []
+        argument_nodes = semantic_children(arguments)
         return ControlCallSite(
             callsite_id=ProgramIdentity.callsite_id(
                 self.path,
@@ -432,7 +433,9 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
             ),
             receiver_identifiers=self._identifiers(receiver_node),
             argument_values=tuple(static_sequence_value(item, self._identifiers) for item in argument_nodes),
+            positional_conditions=tuple(condition_expression(self, item) for item in argument_nodes),
             positional_argument_locations=tuple(location_from_tree_sitter(self.path, item) for item in argument_nodes),
+            positional_references=tuple(self._direct_reference(item) for item in argument_nodes),
         )
 
     def _assignment_targets(self, node: Any) -> tuple[str, ...]:
@@ -501,7 +504,9 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
                 result.append("this")
                 continue
             if current.type == "identifier":
-                result.append(self._text(current))
+                path = self.resolve_access_path(current)
+                if path is not None:
+                    result.append(path.render())
                 continue
             pending.extend(reversed(current.named_children))
         return tuple(dict.fromkeys(name for name in result if name))
@@ -512,7 +517,7 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
             return None
         if node.type == "identifier":
             root = self._text(node)
-            return AccessPath(root) if root else None
+            return AccessPath("this").attribute(root) if root in self._implicit_fields else AccessPath(root) if root else None
         if node.type == "this":
             return AccessPath("this")
         if node.type == "field_access":
@@ -523,7 +528,7 @@ class _JavaFunctionCollector(TreeSitterFunctionCollector):
             return None
         owner = self.resolve_access_path(_field(node, "array"))
         index = self._static_array_index(_field(node, "index"))
-        return owner.index(index) if owner is not None and index is not None else None
+        return indexed_path(self, owner, _field(node, "index"), node, index)
 
     def _static_array_index(self, node: Any | None) -> int | None:
         """将 Java 整数或字符常量数组下标规范化为整数。"""

@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import uuid
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel, ConfigDict, Field
 
 from backend.app.agents.contracts import AgentRunRequest
+from backend.app.agents.api_knowledge import ApiKnowledgeAgent
+from backend.app.llm.registry import create_model_provider
+from backend.app.services.security_analysis.api_contracts import ApiKnowledgeRequest
 from backend.app.agents.orchestrator import TERMINAL_STATUSES, agent_run_manager
 from backend.app.agents.worker import agent_queue_worker
 from backend.app.api.sse import persisted_events, sse_response
@@ -16,6 +21,33 @@ from backend.app.services.projects import ProjectArtifactRepository, ProjectRepo
 router = APIRouter(prefix="/api/agent", tags=["Agent"])
 projects = ProjectRepository()
 artifacts = ProjectArtifactRepository()
+_knowledge_slots = asyncio.Semaphore(2)
+
+
+class ApiKnowledgeRunRequest(BaseModel):
+    """显式知识任务；独立调用额度不改主分析 max_steps，不接收地址、密钥或源码。"""
+
+    model_config = ConfigDict(extra="forbid")
+    api: ApiKnowledgeRequest
+    max_model_requests: int = Field(default=2, ge=1, le=4)
+    model: str | None = Field(default=None, min_length=1, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]*$")
+
+
+@router.post("/api-knowledge")
+async def run_api_knowledge(
+    request: ApiKnowledgeRunRequest,
+    current_user: dict[str, str] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """认证后运行独立知识 Agent；进程内最多两个并发任务，响应仅是待核验建议。"""
+    del current_user  # 不访问任何项目数据；认证仍由依赖执行。
+    provider = create_model_provider(request.model)
+    if provider is None:
+        raise HTTPException(status_code=409, detail="请先配置可用模型；知识任务不会使用静态回退。")
+    if _knowledge_slots.locked():
+        raise HTTPException(status_code=429, detail="知识任务并发名额已满，请稍后重试。", headers={"Retry-After": "1"})
+    async with _knowledge_slots:
+        result = await ApiKnowledgeAgent(provider, max_model_requests=request.max_model_requests).run(request.api)
+    return {"code": 200, "data": result}
 
 
 @router.post("/projects/{project_id}/runs")

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from backend.app.llm.conversation import ModelMessage
 from backend.app.llm.response_metadata import ModelResponseMetadata
 
-BATCH_VERSION = "investigation-batches-v2-ledger"
+BATCH_VERSION = "investigation-batches-v5-independent-report-stage"
 
 
 @dataclass
@@ -35,47 +35,51 @@ class AnalysisBatches:
         self.active_ids.add(evidence_id)
 
     def observe(self, messages: list[ModelMessage]) -> None:
-        """只记录本次模型请求实际携带的工具正文；位置目录不当作源码展示。"""
+        """记录已完成轮次的应用会话视图用于批次约束；真实 HTTP 交付另见 paths.send_attempt。"""
         for message in messages:
-            if message.get("role") != "tool":
+            text = message.get("content") or ""
+            report_projection = message.get("role") == "user" and text.startswith("APPLICATION_BATCH_EVIDENCE\n")
+            if message.get("role") != "tool" and not report_projection:
                 continue
             try:
-                result = json.loads(message.get("content") or "")
+                value = json.loads(text.split("\n", 1)[1] if report_projection else text)
             except ValueError:
                 continue
-            content = result.get("content") if isinstance(result, dict) else None
-            if not isinstance(content, dict):
-                continue
-            if content.get("text") or content.get("snippets") or content.get("matches") or content.get("view") in {"detail", "coverage"}:
-                self.frames[message["content"]] = result
-            if content.get("view") == "detail" and content.get("items"):
-                evidence_id = content.get("id")
-                if evidence_id in self.active_ids:
-                    self.visible_ids.add(evidence_id)
-            if content.get("path") and content.get("text"):
-                scope = f'{content["path"]}:{content.get("start_line", 1)}-{content.get("end_line", 1)}'
+            results = [row.get("result") for row in value.get("observations", []) if isinstance(row, dict)] if report_projection and isinstance(value, dict) else [value]
+            for result in results:
+                self._observe_result(result)
+
+    def _observe_result(self, result: Any) -> None:
+        """统一识别原生工具结果和报告证据投影；不把观察当作模型使用证明。"""
+        content = result.get("content") if isinstance(result, dict) else None
+        if not isinstance(content, dict):
+            return
+        if content.get("text") or content.get("snippets") or content.get("matches") or content.get("view") in {"detail", "coverage"}:
+            self.frames[json.dumps(result, ensure_ascii=False, separators=(",", ":"))] = result
+        if content.get("view") == "detail" and content.get("items"):
+            evidence_id = content.get("id")
+            if evidence_id in self.active_ids:
+                self.visible_ids.add(evidence_id)
+        if content.get("path") and content.get("text"):
+            scope = f'{content["path"]}:{content.get("start_line", 1)}-{content.get("end_line", 1)}'
+            if scope not in self.completed_scopes:
+                self.scopes.add(scope)
+        for match in content.get("matches", []):
+            if isinstance(match, dict) and match.get("path") and match.get("text"):
+                scope = f'{match["path"]}:{match.get("line", 1)}-{match.get("line", 1)}'
                 if scope not in self.completed_scopes:
                     self.scopes.add(scope)
-            for match in content.get("matches", []):
-                if isinstance(match, dict) and match.get("path") and match.get("text"):
-                    scope = f'{match["path"]}:{match.get("line", 1)}-{match.get("line", 1)}'
-                    if scope not in self.completed_scopes:
-                        self.scopes.add(scope)
 
     def publish(self, ledger_json: str, evidence_ids: list[str], scopes: list[str]) -> dict[str, Any]:
         """验证输出格式/供应商元数据与展示状态，再原子提交一批；不做语义验证。"""
         from backend.app.experiments.findings import parse_ledger
         metadata = self.metadata
-        if len(ledger_json) > 16000:
-            raise ValueError("本批报告超过 16000 字符的台账上限；未截断、未标记已报告。")
         if metadata.refused or metadata.incomplete_reason or metadata.finish_reason in {"length", "content_filter"} or metadata.response_status in {"incomplete", "failed", "cancelled"}:
             raise ValueError("本批模型输出未完整返回，不能标记为已分析。")
         if metadata.finish_reason not in {"stop", "tool_calls", "function_call"} and metadata.response_status != "completed":
             raise ValueError("本批终止状态未知，不能把有效 JSON 当作已完整返回。")
         ledger = parse_ledger(ledger_json)
         report = ledger.render()
-        if len(report) > 16000:
-            raise ValueError("台账生成的本批报告超过原有 16000 字符上限；未截断。")
         ids = set(evidence_ids)
         if ids != self.active_ids or not ids.issubset(self.visible_ids):
             raise ValueError("批次 ID 必须覆盖本批所选且已展示的证据；不能提交尚未读取的 ID。")
@@ -84,6 +88,7 @@ class AnalysisBatches:
         if not set(scopes).issubset(self.scopes):
             raise ValueError("批次范围包含本轮尚未展示的源码路径。")
         batch = {"batch_id": len(self.reports) + 1, "report": report, "evidence_ids": sorted(ids),
+                 "evidence_id_semantics": "batch_association_not_proven_model_use",
                  "ledger": ledger.model_dump(), "scopes": sorted(set(scopes)), "status": "reported", "semantic_coverage": "not_proven"}
         self.reports.append(batch)
         self.archives.append({"batch_id": batch["batch_id"], "observations": list(self.frames.values())})
@@ -95,8 +100,12 @@ class AnalysisBatches:
         self.scopes.clear()
         return batch
 
-    def message(self) -> ModelMessage:
-        """每轮携带已报告台账；原文属于模型输出，不升级成静态事实。"""
+    def message(self, projected: list[ModelMessage] | None = None) -> ModelMessage:
+        """生成状态；可预览当前请求实际投影的范围，不提前修改展示或交付状态。"""
+        if projected is not None:
+            preview = replace(self, visible_ids=set(self.visible_ids), scopes=set(self.scopes), frames=dict(self.frames))
+            preview.observe(projected)
+            return preview.message()
         state = {"version": BATCH_VERSION, "active_ids": sorted(self.active_ids),
                  "completed_ids": sorted(self.completed_ids), "reported_scopes": sorted(self.completed_scopes),
                  "shown_scopes": sorted(self.scopes),

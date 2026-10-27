@@ -200,7 +200,8 @@ class ExperimentRepository:
             ).first()
             values = {
                 "preferred_lane": review.preferred_lane,
-                "scores": {"left": review.left.model_dump(), "right": review.right.model_dump()},
+                "scores": {"rubric_version": review.rubric_version,
+                           "left": review.left.model_dump(), "right": review.right.model_dump()},
                 "notes": review.notes,
             }
             if existing:

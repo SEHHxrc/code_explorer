@@ -31,7 +31,7 @@ LANGUAGE_BY_EXTENSION = {
 }
 
 IGNORED_DIRS = {
-    ".git", ".idea", ".vscode", ".venv", "venv", "node_modules",
+    ".git", ".idea", ".vscode", ".venv", ".goenv", "venv", "node_modules",
     "dist", "build", "__pycache__", ".code_explorer",
 }
 

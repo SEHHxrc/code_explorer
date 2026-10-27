@@ -10,9 +10,14 @@ from .contracts import (
     ProgramGraphNode,
     ProgramValueTransfer,
     ValueTransferKind,
+    ValueBackendSelection,
 )
 from .registry import ProgramGraphFrontendRegistry
 from .service import ProgramGraphService
+from .value_query import ValueFlowQuery
+from .conditions import ConditionExpression, PathConditionProof, PredicateImplicationProof
+from .path_conditions import PathConditionQuery
+from .path_composition import ConditionRoutePart, ConditionRouteQuery
 
 __all__ = [
     "FunctionProgramGraph",
@@ -26,4 +31,12 @@ __all__ = [
     "ProgramGraphService",
     "ProgramValueTransfer",
     "ValueTransferKind",
+    "ValueBackendSelection",
+    "ValueFlowQuery",
+    "ConditionExpression",
+    "PathConditionProof",
+    "PredicateImplicationProof",
+    "PathConditionQuery",
+    "ConditionRoutePart",
+    "ConditionRouteQuery",
 ]

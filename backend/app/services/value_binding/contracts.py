@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Literal, Protocol
+from .expressions import ConditionExpression
 
 
 @dataclass(frozen=True)
@@ -16,6 +17,7 @@ class BindingValue:
     origins: tuple[str, ...] = ()
     uncertain: bool = False
     diagnostics: tuple[str, ...] = ()
+    expression: ConditionExpression | None = None
 
 
 @dataclass(frozen=True)
@@ -53,6 +55,7 @@ class BindingProjection:
     inputs: tuple[str, ...] = ()
     origins: tuple[str, ...] = ()
     certainty: Literal["must", "may"] = "must"
+    expression: ConditionExpression | None = None
 
 
 @dataclass(frozen=True)

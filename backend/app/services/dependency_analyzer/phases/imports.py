@@ -111,6 +111,16 @@ class ImportResolutionPhase(DependencyAnalyzerState):
             return ""
         base = os.path.dirname(from_file)
         joined = os.path.normpath(os.path.join(base, module)).replace("\\", "/")
+        # TS 源码常显式导入编译后的 .js；在共享解析层对应回实现文件，
+        # 不让安全分析按函数同名猜边。声明文件不能提供运行时函数体。
+        if self.file_lang.get(from_file) == "typescript":
+            stem, extension = os.path.splitext(joined)
+            substitutions = {".js": (".ts", ".tsx", ".js", ".jsx"),
+                             ".jsx": (".tsx", ".jsx"),
+                             ".mjs": (".mts", ".mjs"), ".cjs": (".cts", ".cjs")}
+            if extension in substitutions:
+                return next((stem + suffix for suffix in substitutions[extension]
+                             if stem + suffix in self.file_lang), "")
         for suffix in ("", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue"):
             if joined + suffix in self.file_lang:
                 return joined + suffix

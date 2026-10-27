@@ -15,7 +15,7 @@
     </div>
 
     <div class="toolbar-group action-group">
-      <el-button-group class="preset-group">
+      <el-button-group v-if="presets.length" class="preset-group">
         <el-button
           v-for="preset in presets"
           :key="preset.key"
@@ -50,7 +50,7 @@
         </div>
       </el-popover>
 
-      <el-popover placement="bottom" :width="250" trigger="click">
+      <el-popover v-if="!pathMode" placement="bottom" :width="250" trigger="click">
         <template #reference>
           <el-button size="small" plain>
             <el-icon><Share /></el-icon>&nbsp;关系 ({{ activeRelations.size }}/{{ edgeRelations.length }})
@@ -75,7 +75,7 @@
         </div>
       </el-popover>
 
-      <el-popover placement="bottom" :width="270" trigger="click">
+      <el-popover v-if="!pathMode" placement="bottom" :width="270" trigger="click">
         <template #reference><el-button size="small" plain>重要度 ≥ {{ minDegree }}</el-button></template>
         <div class="importance-panel">
           <div class="filter-head"><span>最小连接数</span><span class="filter-num">保留文件与包节点</span></div>
@@ -124,6 +124,7 @@ defineProps({
   hiddenCount: { type: Number, default: 0 },
   ready: Boolean,
   layoutRunning: Boolean,
+  pathMode: Boolean,
 })
 
 defineEmits([

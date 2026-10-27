@@ -35,14 +35,16 @@ def fixture(language='python', extension='.py'):
 class EvidenceSelectionTests(unittest.TestCase):
     def assert_valid(self,result,budget):
         self.assertLessEqual(len(encode_navigation(result).encode('utf-8')),budget)
-        self.assertEqual(result['total_matching']-len(result['items']),result['omitted_paths'])
-        self.assertEqual(bool(result['omitted_paths']),result['has_more'])
+        omitted=result.get('omitted_items',result.get('omitted_paths'))
+        self.assertEqual(result['total_matching']-len(result['items']),omitted)
+        self.assertEqual(bool(omitted),result['has_more'])
         self.assertEqual(sorted(row['priority'] for row in result['items']),[row['priority'] for row in result['items']])
 
     def test_cross_language_path_keeps_roles_order_and_uncertainty_not_expressions(self):
         for language,extension in [('python','.py'),('java','.java'),('go','.go'),('javascript','.js'),('typescript','.ts'),('c','.c')]:
             pack=fixture(language,extension);before=pack.model_dump()
-            result=SecurityEvidenceSelector(pack).build()
+            selector=SecurityEvidenceSelector(pack)
+            result=selector.build(details_available=False)
             self.assert_valid(result,8000)
             row=result['items'][0]
             self.assertEqual('propagation_path',row['kind'])
@@ -59,7 +61,8 @@ class EvidenceSelectionTests(unittest.TestCase):
         pack=fixture()
         for index in range(100):pack.facts[str(index)]=fact(str(index),'guard',index+12)
         result=SecurityEvidenceSelector(pack).build()
-        self.assertEqual(['candidate'],[row['id'] for row in result['items']])
+        self.assertEqual(1,len(result['items']))
+        self.assertEqual('path_group',result['items'][0]['kind'])
         for name in ('coverage','rule_packs','limitations','entrypoints','nodes','cards','snippets'):
             self.assertNotIn(name,result)
         self.assertNotIn('if raw_value',encode_navigation(result))
@@ -75,15 +78,14 @@ class EvidenceSelectionTests(unittest.TestCase):
         pack.candidates.append(pack.candidates[0].model_copy(update={'candidate_id':'structural','sink_fact_id':'called',
             'dataflow_id':None,'dataflow_verified':False,'call_edge_ids':['edge'],'path_kind':'structural_call_path'}))
         result=SecurityEvidenceSelector(pack).build()
-        self.assertEqual(['candidate','structural','shell'],[row['id'] for row in result['items']])
+        self.assertEqual(['path_group','path_group','operation_lead'],[row['kind'] for row in result['items']])
         self.assertEqual([1,2,3],[row['priority'] for row in result['items']])
-        self.assertEqual('structural_call_path',result['items'][1]['relation'])
-        self.assertEqual('not_analyzed',result['items'][1]['value_flow'])
+        self.assertEqual({'structural_lead':1},result['items'][1]['route_kinds'])
         self.assert_valid(result,8000)
 
     def test_no_flow_cooccurrence_is_not_a_fabricated_call_or_taint_path(self):
         pack=fixture();pack.dataflows={};pack.candidates[0].dataflow_id=None
-        row=SecurityEvidenceSelector(pack).build()['items'][0]
+        row=SecurityEvidenceSelector(pack).rows()[0]
         self.assertEqual('operation_lead',row['kind'])
         self.assertEqual('same_function_only',row['relation'])
         self.assertEqual('not_established',row['path_status'])
@@ -111,9 +113,9 @@ class EvidenceSelectionTests(unittest.TestCase):
         result=SecurityEvidenceSelector(pack).build(max_bytes=2500)
         self.assert_valid(result,2500)
         row=result['items'][0]
-        self.assertEqual('candidate',row['id'])
-        self.assertEqual(200,row['step_count'])
-        self.assertEqual('detail_only',row['sequence_delivery'])
+        self.assertEqual('path_group',row['kind'])
+        self.assertEqual(1,row['retained_routes'])
+        self.assertEqual('select_route_id',row['sequence_delivery'])
         self.assertNotIn('sequence',row)
         with self.assertRaises(ValueError):SecurityEvidenceSelector(pack).build(max_bytes=200)
 
@@ -129,13 +131,13 @@ class EvidenceSelectionTests(unittest.TestCase):
         pack=fixture()
         for i in range(30):pack.facts[f'op{i}']=fact(f'op{i}','sink',10+i,f'src/file{i}.py')
         result=SecurityEvidenceSelector(pack).build(max_bytes=4000)
-        self.assertEqual('inline_all_retained_steps',result['items'][0]['sequence_delivery'])
-        self.assertEqual('candidate',result['items'][0]['id'])
+        self.assertEqual('select_route_id',result['items'][0]['sequence_delivery'])
+        self.assertEqual('path_group',result['items'][0]['kind'])
 
     def test_extremely_long_locator_keeps_high_priority_id_for_detail(self):
         pack=fixture();pack.facts['source'].name='source-name'*2000
         row=SecurityEvidenceSelector(pack).build(max_bytes=2500)['items'][0]
-        self.assertEqual('candidate',row['id'])
+        self.assertTrue(row['id'].startswith('pathgroup:'))
         self.assertEqual('detail_only',row['locators_delivery'])
         self.assertEqual('source',row['source_ref'])
         self.assertNotIn('source',row)
@@ -144,7 +146,7 @@ class EvidenceSelectionTests(unittest.TestCase):
     def test_outside_scope_path_is_not_exposed_and_missing_endpoint_is_counted(self):
         pack=fixture();pack.dataflows['flow'].steps[0].location.path='outside/private.py'
         result=SecurityEvidenceSelector(pack,{'src/impl.py'}).build()
-        self.assertEqual('outside_scope',result['items'][0]['path_status'])
+        self.assertEqual({'outside_scope':1},result['items'][0]['route_statuses'])
         self.assertNotIn('outside/private.py',encode_navigation(result))
         pack=fixture();pack.facts.pop('source')
         result=SecurityEvidenceSelector(pack).build()
@@ -163,8 +165,9 @@ class EvidenceSelectionTests(unittest.TestCase):
         pack.dataflows['flow'].steps[0].symbol='package::Worker::handle'
         for point in (pack.facts['sink'].location,pack.dataflows['flow'].steps[0].location):
             point.column=8;point.end_line=11;point.end_column=19
-        row=SecurityEvidenceSelector(pack).build()['items'][0]
-        for point in (row['sink'],row['sequence'][0]):
+        selector=SecurityEvidenceSelector(pack)
+        row=selector.build()['items'][0]
+        for point in (row['sink'],selector.sequence('candidate')[0]):
             self.assertEqual((8,11,19),(point['column'],point['end_line'],point['end_column']))
             self.assertEqual('package::Worker::handle',point['symbol'])
 
@@ -179,8 +182,8 @@ class EvidenceSelectionTests(unittest.TestCase):
     def test_unresolved_call_reference_does_not_claim_complete_path(self):
         pack=fixture();pack.dataflows={};pack.candidates[0].call_edge_ids=['missing-edge']
         row=SecurityEvidenceSelector(pack).build()['items'][0]
-        self.assertEqual('incomplete',row['path_status'])
-        self.assertEqual('not_analyzed',row['value_flow'])
+        self.assertEqual({'incomplete':1},row['route_statuses'])
+        self.assertTrue(row['analysis_truncated'])
 
 
 if __name__=='__main__':unittest.main()

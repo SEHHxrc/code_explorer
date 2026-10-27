@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from backend.app.agents.contracts import AgentEvidence, ContextPacket
+from backend.app.agents.contracts import AgentEvidence, ContextPacket, MAX_INVESTIGATION_ROUNDS
 from backend.app.llm.registry import create_model_provider, get_model_configuration, get_model_limits
 from backend.app.llm.budget import BudgetPlanner, initial_message, request_payload
 from backend.app.services.security_analysis.evidence_query import SecurityEvidenceCatalog
 
 from .tools import create_experiment_tool_registry
 from .report import REPORT_INSTRUCTIONS, BATCH_PROTOCOL
-from backend.app.agents.reporting import phase_message
+from backend.app.agents.reporting import phase_message, phase_tools
 
 SECURITY_EXPERIMENT_PROTOCOL = BATCH_PROTOCOL
 
@@ -24,15 +24,18 @@ SECURITY_EXPERIMENT_INSTRUCTIONS = """你是只读代码安全分析智能体。
 调查优先级按危险操作、输入可达性、防护对应关系和剩余链路缺口决定，不以读取文件数量代表审查质量。
 区分源码观察、静态推断、候选风险与已验证问题。可信人员设置的启动参数或环境配置不能直接认定远程可利用漏洞。
 报告未确认问题与分析局限；没有发现问题不意味着安全。不得声称执行、修改或部署了项目。台账内容使用中文。
-分批调查：每批选择一个或最多三个相关证据/原始源码范围，核实后先调用 submit_analysis_batch 提交 ledger_json（完整台账 JSON 字符串），再开始下一批。
-该提交工具必须单独调用；证据组 evidence_ids 填本批全部 active_ids，原始文件组填空列表；scopes 从 shown_scopes 选择。
+分批调查：每批选择一个或最多三个相关证据/原始源码范围；当前阶段可用工具以本次请求 tools 为准，历史中出现过的工具不代表本轮可用。
+调查证据足够时停止工具调用并简短说明可收尾，不在调查阶段生成台账；应用会单独进入批次报告阶段，再开始下一批。
+批次报告阶段只提供 submit_analysis_batch，可单独提交 ledger_json（完整台账 JSON 字符串）或直接返回完整台账 JSON。
+提交工具必须单独调用；证据组 evidence_ids 填本批全部 active_ids，原始文件组填空列表；scopes 从 shown_scopes 选择。
 静态摘要只包含分级路径与线索，不含源码正文；priority 是核验顺序而非漏洞概率，缺失传播不能当作安全。
+若有路径族，先读族 overview 再选路线 ID；族浏览不算已分析，同族不同调用、敏感参数和条件应分别核验。
 按 ID 读取 overview 后按需续读 flow、snippets、protections、unresolved；detail_only 表示步骤尚未展开，不得把端点共现当作传播链。
 目录检索 query 为元数据字面搜索，中文泛化问题无匹配时清空 query 或用工具返回的类别/名称。
 已报告 ID/范围不要重复调查；跨批共享实现可重读来核实新的链路，但不能重复计数同一根因。
 历史批次报告是模型观点而非新的静态事实，合并时不得提高确认等级；不同根因仍分别列出。
 最终汇总基于各批台账和实际展示证据，合并同根因、保留不同根因，覆盖状态按实际范围重新核对，不把某批已检查推广到全项目。
-全局调查预算包括查询、读取和提交；不能以批次数多声称全项目已审查。""" + REPORT_INSTRUCTIONS
+调查预算仅约束调查模型请求；批次报告与最终汇总有独立请求额度，格式重提交仍受共同额度限制。不能以批次数多声称全项目已审查。""" + REPORT_INSTRUCTIONS
 
 
 def prepare_experiment_artifact(artifact: dict[str, Any], *, with_evidence: bool) -> dict[str, Any]:
@@ -56,14 +59,14 @@ class SecurityExperimentContextBuilder:
         limits = get_model_limits(model)
         config = get_model_configuration()
         provider = create_model_provider(model)
-        schemas = create_experiment_tool_registry(with_evidence=self.with_evidence).schemas()
+        schemas = phase_tools(create_experiment_tool_registry(with_evidence=self.with_evidence).schemas(), "investigation")
         selected_model = model or config.model
         planner = BudgetPlanner(limits, model=selected_model)
         catalog = SecurityEvidenceCatalog(artifact.get("security_evidence")) if self.with_evidence else None
         return planner.build_initial_context(
             lambda ceiling: self._render(project_id=project_id, question=question, artifact=artifact, max_chars=ceiling, catalog=catalog),
             lambda packet: request_payload(provider, instructions=SECURITY_EXPERIMENT_INSTRUCTIONS,
-                                           messages=[initial_message(question, packet.prompt_context), phase_message(remaining_rounds=24)], tools=schemas,
+                                           messages=[initial_message(question, packet.prompt_context), phase_message(remaining_rounds=MAX_INVESTIGATION_ROUNDS, batch_mode=True)], tools=schemas,
                                            model=selected_model, max_output_tokens=limits.max_output_tokens),
         )
 

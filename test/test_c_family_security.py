@@ -59,6 +59,16 @@ class CFamilySecurityTests(unittest.TestCase):
         self.assertEqual("medium", finding["confidence"])
         self.assertEqual("header_and_lexical_scope", finding["endpoint_context"][sink.fact_id]["api_resolution"])
 
+    def test_cpp_h_implementation_is_not_dropped_by_extension_filter(self) -> None:
+        """依赖层确认 C++ 的 .h 内联实现必须扫描，不能再按默认 C 扩展名静默丢弃。"""
+        source = '#include <cstdlib>\nnamespace app { class Runner { public: int run() { char *value=std::getenv("CMD"); return std::system(value); } }; }\n'
+        pack = self._analyze({"runner.h": source})
+        self.assertEqual(["cpp"], pack.languages_analyzed)
+        self.assertEqual(1, pack.coverage.files_considered)
+        self.assertEqual(1, pack.coverage.files_scanned)
+        self.assertTrue(any(item.rule_id == "C-SINK-SHELL" and item.dataflow_verified for item in pack.candidates))
+        self.assertTrue(all(fact.location.path == "runner.h" for fact in pack.facts.values()))
+
     def test_c_safe_sibling_declarator_does_not_verify_shell_flow(self) -> None:
         """同一 declaration 的安全兄弟变量不得获得 Source 的返回值污点。"""
         pack = self._analyze({"main.c": (

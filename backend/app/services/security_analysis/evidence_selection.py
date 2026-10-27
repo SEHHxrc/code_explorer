@@ -9,7 +9,7 @@ from typing import Any
 
 from .contracts import SecurityCandidate, SecurityEvidencePack, StaticSecurityFact
 
-SELECTION_VERSION = "security-path-summary-v2"
+SELECTION_VERSION = "security-path-summary-v5-source-boundaries"
 PRIORITIES = {"propagation_path": 1, "structural_lead": 2, "operation_lead": 3}
 
 
@@ -36,6 +36,15 @@ class SecurityEvidenceSelector:
                            if item.source_fact_id in self.facts and item.sink_fact_id in self.facts}
         self.unavailable = sum(item.source_fact_id not in self.pack.facts or item.sink_fact_id not in self.pack.facts
                                for item in self.pack.candidates)
+        self.group_ids = {item.candidate_id: item.path_group_id or "pathgroup:" + hashlib.sha256(
+            f"{item.source_fact_id}|{item.sink_fact_id}".encode()).hexdigest()[:24] for item in self.candidates.values()}
+        endpoints: dict[str, tuple[str, str]] = {}
+        for item in self.candidates.values():
+            group = self.group_ids[item.candidate_id]
+            pair = (item.source_fact_id, item.sink_fact_id)
+            if endpoints.setdefault(group, pair) != pair or group in self.pack.facts or group in self.candidates or group == "_coverage":
+                raise ValueError("路径族 ID 与端点或证据 ID 冲突。")
+        self.variant_counts = Counter(self.group_ids.values())
         self.snapshot = hashlib.sha256(json.dumps(self.pack.model_dump(mode="json"), ensure_ascii=False,
                                                  sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
         self.items = [self._candidate(item) for item in self.candidates.values()]
@@ -45,6 +54,10 @@ class SecurityEvidenceSelector:
         if len({item["id"] for item in self.items}) != len(self.items) or any(item["id"] == "_coverage" for item in self.items):
             raise ValueError("路径目录 ID 冲突或占用全局详情保留 ID。")
         self.items = self._ranked(self.items)
+        self.group_members: dict[str, list[dict[str, Any]]] = {}
+        for row in self.items:
+            if row.get("path_group_id"):
+                self.group_members.setdefault(row["path_group_id"], []).append(row)
 
     @staticmethod
     def locator(fact: StaticSecurityFact) -> dict[str, Any]:
@@ -54,6 +67,8 @@ class SecurityEvidenceSelector:
         return {"id": fact.fact_id, "name": fact.name, "symbol": fact.symbol,
                 **fact.location.model_dump(exclude_none=True, exclude={"location_id"}),
                 "trust_class": fact.trust_class, "provenance": fact.provenance,
+                **({"source_kind": fact.category, "permission_requirement": fact.metadata.get("permission_requirement", "unknown")}
+                   if fact.fact_kind == "source" else {}),
                 **({"parameter_roles": role} if role else {}),
                 **({"shell": fact.metadata["shell"]} if "shell" in fact.metadata else {})}
 
@@ -86,6 +101,9 @@ class SecurityEvidenceSelector:
                     "same_function_only" if source.symbol == sink.symbol else "unresolved")
         kind = "propagation_path" if flow and flow.steps else "structural_lead" if edges else "operation_lead"
         return {"id": candidate.candidate_id, "kind": kind, "priority": PRIORITIES[kind],
+                "path_group_id": self.group_ids[candidate.candidate_id],
+                "retained_variants_in_pack": self.variant_counts[self.group_ids[candidate.candidate_id]],
+                **({"path_condition_status": [proof.status for proof in flow.path_conditions]} if flow and flow.path_conditions else {}),
                 "priority_reason": "modelled_value_path" if kind == "propagation_path" else relation,
                 "category": candidate.category, "rule_id": candidate.rule_id, "rule_severity": candidate.severity,
                 "source": self.locator(source), "sink": self.locator(sink), "relation": relation,
@@ -118,6 +136,53 @@ class SecurityEvidenceSelector:
         """返回同一优先级目录；排除已报告 ID 后不把其 Sink 重新生成为操作线索。"""
         return [dict(item) for item in self.items if item["id"] not in (excluded or set())]
 
+    def group(self, group_id: str, *, excluded: set[str] | None = None) -> dict[str, Any]:
+        """根据当前候选计算路径族进度；同端点不代表同根因，已处理不代表运行时安全。"""
+        members = self.group_members[group_id]
+        pending = [row for row in members if row["id"] not in (excluded or set())]
+        first = (pending or members)[0]
+        return {"id": group_id, "path_group_id": group_id, "kind": "path_group",
+                **{key: first[key] for key in ("priority", "category", "rule_id", "rule_severity", "source", "sink")},
+                "relation": "same_source_and_sink_facts", "retained_routes": len(members),
+                "remaining_routes": len(pending), "reported_routes": len(members) - len(pending),
+                "progress": "all_retained_reported" if not pending else "partial" if len(pending) < len(members) else "not_started",
+                "route_kinds": dict(Counter(row["kind"] for row in pending)),
+                "route_statuses": dict(Counter(row["path_status"] for row in pending)),
+                "condition_statuses": dict(Counter(status for row in pending for status in row.get("path_condition_status", []))),
+                "analysis_truncated": any(row["analysis_truncated"] or row["path_status"] == "incomplete" for row in members),
+                "sequence_delivery": "select_route_id", "count_semantics": "retained_candidates_not_all_paths_or_vulnerabilities"}
+
+    def groups(self, *, excluded: set[str] | None = None) -> list[dict[str, Any]]:
+        """按既有路径优先级生成去重族目录，保留没有 Source 配对的单点操作。"""
+        result, seen = [], set()
+        for row in self.rows(excluded=excluded):
+            group_id = row.get("path_group_id")
+            if group_id and group_id not in seen:
+                result.append(self.group(group_id, excluded=excluded))
+                seen.add(group_id)
+            elif not group_id:
+                result.append(row)
+        return result
+
+    def route(self, row: dict[str, Any]) -> dict[str, Any]:
+        """族内路线目录只展示可核对的调用点和敏感槽位，不展开完整步骤或源码。"""
+        base = {key: value for key, value in row.items() if key not in {"source", "sink"}}
+        if row["path_status"] == "outside_scope":
+            return {**base, "via": [], "omitted_via": None, "sink_arguments": [],
+                    "navigation_only": True, "locators_withheld_reason": "outside_scope"}
+        candidate = self.candidates[row["id"]]
+        flow = self.pack.dataflows.get(candidate.dataflow_id or "")
+        calls = [{"symbol": step.symbol, **step.location.model_dump(exclude_none=True, exclude={"location_id"})}
+                 for step in flow.steps if step.kind in {"call", "return"}] if flow else [
+                     {"symbol": self.pack.call_edges[key].target,
+                      **(self.pack.call_edges[key].callsite.model_dump(exclude_none=True) if self.pack.call_edges[key].callsite else {})}
+                     for key in candidate.call_edge_ids if key in self.pack.call_edges]
+        return base | {
+            "via": calls[:8], "omitted_via": max(0, len(calls) - 8),
+            "sink_arguments": [binding.model_dump(exclude_none=True) for step in flow.steps
+                               for binding in step.argument_bindings if step.kind == "sink"] if flow else [],
+            "navigation_only": True}
+
     def sequence(self, evidence_id: str) -> list[dict[str, Any]]:
         """仅展开原有步骤/调用边，不含表达式正文；范围外路径整条不交付，不抽样。"""
         candidate = self.candidates.get(evidence_id)
@@ -131,24 +196,31 @@ class SecurityEvidenceSelector:
             return [{"order": step.order, "kind": step.kind, "symbol": step.symbol,
                      **step.location.model_dump(exclude_none=True, exclude={"location_id"}),
                      "uses": step.input_names, "defines": step.output_names,
+                     **({"object_allocation_id": step.object_allocation_id,
+                         "callsite_id": step.callsite_id, "reference_edge_id": step.reference_edge_id,
+                         "object_type_symbol": step.object_type_symbol}
+                        if step.object_allocation_id else {}),
+                     **({"argument_bindings": [item.model_dump(exclude_none=True) for item in step.argument_bindings]} if step.argument_bindings else {}),
                      "certainty": step.certainty, "provenance": step.provenance} for step in flow.steps]
         return [self.pack.call_edges[key].model_dump(mode="json", exclude_none=True)
                 for key in candidate.call_edge_ids if key in self.pack.call_edges]
 
     def build(self, *, max_bytes: int = 8000, excluded: set[str] | None = None, max_items: int = 8,
               details_available: bool = True) -> dict[str, Any]:
-        """优先交付整条已有路径；超预算降为明确定位，按实际调用能力标记能否继续取详情。"""
-        rows = self.rows(excluded=excluded)
+        """有详情工具时交付族目录，否则直接交付有界路径；完整 JSON 按实际字节预算构建。"""
+        rows = self.groups(excluded=excluded) if details_available else self.rows(excluded=excluded)
+        omitted_key = "omitted_items" if details_available else "omitted_paths"
         result: dict[str, Any] = {"schema_version": SELECTION_VERSION, "snapshot": self.snapshot, "available": self.available,
-            "items": [], "total_matching": len(rows), "omitted_paths": len(rows), "has_more": bool(rows),
-            "path_kind_counts": dict(sorted(Counter(row["kind"] for row in rows).items())),
+            "items": [], "total_matching": len(rows), omitted_key: len(rows), "has_more": bool(rows),
+            "view": "groups" if details_available else "direct_paths",
+            "path_kind_counts": dict(sorted(Counter(row["kind"] for row in self.rows(excluded=excluded)).items())),
             "details_available": details_available, **({"coverage_details_id": "_coverage"} if details_available else {}),
             "unavailable_candidates": self.unavailable,
             "outside_scope_candidates": len(self.pack.candidates) - len(self.candidates) - self.unavailable,
-            "semantics": "priority是核验顺序非漏洞概率：1=已有模型传播，2=结构线索，3=操作线索；同级先覆盖不同目标，再按shell/规则等级排序；"
-                         "bounded_model_path仅指保留的静态关系，非全路径/运行可行/可利用证明；"
-                         "sequence_delivery=detail_only表示步骤未展开、可按ID读flow；not_delivered表示本条件无静态详情工具且步骤未交付；"
-                         "API/参数角色待核实；目录无源码、无防护结论；完整覆盖/局限未包含，零条目不证明安全。"}
+            "semantics": ("族按同Source/Sink事实分组而非根因；族ID查路线目录，路线ID查详情；族浏览不算路线已核验。"
+                          if details_available else "无静态详情工具，直接交付有界路线；not_delivered表示步骤未交付，不能按ID续读。") +
+                         "priority为核验顺序非漏洞概率：1=模型传播，2=结构线索，3=操作线索。"
+                         "保留静态路径非全路径、运行或利用证明；API/参数角色待核实。目录无源码/防护结论；零条目不证明安全。"}
 
         def fits(proposal: dict[str, Any]) -> bool:
             """所有头部、计数和路径都按完整 UTF-8 JSON 计费，不截断字段。"""
@@ -162,9 +234,9 @@ class SecurityEvidenceSelector:
             if row["sequence_delivery"] == "detail_only" and not details_available:
                 row = {**row, "sequence_delivery": "not_delivered"}
             proposal = {**result, "items": [*result["items"], row],
-                        "omitted_paths": len(rows) - len(result["items"]) - 1,
+                        omitted_key: len(rows) - len(result["items"]) - 1,
                         "has_more": len(rows) > len(result["items"]) + 1}
-            sequence = self.sequence(row["id"]) if row["step_count"] else []
+            sequence = self.sequence(row["id"]) if not details_available and row.get("step_count") else []
             if sequence:
                 expanded = {**proposal, "items": [*result["items"], {**row, "sequence": sequence,
                             "sequence_delivery": "inline_all_retained_steps"}]}

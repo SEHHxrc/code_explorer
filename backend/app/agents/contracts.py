@@ -7,13 +7,15 @@ from pydantic import BaseModel, Field
 
 AgentStrategy = Literal["default", "graph", "baseline", "security_evidence", "full_source_baseline", "full_source_security_evidence", "cumulative_baseline", "cumulative_security_evidence"]
 AgentRunStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
+MAX_INVESTIGATION_ROUNDS = 36
+DEFAULT_INVESTIGATION_ROUNDS = 12
 
 
 class AgentRunRequest(BaseModel):
     """创建智能体运行的输入；包含问题、可选模型和允许的最大步骤数。"""
     question: str = Field(min_length=1, max_length=8000)
     use_model: bool = True
-    max_steps: int = Field(default=4, ge=1, le=24)
+    max_steps: int = Field(default=DEFAULT_INVESTIGATION_ROUNDS, ge=1, le=MAX_INVESTIGATION_ROUNDS)
     model: str | None = Field(
         default=None,
         min_length=1,

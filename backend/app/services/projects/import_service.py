@@ -16,7 +16,7 @@ from backend.app.services.project_analysis.pipeline import (
     ProjectAnalysisPipelineError,
     ProjectAnalysisPrerequisiteError,
 )
-from backend.app.services.project_analysis.progress import report_progress
+from backend.app.core.progress import report_progress
 from backend.app.services.project_workspace import ProjectWorkspaceService
 from backend.app.services.project_workspace.exceptions import WorkspaceError
 from backend.app.services.security_analysis import SecurityAnalysisService

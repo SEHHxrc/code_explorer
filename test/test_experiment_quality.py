@@ -131,7 +131,7 @@ class ExperimentQualityTests(unittest.TestCase):
             self.assertTrue(value["has_more"])
 
     def test_registration_prefilter_preserves_original_match_order(self):
-        """对比旧全量匹配结果，并确保无关调用不进入每个函数的注册扫描。"""
+        """对比全量匹配结果，预过滤不影响顺序或丢失同处理器的其他注册。"""
         from backend.app.services.security_analysis.ir import IRCall, IRExpression, IRFunction, IRLocation, SecurityProgramIR
         from backend.app.services.security_analysis.rule_engine import SecurityRuleEngine
         from backend.app.services.security_analysis.rules.base import EntrypointRule, RulePack
@@ -144,14 +144,15 @@ class ExperimentQualityTests(unittest.TestCase):
         ]
         program = SecurityProgramIR("javascript", functions=[IRFunction("app.js::handler", "handler", (), (), location)], calls=calls)
         engine = SecurityRuleEngine()
-        original = engine._registered_function_entrypoint
-        with patch.object(engine, "_registered_function_entrypoint", side_effect=lambda function, filtered, rule: original(function, calls, rule)):
+        original = engine._registered_function_entrypoints
+        with patch.object(engine, "_registered_function_entrypoints", side_effect=lambda function, filtered, rule: original(function, calls, rule)):
             expected = engine.evaluate(program, (pack,))
-        with patch.object(engine, "_registered_function_entrypoint", wraps=original) as matcher:
+        with patch.object(engine, "_registered_function_entrypoints", wraps=original) as matcher:
             actual = engine.evaluate(program, (pack,))
         self.assertEqual(expected, actual)
         self.assertEqual(2, len(matcher.call_args.args[1]))
         self.assertEqual("/first", actual.entrypoints[0].metadata["route_path"])
+        self.assertEqual("/second", actual.entrypoints[1].metadata["route_path"])
 
     def test_verbose_header_cannot_displace_first_complete_finding(self):
         """增加预算后从紧凑头部切回详细头部，不能反而丢失原可容纳的完整候选。"""

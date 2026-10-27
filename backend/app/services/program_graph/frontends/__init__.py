@@ -1,6 +1,6 @@
 """最小程序图的语言前端。"""
 
-from .access_paths import AccessPath, AccessPathResolver, AccessPathSegment
+from backend.app.services.value_binding.access_paths import AccessPath, AccessPathResolver, AccessPathSegment
 from .base import ProgramGraphFrontend
 from .java import JavaProgramGraphFrontend
 from .languages import (

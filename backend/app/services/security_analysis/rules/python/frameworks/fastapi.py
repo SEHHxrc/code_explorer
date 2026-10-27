@@ -13,6 +13,11 @@ FASTAPI_ENTRYPOINT_RULE = EntrypointRule(
         "get", "post", "put", "patch", "delete", "options", "head", "trace", "websocket",
     ),
     dependency_suffixes=("Depends",),
+    excluded_annotation_names=(
+        "fastapi.BackgroundTasks", "fastapi.background.BackgroundTasks",
+        "starlette.background.BackgroundTasks",
+        "fastapi.Response", "fastapi.responses.Response", "starlette.responses.Response",
+    ),
     annotation_categories=(
         ("UploadFile", "file_upload"),
         ("WebSocket", "websocket_input"),
@@ -24,7 +29,7 @@ FASTAPI_ENTRYPOINT_RULE = EntrypointRule(
 
 FASTAPI_RULE_PACK = RulePack(
     name="python-fastapi",
-    version="1.0",
+    version="1.1",
     languages=("python",),
     entrypoint_rules=(FASTAPI_ENTRYPOINT_RULE,),
 )

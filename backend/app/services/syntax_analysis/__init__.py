@@ -18,6 +18,7 @@ from .tree_parser import (
     first_of,
     normalize_type,
     split_qualified,
+    semantic_children,
     text,
     walk_named,
 )
@@ -39,6 +40,7 @@ __all__ = [
     "normalize_static_index",
     "parse_static_index_literal",
     "split_qualified",
+    "semantic_children",
     "text",
     "unwrap_c_declarator",
     "walk_named",

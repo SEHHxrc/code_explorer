@@ -5,12 +5,15 @@ import json
 from typing import Any
 
 from backend.app.llm.response_metadata import ModelResponseMetadata
-from .findings import FindingLedger
+from .findings import FindingLedger, LedgerValidationError
 
-REPORT_VERSION = "ledger-security-v5"
-BATCH_PROTOCOL = "static-security-v14-review-ledger"
-CUMULATIVE_PROTOCOL = "static-security-v15-cumulative-ledger"
-FULL_SOURCE_PROTOCOL = "static-security-v16-full-source-ledger"
+REPORT_VERSION = "ledger-security-v7"
+FORMAT_RETRY_POLICY = {"version": "ledger-format-retry-v1", "max_extra_requests": 1,
+                      "scope": "per_run", "eligible": ["syntax", "schema"],
+                      "new_evidence": False, "local_json_repair": False}
+BATCH_PROTOCOL = "static-security-v21-chain-boundaries"
+CUMULATIVE_PROTOCOL = "static-security-v22-cumulative-boundaries"
+FULL_SOURCE_PROTOCOL = "static-security-v23-full-source-boundaries"
 REPORT_SECTIONS = ("结论", "已核实问题", "未确认风险", "范围与局限")
 REPORT_END = "<!-- SECURITY_REPORT_END -->"
 REPORT_INSTRUCTIONS = """
@@ -18,15 +21,19 @@ REPORT_INSTRUCTIONS = """
 后台按状态生成结论、已核实问题、未确认风险、范围与局限；摘要最多突出 5 项，其余独立问题仍保留，不按摘要编号评分。
 同根因多影响合并，不同根因即使位于同一接口也分列；不能合并认证、上传、跨域、资源问题。
 每项记录代码行为、输入到真实危险实现的链路、防护、安全影响、利用前提和引用。
-behavior_status 区分观察/推断/未知；chain.description 说明输入、参数、实现与缺口。未读关键实现不能闭合链路或确认影响；not_applicable 仅用于无需传播链的本地缺陷并说明原因。
-impact 仅含 status/description；confirmed_conditions（已核实条件）与 unresolved_conditions（未知/未满足条件）属于 finding 同级，不嵌入 impact；conditional 必须列未知条件。
+behavior_status 区分观察/推断/未知；chain 必填 scope、start、end、description。端点包含 kind、description、evidence。closed 只证明所填起终点间的区间。
+scope=local_segment 表示局部路径，内部函数形参不能自动当作 HTTP 等外部输入；external_to_sink 闭合必须从已核实 external_input 到 sensitive_operation，缺失关键连接保留 open。
+未读关键实现不能闭合链路或确认最终操作。无需传播链的本地缺陷可填 not_applicable，scope 同值、start/end=null 并说明原因；不能以此规避未知的外部输入连接。
+impact 含 status/scope/description，scope=local/external/unknown。局部闭合只能确认局部影响；external 的已建立/有条件影响须有外部到敏感操作的闭合链，否则外部影响填 not_established。confirmed_conditions 与 unresolved_conditions 属于 finding 同级。unresolved_conditions 每项必填 kind/description：chain_gap 是输入来源、调用、参数、实现等关键连接未知，deployment 是已建立源码机制的部署/暴露前提，security_requirement 是是否应限制该行为未知，other 是尚未分类条件。
+chain_gap 必须 open；不能把未追到的 HTTP 输入标成 deployment。conditional 必须列未知条件。关键连接或安全要求未知时保留候选，不能仅因缺少认证就把可能公开的资源算作漏洞。
 source_supported_risk 须为 observed、链路闭合或明确不适用、影响已建立或有条件；不等于已确认远程漏洞。
 unclosed_candidate 用于关键链路、实现或影响未建立；模板拼接无攻击者来源不能计入源码支持风险。
 excluded 必须有 exclusion_reason；未找到调用方/输入不证明全项目不存在通路。
 防护须核实：处理的是进入危险操作的值、适用于该危险上下文、发生在危险操作之前；附近的清洗不证明防护。
 protections 非空时每项必须有 description、value_match/context_match/before_operation（verified/unverified）、evidence 引用数组；不能以 location/note 代替引用。
 六类 coverage 必填；checked/not_applicable 须有实际检查依据，未检查填 not_checked。核对不是答案清单，不强迫报问题，已读不等于充分审查。
-引用须用工具返回的完整项目相对路径及实际展示行范围，不用简称、不混实现；合法坐标不证明断言。
+引用须用工具返回的完整项目相对路径及实际展示行范围，不用简称、不混实现；合法坐标不证明断言。较早批次已展示的证据可以保留来源引用，但本轮未重放正文时不能声称本轮重新核实或升级状态；只有历史模型摘要不等于直接源码证据。
+不得把按已知或可猜测名称访问推广为枚举全部资源，除非已经读取相应枚举实现。发现广度、链路核验、结论可信度分别评价，更多条目不能抵消过度断言。
 抛出异常不等于服务崩溃；区分格式/长度/数值越界条件，不笼统推断异常。算法未测试只记局限，除非有异常逻辑。
 reviewed_ranges 仅实际已读范围，unreviewed 记未读，limitations 记静态/规则/部署等局限；未发现仅针对实际范围，零候选/零 Sink 不证明安全。
 后台仅校验结构和一致性，不证明模型判断语义正确。
@@ -45,7 +52,20 @@ def _compact_schema(value: Any) -> Any:
     return value
 
 
-REPORT_INSTRUCTIONS += json.dumps(_compact_schema(FindingLedger.model_json_schema()), ensure_ascii=False, separators=(",", ":"))
+REPORT_SHAPE = (
+    "reviewed_ranges、unreviewed、limitations 必须与 coverage 同级；coverage 只含六类核对，必须先闭合，再写上述根字段。\n"
+)
+REPORT_INSTRUCTIONS += REPORT_SHAPE + json.dumps(_compact_schema(FindingLedger.model_json_schema()), ensure_ascii=False, separators=(",", ":"))
+
+
+def format_retry_message(error: LedgerValidationError) -> str:
+    """返回仅纠正格式的重提交指令；输入诊断，不附加项目事实或样本答案。"""
+    return ("APPLICATION_REPORT_FORMAT_RETRY\n上次可见台账未通过格式校验，原始回复及用量已保留。"
+            "现在仅重新提交完整台账 JSON，不输出解释、差异、补丁或续写片段。\n"
+            "只使用原请求已经展示的证据；保留独立条目、判断和未知条件，不因格式错误改安全状态或编造证据。"
+            "不读取文件、不调用工具、不扩展调查。这是格式重提交，不是新的安全分析。\n"
+            + REPORT_SHAPE + "校验诊断（不是项目证据）："
+            + json.dumps({"category": error.category, "issues": error.issues}, ensure_ascii=False, separators=(",", ":")))
 
 
 def assess_answer(

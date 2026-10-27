@@ -8,8 +8,8 @@ from typing import Annotated, Literal, Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-LEDGER_VERSION = "security-review-ledger-v1"
-Text = Annotated[str, Field(min_length=1, max_length=2000)]
+LEDGER_VERSION = "security-review-ledger-v2"
+Text = Annotated[str, Field(min_length=1, max_length=2000, pattern=r"\S")]
 COVERAGE_LABELS = {"input_boundaries": "输入边界", "authentication": "认证授权", "resource_limits": "资源限制",
                    "error_handling": "错误处理", "sensitive_operations": "敏感操作", "output_contexts": "输出上下文"}
 STATUS_LABELS = {"source_supported_risk": "源码支持的风险", "unclosed_candidate": "未闭合候选", "excluded": "已排除"}
@@ -40,10 +40,43 @@ class SourceReference(LedgerRecord):
         return f"[{self.path}:{self.start_line}-{self.end_line}]"
 
 
+class ChainEndpoint(LedgerRecord):
+    """模型实际核实的路径端点；内部形参不能冒充已识别的外部输入。"""
+
+    kind: Literal["external_input", "internal_parameter", "sensitive_operation", "other", "unknown"]
+    description: Text
+    evidence: list[SourceReference] = Field(min_length=1, max_length=10)
+
+
 class ChainState(LedgerRecord):
-    """输入到真实危险实现的闭合状态；不适用也须说明原因。"""
+    """显式声明闭合区间；closed 只适用于所填端点，不自动扩展到调用方。"""
 
     status: Literal["closed", "open", "not_applicable"]
+    scope: Literal["local_segment", "external_to_sink", "not_applicable"]
+    start: ChainEndpoint | None
+    end: ChainEndpoint | None
+    description: Text
+
+    @model_validator(mode="after")
+    def validate_boundary(self) -> ChainState:
+        """校验端点类型与声明范围一致；引用是否支持传播仍需人工核验。"""
+        if self.status == "not_applicable":
+            if self.scope != "not_applicable" or self.start is not None or self.end is not None:
+                raise ValueError("不适用链路须使用 not_applicable 范围及空端点，并说明原因。")
+        elif self.scope == "not_applicable":
+            raise ValueError("存在传播链时不能使用 not_applicable 范围。")
+        elif self.status == "closed":
+            if not self.start or not self.end or "unknown" in (self.start.kind, self.end.kind):
+                raise ValueError("closed 必须明确已核实的起点、终点及依据。")
+            if self.scope == "external_to_sink" and (self.start.kind != "external_input" or self.end.kind != "sensitive_operation"):
+                raise ValueError("外部输入到敏感操作闭合须从 external_input 到 sensitive_operation；内部形参仅能证明局部区间。")
+        return self
+
+
+class UnresolvedCondition(LedgerRecord):
+    """区分传播断点、部署前提和安全要求，避免一个 conditional 隐藏关键缺口。"""
+
+    kind: Literal["chain_gap", "deployment", "security_requirement", "other"]
     description: Text
 
 
@@ -51,6 +84,7 @@ class ImpactState(LedgerRecord):
     """影响判断与条件分开，允许源码链闭合但影响仍依赖部署。"""
 
     status: Literal["established", "conditional", "not_established"]
+    scope: Literal["local", "external", "unknown"]
     description: Text
 
 
@@ -74,7 +108,7 @@ class Finding(LedgerRecord):
     protections: list[ProtectionCheck] = Field(default_factory=list, max_length=20)
     impact: ImpactState
     confirmed_conditions: list[Text] = Field(default_factory=list, max_length=20)
-    unresolved_conditions: list[Text] = Field(default_factory=list, max_length=20)
+    unresolved_conditions: list[UnresolvedCondition] = Field(default_factory=list, max_length=20)
     evidence: list[SourceReference] = Field(min_length=1, max_length=30)
     status: Literal["source_supported_risk", "unclosed_candidate", "excluded"]
     exclusion_reason: str = Field(default="", max_length=2000)
@@ -84,7 +118,15 @@ class Finding(LedgerRecord):
         """拒绝字段状态自相矛盾，不以规则代替模型的语义判断。"""
         if not self.root_cause.strip():
             raise ValueError("独立根因不能为空白。")
-        if self.status == "source_supported_risk" and (self.behavior_status != "observed" or self.chain.status == "open" or self.impact.status == "not_established"):
+        unknowns = {item.kind for item in self.unresolved_conditions}
+        if "chain_gap" in unknowns and self.chain.status != "open":
+            raise ValueError("关键传播连接未知必须保留 open，不能作为部署条件通过闭合判定。")
+        if self.impact.scope == "external" and self.impact.status != "not_established" and not (
+                self.chain.status == "closed" and self.chain.scope == "external_to_sink"):
+            raise ValueError("外部影响的建立或条件性判断需要外部到敏感操作的闭合链；局部区间只能确认局部行为，外部影响保留未知。")
+        if self.status == "source_supported_risk" and unknowns - {"deployment"}:
+            raise ValueError("传播、安全要求或未分类条件未知时保留候选；仅部署未知可保留有条件的源码风险。")
+        if self.status == "source_supported_risk" and (self.behavior_status != "observed" or self.chain.status == "open" or self.impact.status == "not_established" or self.impact.scope == "unknown"):
             raise ValueError("源码支持风险须有已观察行为、闭合或明确不适用的链路及已建立/有条件影响；否则应为未闭合候选。")
         if self.status == "excluded" and not self.exclusion_reason.strip():
             raise ValueError("已排除条目必须说明排除理由，不得由未发现输入直接推定。")
@@ -122,7 +164,7 @@ class ReviewCoverage(LedgerRecord):
 class FindingLedger(LedgerRecord):
     """模型可见的最终/批次台账；Markdown 摘要和计数只能由其状态生成。"""
 
-    schema_version: Literal["security-review-ledger-v1"]
+    schema_version: Literal["security-review-ledger-v2"]
     findings: list[Finding] = Field(max_length=50)
     coverage: ReviewCoverage
     reviewed_ranges: list[SourceReference] = Field(max_length=100)
@@ -153,6 +195,9 @@ class FindingLedger(LedgerRecord):
         counts = {status: sum(item.status == status for item in self.findings) for status in STATUS_LABELS}
         lines = ["## 结论", "", "台账记录：" + "；".join(f"{STATUS_LABELS[key]} {value} 项" for key, value in counts.items()) + "。",
                  "状态是模型判断，不是已确认可利用漏洞；语义正确性未由后台证明。"]
+        lines.append("闭合范围：外部输入到敏感操作 " + str(sum(item.chain.status == "closed" and item.chain.scope == "external_to_sink" for item in self.findings))
+                     + " 项；局部区间 " + str(sum(item.chain.status == "closed" and item.chain.scope == "local_segment" for item in self.findings))
+                     + " 项。两类不能合并为 HTTP 可达性或核验质量分数。")
         lines.extend(f"- {key}：{inline(item.root_cause)}（{STATUS_LABELS[item.status]}）" for key, item in [row for row in rows if row[1].status == "source_supported_risk"][:5])
         for section, status in (("已核实问题", "source_supported_risk"), ("未确认风险", "unclosed_candidate"), ("范围与局限", "excluded")):
             lines.extend(["", f"## {section}", ""])
@@ -162,10 +207,12 @@ class FindingLedger(LedgerRecord):
             for key, item in selected:
                 lines.extend([f"**{key}：{inline(item.root_cause)} — {STATUS_LABELS[status]}**",
                     f"- 代码行为（{item.behavior_status}）：{inline(item.behavior)}",
-                    f"- 输入到危险实现（{item.chain.status}）：{inline(item.chain.description)}",
-                    f"- 安全影响（{item.impact.status}）：{inline(item.impact.description)}",
+                    f"- 链路（{item.chain.status}；{item.chain.scope}）：{inline(item.chain.description)}",
+                    *[f"- {label}（{endpoint.kind}）：{inline(endpoint.description)} {refs(endpoint.evidence)}"
+                      for label, endpoint in (("起点", item.chain.start), ("终点", item.chain.end)) if endpoint],
+                    f"- 安全影响（{item.impact.status}；{item.impact.scope}）：{inline(item.impact.description)}",
                     "- 已核实利用前提：" + ("；".join(map(inline, item.confirmed_conditions)) or "未建立。"),
-                    "- 未满足/未知条件：" + ("；".join(map(inline, item.unresolved_conditions)) or "未另列；不表示已证明全部满足。"),
+                    "- 未满足/未知条件：" + ("；".join(f"{condition.kind}：{inline(condition.description)}" for condition in item.unresolved_conditions) or "未另列；不表示已证明全部满足。"),
                     "- 证据：" + refs(item.evidence)])
                 for guard in item.protections:
                     lines.append(f"- 防护：{inline(guard.description)}；值对应={guard.value_match}，上下文={guard.context_match}，先于操作={guard.before_operation}；{refs(guard.evidence)}")
@@ -192,15 +239,39 @@ def _unique_members(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+class LedgerValidationError(ValueError):
+    """台账拒绝原因；只携带有界的结构诊断，不保存原文或自动修复字段。"""
+
+    def __init__(self, message: str, category: str, issues: list[dict[str, Any]]) -> None:
+        """保存公开说明、syntax/schema/state 分类和至多六个无输入值的诊断。"""
+        super().__init__(message)
+        self.category = category
+        self.issues = issues[:6]
+
+
 def parse_ledger(text: str) -> FindingLedger:
     """只接受完整 JSON 对象，可有单一 JSON 围栏；拒绝尾随解释和隐式补字段。"""
     text = text.strip()
     if text.startswith("```json\n") and text.endswith("\n```"):
         text = text[8:-4]
     try:
-        return FindingLedger.model_validate(json.loads(text, object_pairs_hook=_unique_members))
-    except ValidationError as exc:
-        fields = [".".join(map(str, item["loc"])) + ": " + item["msg"] for item in exc.errors(include_input=False, include_url=False)[:6]]
-        raise ValueError("发现台账字段或状态不一致：" + "；".join(fields)) from None
+        value = json.loads(text, object_pairs_hook=_unique_members)
+    except json.JSONDecodeError as exc:
+        raise LedgerValidationError(
+            f"发现台账 JSON 语法错误：第 {exc.lineno} 行、第 {exc.colno} 列（位置 {exc.pos}）；未修补原文。",
+            "syntax", [{"type": "json_syntax", "line": exc.lineno, "column": exc.colno,
+                        "offset": exc.pos, "message": exc.msg}],
+        ) from None
     except ValueError:
-        raise ValueError("发现台账必须为完整 JSON 对象；未自动补字段或修正原文。") from None
+        raise LedgerValidationError("台账 JSON 字段重复或无效，未自动选择后写值。", "syntax",
+                                    [{"type": "duplicate_or_invalid_member"}]) from None
+    try:
+        return FindingLedger.model_validate(value)
+    except ValidationError as exc:
+        errors = exc.errors(include_input=False, include_url=False, include_context=False)
+        category = "state" if any(item["type"] == "value_error" for item in errors) else "schema"
+        issues = [{"type": item["type"], "path": [part if isinstance(part, int) else str(part)[:80] for part in item["loc"][:12]],
+                   "message": item["msg"][:400]}
+                  for item in errors[:6]]
+        fields = [".".join(map(str, item["path"])) + ": " + item["message"] for item in issues]
+        raise LedgerValidationError("发现台账字段或状态不一致：" + "；".join(fields), category, issues) from None

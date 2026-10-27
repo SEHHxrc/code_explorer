@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .tree_parser import DEFAULT_TREE_SITTER_PARSER_POOL, text
+from .session import parse_tree
 
 
 @dataclass(frozen=True)
@@ -43,7 +44,7 @@ def source_unit(path: str, source: bytes, language: str) -> SourceUnit:
     """普通文件原样返回；Vue 保留内联脚本、v-html 和原生文本 v-model 坐标。"""
     if not path.lower().endswith(".vue"):
         return SourceUnit(language, source)
-    root = DEFAULT_TREE_SITTER_PARSER_POOL.get("html").parse(source).root_node
+    root = parse_tree(path, source, "html", DEFAULT_TREE_SITTER_PARSER_POOL).root_node
     scripts, templates = _mask(source), _mask(source)
     diagnostics: list[str] = []
     expressions: list[TemplateExpression] = []

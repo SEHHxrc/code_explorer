@@ -24,10 +24,13 @@ WORKSPACE = Path(__file__).resolve().parents[1]
 MODULES = (
     "backend.app.services.program_index.identity",
     "backend.app.services.syntax_analysis.javascript_bindings",
-    "backend.app.services.security_analysis.frontends.treesitter",
-    "backend.app.services.security_analysis.frontends.javascript",
-    "backend.app.services.security_analysis.frontends.java",
-    "backend.app.services.security_analysis.frontends.go",
+    "backend.app.services.security_analysis.language_adapters.treesitter",
+    "backend.app.services.security_analysis.language_adapters.javascript",
+    "backend.app.services.security_analysis.language_adapters.java",
+    "backend.app.services.security_analysis.language_adapters.go",
+    "backend.app.services.security_analysis.language_adapters.go.api",
+    "backend.app.services.security_analysis.language_adapters.go.collector",
+    "backend.app.services.security_analysis.language_adapters.go.routes",
     "backend.app.services.program_graph.frontends.treesitter",
     "backend.app.services.program_graph.passes.reaching_definitions",
 )
@@ -41,13 +44,25 @@ class BaselineLoader(importlib.abc.MetaPathFinder, importlib.abc.Loader):
         self.reference = subprocess.check_output(
             ["git", "rev-parse", "--verify", reference + "^{commit}"], cwd=WORKSPACE, text=True,
         ).strip()
-        self.sources = {name: subprocess.check_output(
-            ["git", "show", self.reference + ":" + name.replace(".", "/") + ".py"], cwd=WORKSPACE,
-        ).decode("utf-8-sig") for name in MODULES}
+        self.sources = {}
+        self.packages = set()
+        for name in MODULES:
+            current = name.replace(".", "/")
+            legacy = current.replace("/language_adapters/", "/frontends/")
+            for filename in (current + ".py", current + "/__init__.py", legacy + ".py", legacy + "/__init__.py"):
+                result = subprocess.run(["git", "show", self.reference + ":" + filename], cwd=WORKSPACE,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+                if result.returncode == 0:
+                    self.sources[name] = result.stdout.decode("utf-8-sig")
+                    if filename.endswith("/__init__.py"):
+                        self.packages.add(name)
+                    break
+            if name not in self.sources and name.rsplit(".", 1)[-1] not in {"api", "collector", "routes"}:
+                raise ValueError("基线缺少分析模块：" + name)
 
     def find_spec(self, fullname: str, path: Any = None, target: Any = None) -> Any:
         """只覆盖显式模块；其他依赖继续使用本机安装和当前仓库。"""
-        return importlib.util.spec_from_loader(fullname, self) if fullname in self.sources else None
+        return importlib.util.spec_from_loader(fullname, self, is_package=fullname in self.packages) if fullname in self.sources else None
 
     def create_module(self, spec: Any) -> None:
         """使用默认模块创建，保留正常相对导入语义。"""
@@ -55,7 +70,7 @@ class BaselineLoader(importlib.abc.MetaPathFinder, importlib.abc.Loader):
 
     def exec_module(self, module: Any) -> None:
         """执行本进程的受信基线，不写临时源码或 Git 工作区。"""
-        filename = str(WORKSPACE / (module.__name__.replace(".", "/") + ".py"))
+        filename = str(WORKSPACE / (module.__name__.replace(".", "/") + ("/__init__.py" if module.__name__ in self.packages else ".py")))
         module.__file__ = filename
         exec(compile(self.sources[module.__name__], filename, "exec"), module.__dict__)
 
@@ -83,6 +98,7 @@ def main() -> None:
     location.add_argument("--project-id")
     parser.add_argument("--files", nargs="+", required=True)
     parser.add_argument("--baseline-ref")
+    parser.add_argument("--syntax-reuse", choices=("on", "off"), default="on")
     args = parser.parse_args()
     root = args.project_root
     if args.project_id:
@@ -99,10 +115,9 @@ def main() -> None:
     baseline = BaselineLoader(args.baseline_ref) if args.baseline_ref else None
     if baseline is not None:
         sys.meta_path.insert(0, baseline)
-    from backend.app.services.security_analysis.scanner import SecurityScanner
-    from backend.app.services.program_graph import ProgramGraphService
     from backend.app.services.syntax_analysis.source_units import source_unit
     from backend.app.services.syntax_analysis.catalog import SOURCE_LANGUAGE_BY_EXTENSION
+    from backend.app.services.syntax_analysis.session import syntax_session
 
     graph = {"nodes": []}
     fingerprints = {}
@@ -116,8 +131,18 @@ def main() -> None:
         graph["nodes"].append({"kind": "module", "file": relative, "lang": language})
         fingerprints[relative] = hashlib.sha256(raw).hexdigest()
     print(json.dumps({"condition": "baseline" if baseline else "current", "baseline_ref": baseline.reference if baseline else None,
-                      "python_hash_seed": os.getenv("PYTHONHASHSEED", "random"),
+                      "python_hash_seed": os.getenv("PYTHONHASHSEED", "random"), "syntax_reuse": args.syntax_reuse,
                       "file_count": len(fingerprints), "source_sha256": digest(fingerprints)}), flush=True)
+    with syntax_session(max_estimated_bytes=64 * 1024 * 1024 if args.syntax_reuse == "on" else 1) as session:
+        measure(root, graph)
+        print(json.dumps({"phase": "syntax_reuse", **session.snapshot()}), flush=True)
+
+
+def measure(root: Path, graph: dict[str, Any]) -> None:
+    """在相同代码和文件范围测量两个投影，缓存条件只改变复用，不改变规则或范围。"""
+    from backend.app.services.security_analysis.scanner import SecurityScanner
+    from backend.app.services.program_graph import ProgramGraphService
+
     scanner, graphs = SecurityScanner(), ProgramGraphService()
     started = time.perf_counter()
     scan = scanner.scan(root, dependency_graph=graph)

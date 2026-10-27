@@ -343,9 +343,36 @@ class SearchAndCitationTests(unittest.TestCase):
     def test_citation_mechanics_are_not_semantic_validation(self):
         report = "[file.py:1] [file.py:2] [file.py:3] [../secret:1] [missing.py:1]"
         result = check_citations(report, {"file.py": {"lines": 2}}, {"file.py": {1, 2}}, {"file.py": {1}})
-        self.assertEqual({"seen_earlier_not_in_final_request", "line_out_of_range", "path_outside_snapshot", "path_not_in_snapshot"},
+        self.assertEqual({"line_out_of_range", "path_outside_snapshot", "path_not_in_snapshot"},
                          {warning["reason"] for warning in result["warnings"]})
+        self.assertEqual("seen_earlier_not_in_final_request", result["notices"][0]["reason"])
         self.assertEqual("not_performed", result["semantic_validation"])
+
+    def test_historical_batch_receipts_are_distinct_from_unsent_or_failed_evidence(self):
+        repository = Mock()
+        repository.append.side_effect = iter(range(1, 100))
+        recorder = AuditRecorder(repository, 'run', 'alice')
+        recorder.manifest = {'file.py': {'lines': 4}}
+
+        def payload(line):
+            return {'messages': [{'role': 'tool', 'content': json.dumps({
+                'path': 'file.py', 'text': f'{line}: observed source'})}]}
+
+        first = recorder.sent(payload(1), 1)
+        recorder.received(first, {'choices': [{'message': {'content': '批次观察'}, 'finish_reason': 'stop'}]})
+        # 最终请求仅含台账/摘要，不能把其中坐标视为重新展示源码。
+        final = recorder.sent({'messages': [{'role': 'user', 'content': '最终汇总，不重放原始观察'}]}, 1)
+        recorder.received(final, {'choices': [{'message': {'content': 'report'}, 'finish_reason': 'stop'}]})
+        # 规划未实发，以及发送失败的正文，都不能进入已展示集合。
+        recorder.planned(payload(2), 3)
+        failed = recorder.sent(payload(3), 1)
+        recorder.failed(failed, 'TimeoutError')
+        result = recorder.citations('[file.py:1] [file.py:2] [file.py:3]')
+        self.assertEqual(['source_not_shown', 'source_not_shown'], [item['reason'] for item in result['warnings']])
+        self.assertEqual([first], result['notices'][0]['request_ids'])
+        self.assertEqual('earlier_request', result['references'][0]['exposure'])
+        self.assertEqual('not_proven', result['semantic_coverage'])
+        self.assertNotIn(failed, recorder.source_receipts)
 
     def test_prompt_is_generic_and_limit_is_summary_only(self):
         self.assertIn("代码行为", REPORT_INSTRUCTIONS)

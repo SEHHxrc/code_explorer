@@ -5,7 +5,7 @@ from collections.abc import Callable
 
 from backend.app.services.value_binding import BindingValue, ValueMember
 
-from . import field
+from .tree_parser import field, semantic_children
 
 
 def static_sequence_value(
@@ -16,7 +16,7 @@ def static_sequence_value(
     仅展开 Java array initializer 与 Go 无键 literal value；不求值、追踪别名或猜测长度。
     """
     if node.type == "variadic_argument":
-        node = next(iter(node.named_children), node)
+        node = next(iter(semantic_children(node)), node)
     body = (
         field(node, "value")
         if node.type == "array_creation_expression"
@@ -28,7 +28,7 @@ def static_sequence_value(
         body = next(
             (
                 item
-                for item in node.named_children
+                for item in semantic_children(node)
                 if item.type in {"array_initializer", "literal_value"}
             ),
             None,
@@ -36,13 +36,13 @@ def static_sequence_value(
     if (
         body is None
         or node.type not in {"array_creation_expression", "composite_literal"}
-        or any(item.type == "keyed_element" for item in body.named_children)
+        or any(item.type == "keyed_element" for item in semantic_children(body))
     ):
         return BindingValue(variables=identifiers(node))
     return BindingValue(
         kind="array",
         members=tuple(
             ValueMember(index, BindingValue(variables=identifiers(item)))
-            for index, item in enumerate(body.named_children)
+            for index, item in enumerate(semantic_children(body))
         ),
     )

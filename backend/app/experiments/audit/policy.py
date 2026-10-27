@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from backend.app.agents.policy import redact_secrets
+from backend.app.core.redaction import redact_source
 from backend.app.llm.settings import bounded_environment_int, get_model_api_key
 
 
@@ -57,7 +57,8 @@ def sanitize(value: Any) -> Any:
     if isinstance(value, list):
         return [sanitize(item) for item in value if not (isinstance(item, dict) and item.get("type") == "reasoning")]
     if isinstance(value, str):
-        redacted = redact_secrets(value)
+        # 可见消息会嵌套源码；不能用日志裸值规则再次破坏其参数绑定/类型注解。
+        redacted = redact_source(value)
         key = get_model_api_key()
         return redacted.replace(key, "[REDACTED]") if key else redacted
     return value

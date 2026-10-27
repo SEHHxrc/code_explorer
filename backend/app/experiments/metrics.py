@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 from typing import Callable
 
 from sqlalchemy.orm import Session
@@ -48,8 +49,20 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
         experiment_protocol = None
         last_model_payload = {}
         findings_ledger = None
+        format_retries = 0
+        format_rejections = []
+        format_skips = []
+        phase_requests: Counter[str] = Counter()
         for event in events:
             payload = event.payload or {}
+            if event.event_type == "model.started" and payload.get("phase"):
+                phase_requests[payload["phase"]] += 1
+            if event.event_type == "report.format_retry_started":
+                format_retries += 1
+            elif event.event_type == "report.format_rejected":
+                format_rejections.append({"step": payload.get("step"), "category": payload.get("category")})
+            elif event.event_type == "report.format_retry_skipped":
+                format_skips.append({"step": payload.get("step"), "reason": payload.get("reason")})
             if event.event_type == "findings.recorded":
                 findings_ledger = payload
             if event.event_type == "batch.completed":
@@ -215,8 +228,11 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
             "response_measurement_available": any(event.event_type == "model.completed" for event in events),
             "tool_calls": tool_calls,
             "model_requests": model_requests,
+            "phase_requests": dict(phase_requests),
+            "phase_request_semantics": "application_started_not_http_attempts_or_provider_execution",
             "batch_reports": batch_reports,
             "findings_ledger": findings_ledger,
+            "report_format": {"retries": format_retries, "rejections": format_rejections, "skipped": format_skips},
             "pending_batch": pending_batch,
             "evidence_count": len(evidence_keys),
             "initial_evidence_count": initial_evidence_count,

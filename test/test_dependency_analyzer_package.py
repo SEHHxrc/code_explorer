@@ -113,6 +113,24 @@ class DependencyAnalyzerPackageTests(unittest.TestCase):
         self.assertEqual(1, len({edge["callsite_id"] for edge in edges}))
         self.assertEqual({"direct", "virtual"}, {edge["dispatch"] for edge in edges})
 
+    def test_polymorphic_targets_beyond_eight_and_explicit_resource_boundary(self):
+        """已识别实现不再被旧八项窗口丢弃；有界预算耗尽仍明确诊断。"""
+        source = 'class Base:\n def work(self):\n  pass\n'
+        source += ''.join(f'class Child{i}(Base):\n def work(self):\n  pass\n' for i in range(12))
+        source += 'def caller(item: Base):\n item.work()\n'
+        with tempfile.TemporaryDirectory() as directory:
+            Path(directory,'app.py').write_text(source,encoding='utf8')
+            complete = UnifiedCodeAnalyzer(directory,max_workers=1).run_full_analysis()
+            bounded = UnifiedCodeAnalyzer(directory,max_workers=1,max_virtual_targets=3).run_full_analysis()
+            for limit in (0,513,True):
+                with self.subTest(limit=limit),self.assertRaises(ValueError):
+                    UnifiedCodeAnalyzer(directory,max_virtual_targets=limit)
+        edges = [edge for edge in complete['dependency_graph']['links'] if edge.get('dispatch')=='virtual']
+        self.assertEqual(12,len(edges))
+        self.assertTrue(all(not edge['truncated'] for edge in edges))
+        detail = next(item for item in bounded['diagnostics']['truncations'] if item['kind']=='virtual_targets')
+        self.assertEqual((12,3,9), (detail['available'],detail['retained'],len(detail['omitted_target_symbols'])))
+
 
 if __name__ == "__main__":
     unittest.main()

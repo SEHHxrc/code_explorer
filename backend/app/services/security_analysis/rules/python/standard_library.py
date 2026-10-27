@@ -73,9 +73,16 @@ PYTHON_CORE_CALL_RULES: tuple[CallRule, ...] = (
     ),
     CallRule(
         "PY-SINK-FILE-WRITE", "sink", "file_write",
-        ("write_text", "write_bytes", "unlink", "remove", "rmdir", "rename", "replace"),
+        ("write_text", "write_bytes", "unlink", "remove", "rmdir"),
         cwe="CWE-22", severity="medium", match_suffix=True,
         argument_role="sink", argument_positions=(0,), receiver_role="sink",
+    ),
+    CallRule(
+        "PY-SINK-FILE-WRITE", "sink", "file_write",
+        ("rename", "replace", "shutil.move", "shutil.copy", "shutil.copy2", "shutil.copyfile"),
+        cwe="CWE-22", severity="medium", match_suffix=True,
+        argument_role="sink", argument_positions=(0, 1), receiver_role="sink",
+        argument_keywords=("src", "dst", "target"),
     ),
     CallRule(
         "PY-SINK-REDIRECT", "sink", "redirect",
@@ -91,11 +98,17 @@ PYTHON_CORE_CALL_RULES: tuple[CallRule, ...] = (
     ),
     CallRule(
         "PY-SINK-NETWORK", "sink", "network_request",
-        ("requests.request", "requests.get", "requests.post", "requests.put",
-         "requests.patch", "requests.delete", "httpx.request", "httpx.get",
+        ("requests.get", "requests.post", "requests.put",
+         "requests.patch", "requests.delete", "httpx.get",
          "httpx.post", "urllib.request.urlopen", "urlopen"),
         cwe="CWE-918", severity="medium", argument_role="sink",
         argument_positions=(0,), argument_keywords=("url",),
+    ),
+    CallRule(
+        "PY-SINK-NETWORK", "sink", "network_request",
+        ("requests.request", "httpx.request"),
+        cwe="CWE-918", severity="medium", argument_role="sink",
+        argument_positions=(1,), argument_keywords=("url",),
     ),
     CallRule(
         "PY-SINK-WEAK-RANDOM", "sink", "security_sensitive_random",
@@ -127,7 +140,7 @@ PYTHON_CORE_ACCESS_RULES = (
 
 PYTHON_STANDARD_LIBRARY_PACK = RulePack(
     name="python-core",
-    version="1.0",
+    version="1.1",
     languages=("python",),
     call_rules=PYTHON_CORE_CALL_RULES,
     access_rules=PYTHON_CORE_ACCESS_RULES,

@@ -10,7 +10,7 @@ from ..contracts import ToolResult
 class BatchReportArguments(StrictArguments):
     """一批的台账 JSON、已读证据 ID 和实际展示源码范围。"""
 
-    ledger_json: str = Field(min_length=1, max_length=16000, description="Complete findings/coverage ledger JSON string matching the common report contract; no Markdown.")
+    ledger_json: str = Field(min_length=1, description="Complete compact findings/coverage ledger JSON string matching the common report contract; no Markdown. No application-level total character limit.")
     evidence_ids: list[str] = Field(default_factory=list, max_length=3)
     scopes: list[str] = Field(default_factory=list, max_length=30)
 

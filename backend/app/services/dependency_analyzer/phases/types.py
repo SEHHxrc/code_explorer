@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from collections import deque
+from backend.app.services.semantic_index.hierarchy import TypeHierarchy, type_facts
 
 from ..ast_utils import _norm_type, _split_qualified
 from ..constants import CALL_TYPE_PREFIX, CLASS_LIKE
@@ -70,6 +70,17 @@ class TypeResolutionPhase(DependencyAnalyzerState):
             impl = self._find_c_implementation(definition)
             if impl and impl != fqn:
                 self.alias_map[fqn] = impl
+        edges = []
+        for owner, bases in self.class_bases.items():
+            definition = self.definitions.get(owner)
+            virtual = {self._resolve_type(definition.file, literal, definition.lang)
+                       for literal in definition.virtual_bases} if definition is not None else set()
+            for base in bases:
+                kind = self.definitions[base].kind if base in self.definitions else ""
+                relation = "embeds" if definition is not None and definition.lang == "go" and kind in {"struct", "type"} else "implements" if kind in {"interface", "trait"} else "inherits"
+                edges.append((owner, base, {"relation": relation, "virtual": base in virtual}))
+        self._type_hierarchy = TypeHierarchy(type_facts(self.definitions, edges))
+        self._mro_cache.clear()
 
     def _find_c_implementation(self, declaration: Definition) -> str:
         """查找 C/C++ 声明对应的实现定义。"""
@@ -105,24 +116,22 @@ class TypeResolutionPhase(DependencyAnalyzerState):
         return self._canonical(fqn)
 
     def _mro(self, class_fqn: str) -> list[str]:
-        """按继承顺序返回类型及其祖先。"""
+        """复用公共类型层次；Python C3 冲突不退回任意 BFS 方法选择。"""
         cached = self._mro_cache.get(class_fqn)
         if cached is not None:
             return cached
-        order, seen = [], {class_fqn}
-        queue = deque([class_fqn])
-        while queue:
-            current = queue.popleft()
-            order.append(current)
-            for base in self.class_bases.get(current, ()):
-                if base not in seen:
-                    seen.add(base)
-                    queue.append(base)
+        hierarchy = getattr(self, "_type_hierarchy", None)
+        order = list(hierarchy.order(class_fqn) or (class_fqn,)) if hierarchy is not None else [class_fqn]
         self._mro_cache[class_fqn] = order
         return order
 
     def _lookup_member(self, class_fqn: str, name: str) -> str:
-        """沿类型继承顺序查找成员定义。"""
+        """复用公共成员选择；多继承冲突保持未解析，不能取先遇到的同名实现。"""
+        hierarchy = getattr(self, "_type_hierarchy", None)
+        if hierarchy is not None:
+            declaring = {owner for owner in hierarchy.order(class_fqn) or () if name in self.class_members.get(owner, {})}
+            owners = hierarchy.member_owners(class_fqn, declaring)
+            return self._canonical(self.class_members[owners[0]][name]) if len(owners) == 1 else ""
         for candidate in self._mro(class_fqn):
             hit = self.class_members.get(candidate, {}).get(name)
             if hit:

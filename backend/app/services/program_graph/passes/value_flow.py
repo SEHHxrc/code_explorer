@@ -11,6 +11,7 @@ from ..contracts import (
     ProgramValueTransfer,
     ValueTransferKind,
 )
+from backend.app.services.value_binding.identities import value_identity
 
 
 class ValueFlowPass:
@@ -20,7 +21,7 @@ class ValueFlowPass:
         """保留 CFG/到达定义边，并追加向后兼容的 ``value_flow`` Overlay。"""
         base_edges = [edge for edge in graph.edges if edge.kind != "value_flow"]
         overlay: list[ProgramGraphEdge] = []
-        seen: set[tuple[str, str, str, str, str]] = set()
+        seen: set[tuple[str, str, str, str, str, str]] = set()
         for edge in base_edges:
             if edge.kind != "reaching_def" or not edge.variable:
                 continue
@@ -33,6 +34,7 @@ class ValueFlowPass:
                 transfer
                 for transfer in target.value_transfers
                 if read_variable in transfer.input_variables
+                and transfer.storage_mode != "address"
             ]
             if not transfers:
                 transfers = self._fallback_transfers(target, read_variable)
@@ -45,6 +47,7 @@ class ValueFlowPass:
                     source_variable,
                     target_variable,
                     transfer_kind,
+                    read_variable,
                 )
                 if key in seen:
                     continue
@@ -60,6 +63,10 @@ class ValueFlowPass:
                     kind="value_flow",
                     source_variable=source_variable,
                     target_variable=target_variable,
+                    read_variable=read_variable,
+                    source_value_id=edge.source_value_id or value_identity(graph.nodes[edge.source], source_variable, write=True),
+                    target_value_id=value_identity(target, target_variable, write=target_variable in target.definitions),
+                    read_value_id=edge.read_value_id or value_identity(target, read_variable, write=False),
                     transfer_kind=transfer_kind,
                     callsite_ids=list(transfer.callsite_ids),
                     certainty=certainty,

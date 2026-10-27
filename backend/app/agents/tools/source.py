@@ -11,11 +11,11 @@ from backend.app.agents.policy import (
     IGNORED_DIRECTORIES,
     MAX_READ_LINES,
     MAX_SOURCE_BYTES,
-    redact_secrets,
     resolve_project_path,
 )
 from backend.app.agents.tools.arguments import ReadFileArguments, SearchArguments, SearchManyArguments
 from backend.app.agents.tools.base import AgentTool, ToolContext
+from backend.app.core.redaction import redact_source
 
 MAX_SEARCH_FILES = 5_000
 MAX_SEARCH_BYTES = 64 * 1024 * 1024
@@ -50,7 +50,7 @@ class ReadFileTool(AgentTool):
                 "path": arguments.path,
                 "start_line": start,
                 "end_line": start + max(len(selected) - 1, 0),
-                "text": redact_secrets(numbered),
+                "text": redact_source(numbered, path=arguments.path),
                 "file_total_lines": len(lines),
                 "requested_end_line": arguments.end_line,
                 "has_more_lines": end < len(lines),
@@ -184,7 +184,7 @@ def search_literals(context: ToolContext, queries: list[str], limit: int) -> Too
                     continue
                 for index in matching:
                     hit_counts[index] += 1
-                redacted = redact_secrets(line.strip())
+                redacted = redact_source(line.strip(), path=relative)
                 preview = redacted[:500]
                 hits.append({"path": relative, "line": line_number, "text": preview,
                              "text_truncated": len(redacted) > 500, "query_indices": matching})

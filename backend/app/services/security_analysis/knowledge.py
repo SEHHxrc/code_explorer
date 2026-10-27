@@ -1,4 +1,4 @@
-"""为后续 CWE 等外部知识 RAG 预留的无副作用接口。"""
+"""解释性安全知识的无副作用检索接口；不承担 API 绑定或静态传播模型。"""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ class SecurityKnowledgeRequest:
 
 @dataclass(frozen=True)
 class SecurityKnowledgeDocument:
-    """外部知识检索结果；不得作为项目源码事实。"""
+    """外部解释资料；不得当作源码事实或未经结构校验的 Source/Sink/净化模型。"""
 
     document_id: str
     title: str
@@ -28,7 +28,7 @@ class SecurityKnowledgeDocument:
 
 
 class SecurityKnowledgeProvider(Protocol):
-    """CWE 或其他权威安全知识库适配器的稳定同步接口。"""
+    """CWE 或其他权威安全知识库适配器的异步检索接口。"""
 
     async def retrieve(
         self,

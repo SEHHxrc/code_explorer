@@ -63,6 +63,10 @@ export const useGraphModel = () => {
     activeRelations.clear()
     rule.levels.forEach((item) => activeLevels.add(item))
     rule.relations.forEach((item) => activeRelations.add(item))
+    if (key === 'all') {
+      Object.keys(summary.levelCounts).forEach((item) => activeLevels.add(item))
+      Object.keys(summary.relationCounts).forEach((item) => activeRelations.add(item))
+    }
     minDegree.value = rule.degree(summary.nodeCount)
     viewPreset.value = key
   }
@@ -72,7 +76,7 @@ export const useGraphModel = () => {
     graph.value = built.graph
     Object.assign(summary, built.summary, { visibleNodeCount: 0, visibleEdgeCount: 0 })
     manuallyHidden.clear()
-    configurePreset('core')
+    configurePreset(payload.default_preset === 'all' ? 'all' : 'core')
     return graph.value
   }
 

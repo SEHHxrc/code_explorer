@@ -43,7 +43,7 @@ class JavaScriptSecurityTests(unittest.TestCase):
         )
         self.assertTrue(candidate.dataflow_verified)
         self.assertEqual(4, pack.facts[candidate.sink_fact_id].location.line)
-        self.assertIn("javascript-typescript-core/1.2", pack.rule_packs)
+        self.assertIn("javascript-typescript-core/1.3", pack.rule_packs)
         self.assertIn("javascript", pack.languages_analyzed)
 
     def test_safe_sibling_and_same_line_are_not_tainted(self) -> None:
@@ -233,6 +233,103 @@ class JavaScriptSecurityTests(unittest.TestCase):
                 for item in pack.facts.values()
             )
         )
+
+    def test_imported_express_request_type_in_extracted_handler(self) -> None:
+        """真实服务常拆出具名处理器；明确导入的 Request 类型保留字段来源，不要求内联回调。"""
+        for declaration, annotation in (("import type express from 'express';", "express.Request"),
+                                         ("import type { Request as Req } from 'express';", "Req<Record<string, string>>")):
+            with self.subTest(annotation=annotation):
+                pack = self._analyze({"handler.ts": declaration + "\nimport {readFile} from 'node:fs/promises';\nexport async function handler(req: " + annotation + ") {\n const userPath=req.query.path;\n const content=await readFile(userPath, 'utf8');\n return content;\n}\n"})
+                self.assertTrue(any(item.rule_id == "JS-SOURCE-HTTP" for item in pack.facts.values()))
+                self.assertTrue(all(item.metadata.get("binding_certainty") == "may" for item in pack.facts.values() if item.rule_id == "JS-SOURCE-HTTP"))
+                self.assertTrue(any(item.rule_id == "JS-SINK-FILE" and item.dataflow_verified for item in pack.candidates))
+
+    def test_imported_express_application_parameter_registers_route(self) -> None:
+        """模块化 mount(app: Express) 的路由注册保留 request 字段来源。"""
+        pack = self._analyze({"routes.ts": "import type { Express as App } from 'express';\nimport {readFileSync} from 'node:fs';\nexport function mount(app: App) { app.get('/file', (req,res) => { const data=readFileSync(req.query.path); res.send(data); }); }\n"})
+        self.assertTrue(any(item.dataflow_verified and item.rule_id == "JS-SINK-FILE" for item in pack.candidates))
+
+    def test_request_api_context_follows_resolved_cross_file_parameter(self) -> None:
+        """路由请求通过真实跨文件调用传入结构类型 helper，字段输入仍可定位。"""
+        pack = self._analyze({
+            "routes.ts": "import express from 'express'; import {handler} from './handler.js'; const app=express(); app.get('/file', (req,res) => handler(req,res));",
+            "handler.ts": "import {readFile} from 'node:fs/promises'; export async function handler(input: {query: any}, response: any) { const path=input.query.path; return await readFile(path, 'utf8'); }",
+        })
+        sources = [fact for fact in pack.facts.values() if fact.rule_id == "JS-SOURCE-HTTP"]
+        self.assertTrue(sources)
+        self.assertTrue(all(fact.location.path == "handler.ts" for fact in sources))
+        self.assertTrue(all(fact.metadata.get("api_binding_callsite_ids") for fact in sources))
+        self.assertTrue(any(item.dataflow_verified and item.rule_id == "JS-SINK-FILE" for item in pack.candidates))
+
+    def test_response_or_reassigned_parameter_is_not_forwarded_request(self) -> None:
+        """转发 Response 或在 helper 中重绑定参数，不能凭 query 字段补成 HTTP 输入。"""
+        for forwarded, assignment in (("res", ""), ("req", "input=other;")):
+            with self.subTest(forwarded=forwarded, assignment=assignment):
+                pack = self._analyze({
+                    "routes.ts": "import express from 'express'; import {handler} from './handler.js'; const app=express(); app.get('/file', (req,res) => handler(" + forwarded + "));",
+                    "handler.ts": "import {readFileSync} from 'node:fs'; export function handler(input: {query: any}) { " + assignment + " return readFileSync(input.query.path); }",
+                })
+                self.assertFalse(any(fact.rule_id == "JS-SOURCE-HTTP" for fact in pack.facts.values()))
+
+    def test_request_api_forwarding_is_bounded_and_requires_field_read(self) -> None:
+        """API 上下文不是整对象污点；递归和深链有界，未解析调用不补 Source。"""
+        pack = self._analyze({"routes.ts": "import express from 'express'; import {readFileSync} from 'node:fs'; const app=express(); app.get('/file', (req,res)=>first(req)); function first(input:any) { first(input); second(input); } function second(input:any) { third(input); } function third(input:any) { fourth(input); } function fourth(input:any) { fifth(input); } function fifth(input:any) { readFileSync(input.query.path); }"})
+        self.assertTrue(any(item.get("reason") == "parameter_api_depth_limit" for item in pack.scan_failures))
+        self.assertFalse(any(fact.rule_id == "JS-SOURCE-HTTP" for fact in pack.facts.values()))
+        for expression in ("input", "input.notAnInput"):
+            with self.subTest(expression=expression):
+                pack = self._analyze({"routes.ts": "import express from 'express'; import {readFileSync} from 'node:fs'; const app=express(); app.get('/file', (req,res)=>helper(req)); function helper(input:any) { readFileSync(" + expression + "); }"})
+                self.assertFalse(any(fact.rule_id == "JS-SOURCE-HTTP" for fact in pack.facts.values()))
+
+    def test_request_api_forwarding_retains_each_resolved_callsite(self) -> None:
+        """两层具名参数转发保留定位，并不把响应参数转成 Source。"""
+        pack = self._analyze({"routes.ts": "import express from 'express'; import {readFileSync} from 'node:fs'; const app=express(); app.get('/file', (req,res)=>first(req,res)); function first(request:any,response:any) { second(request,response); } function second(input:any,output:any) { readFileSync(input.query.path); readFileSync(output.query.path); }"})
+        sources = [fact for fact in pack.facts.values() if fact.rule_id == "JS-SOURCE-HTTP"]
+        self.assertTrue(sources)
+        self.assertTrue(all(len(fact.metadata["api_binding_callsite_ids"]) == 2 for fact in sources))
+        self.assertTrue(all(fact.metadata["value_identifiers"][0].startswith("input.query") for fact in sources))
+
+    def test_property_source_in_call_waits_for_project_return(self) -> None:
+        """属性输入既要核实当前读取，也不能直接污染固定安全返回的接收变量。"""
+        for returned, expected in (("value", True), ("'fixed'", False)):
+            with self.subTest(returned=returned):
+                pack = self._analyze({"run.js": "import {exec} from 'node:child_process';\nfunction clean(value) { return " + returned + "; }\nfunction run() { const command=clean(process.env.CMD); exec(command); }\n"})
+                self.assertEqual(expected, any(item.dataflow_verified and item.rule_id == "JS-SINK-SHELL" for item in pack.candidates))
+
+    def test_parameter_comments_and_typescript_this_do_not_consume_arguments(self) -> None:
+        """参数注释和 TS 的 this 类型伪参数不是运行时参数，不得使真实实参错位。"""
+        for prefix in ("/* description */", "this: Context,", "this: Context, /* description */"):
+            for selected, expected in (("safe", False), ("command", True)):
+                with self.subTest(prefix=prefix, selected=selected):
+                    pack = self._analyze({"run.ts": "import {exec} from 'node:child_process';\nfunction execute(" + prefix + " safe: string, command: string) { exec(" + selected + "); }\nfunction run() { execute('fixed', process.env.CMD); }\n"})
+                    self.assertEqual(expected, any(item.dataflow_verified and item.rule_id == "JS-SINK-SHELL" for item in pack.candidates))
+
+    def test_argument_comments_do_not_shift_sensitive_positions(self) -> None:
+        """注释不占实参位置；危险位置零仍是执行命令，安全兄弟实参保持隔离。"""
+        for selected, expected in (("safe", False), ("command", True)):
+            with self.subTest(selected=selected):
+                pack = self._analyze({"run.ts": "import {exec} from 'node:child_process';\nfunction execute(safe: string, command: string) { exec(/* command */ " + selected + "); }\nfunction run() { execute(/* prefix */ 'fixed', /* input */ process.env.CMD); }\n"})
+                self.assertEqual(expected, any(item.dataflow_verified and item.rule_id == "JS-SINK-SHELL" for item in pack.candidates))
+
+    def test_literal_comments_do_not_overwrite_array_input_or_invent_object_members(self) -> None:
+        """值后的注释不能覆盖数组槽位；解构注释也不生成未知属性或错误位置。"""
+        for pattern, value in (("[safe, command]", "['fixed', process.env.CMD /* detail */]"),
+                               ("{/* detail */ safe, command}", "{safe:'fixed', /* detail */ command:process.env.CMD}")):
+            for selected, expected in (("safe", False), ("command", True)):
+                with self.subTest(pattern=pattern, selected=selected):
+                    pack = self._analyze({"run.js": "import {exec} from 'node:child_process'; function run(){ const " + pattern + "=" + value + "; exec(" + selected + "); }"})
+                    self.assertEqual(expected, any(item.dataflow_verified and item.rule_id == "JS-SINK-SHELL" for item in pack.candidates))
+                    self.assertFalse(any(item.get("reason") == "unsupported_binding_pattern:comment" for item in pack.scan_failures))
+
+    def test_local_or_rebound_request_types_do_not_invent_http_sources(self) -> None:
+        """仅名称相似的本地 Request、联合类型及重绑定参数不能猜成 HTTP 实例。"""
+        for prefix, annotation, setup in (("interface Request {query: any}", "Request", ""),
+                                           ("import type {Request} from 'other-library';", "Request", ""),
+                                           ("import type {Request} from 'express';", "Request | Other", ""),
+                                           ("import type {Request} from 'express';", "Request", "req=other;")):
+            with self.subTest(prefix=prefix, annotation=annotation, setup=setup):
+                pack = self._analyze({"handler.ts": prefix + "\nimport {readFileSync} from 'node:fs';\nfunction handler(req: " + annotation + ") { " + setup + " readFileSync(req.query.path); }\n"})
+                self.assertFalse(any(item.rule_id == "JS-SOURCE-HTTP" for item in pack.facts.values()))
 
     def test_reassigned_import_and_destructured_shadow_do_not_match_platform(
         self,

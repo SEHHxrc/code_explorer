@@ -465,7 +465,7 @@ const submit = async () => {
     const run = await createAgentRun(props.projectId, {
       question: text,
       use_model: true,
-      max_steps: 4,
+      max_steps: 12,
       model: selectedModel.value || null,
     })
     runId.value = run.id

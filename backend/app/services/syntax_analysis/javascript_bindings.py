@@ -22,7 +22,7 @@ from backend.app.services.value_binding import (
 
 from .javascript import javascript_access_name
 from .literals import parse_static_index_literal
-from .tree_parser import field, text
+from .tree_parser import field, semantic_children, text
 
 
 P = ParamSpec("P")
@@ -119,7 +119,7 @@ def javascript_pattern(
             fallback=javascript_value(field(node, "right"), source, path, depth + 1),
         )
     if node.type == "rest_pattern":
-        inner = node.named_children[0] if node.named_children else None
+        inner = next(iter(semantic_children(node)), None)
         return BindingPattern(
             "rest",
             members=(
@@ -132,7 +132,7 @@ def javascript_pattern(
         for child in node.children:
             if child.type == ",":
                 position += 1
-            if not child.is_named:
+            if not child.is_named or child.is_extra:
                 continue
             if node.type == "array_pattern":
                 members.append(
@@ -146,9 +146,7 @@ def javascript_pattern(
             selector: str | int | None = text(key, source)
             if key.type == "computed_property_name":
                 selector = (
-                    parse_static_index_literal(text(key.named_children[0], source))
-                    if key.named_children
-                    else None
+                    parse_static_index_literal(text(next(iter(semantic_children(key)), None), source))
                 )
             elif key.type in {"string", "number"}:
                 selector = parse_static_index_literal(text(key, source))
@@ -194,12 +192,12 @@ def javascript_value(
         for child in node.children:
             if child.type == ",":
                 position += 1
-            if not child.is_named:
+            if not child.is_named or child.is_extra:
                 continue
             if child.type == "spread_element":
                 uncertain = True
                 spread = javascript_value(
-                    child.named_children[0] if child.named_children else None,
+                    next(iter(semantic_children(child)), None),
                     source,
                     path,
                     depth + 1,
@@ -238,9 +236,7 @@ def javascript_value(
                 selector = parse_static_index_literal(text(key, source))
             elif key.type == "computed_property_name":
                 selector = (
-                    parse_static_index_literal(text(key.named_children[0], source))
-                    if key.named_children
-                    else None
+                    parse_static_index_literal(text(next(iter(semantic_children(key)), None), source))
                 )
             if selector is None:
                 uncertain = True
@@ -303,7 +299,7 @@ def javascript_value(
         values = (
             [
                 javascript_value(child, source, path, depth + 1)
-                for child in args.named_children
+                for child in semantic_children(args)
             ]
             if args is not None
             else []
@@ -315,7 +311,7 @@ def javascript_value(
     else:
         values = [
             javascript_value(child, source, path, depth + 1)
-            for child in node.named_children
+            for child in semantic_children(node)
             if child.type not in {"property_identifier", "type_identifier"}
         ]
     return BindingValue(

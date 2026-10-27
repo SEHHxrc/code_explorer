@@ -61,11 +61,13 @@ class ValueBoundaryIndex:
             if source is None or target is None:
                 continue
             source_node = (
+                source.nodes.get(boundary.source_node_id) if boundary.source_node_id is not None else
                 source.nodes[source.exit_node_id]
                 if boundary.source_at_exit
                 else self._node(source, boundary.source_location)
             )
             target_node = (
+                target.nodes.get(boundary.target_node_id) if boundary.target_node_id is not None else
                 target.nodes[target.entry_node_id]
                 if boundary.capture
                 else self._node(target, boundary.target_location)

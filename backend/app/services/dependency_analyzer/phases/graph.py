@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import replace
 
 import networkx as nx
 
@@ -67,7 +68,10 @@ class GraphResolutionPhase(DependencyAnalyzerState):
                 if self.definitions.get(source) is not None and self.definitions[source].lang == "go" \
                         and base_kind in ("struct", "type"):
                     relation = "embeds"
-                graph.add_edge(source, target, relation=relation)
+                definition = self.definitions.get(source)
+                virtual = bool(definition and any(self._resolve_type(definition.file, literal, definition.lang) == target
+                               for literal in definition.virtual_bases))
+                graph.add_edge(source, target, relation=relation, virtual=virtual)
                 self.stats[f"edges_{relation}"] += 1
 
     def _resolve_overrides(self) -> None:
@@ -109,58 +113,61 @@ class GraphResolutionPhase(DependencyAnalyzerState):
                     self.stats["edges_uses"] += 1
                 continue
 
-            resolution = self._resolve_reference(ref)
-            target = resolution.target
-            if target is None:
-                self.stats["unresolved"] += 1
-                self.global_index["unresolved"].append({
-                    "callsite_id": ProgramIdentity.callsite_id(
-                        ref.file, ref.line, ref.column, ref.end_line, ref.end_column
-                    ),
-                    "file": ref.file,
-                    "line": ref.line,
-                    "column": ref.column,
-                    "end_line": ref.end_line,
-                    "end_column": ref.end_column,
-                    "from_fqn": ref.from_fqn,
-                    "kind": ref.kind,
-                    "name": ref.name,
-                    "receiver": ref.receiver,
-                    "resolution_method": resolution.resolution_method,
-                    "unresolved_reason": resolution.unresolved_reason or "symbol_not_found",
-                    "target_certainty": "unresolved",
-                    "confidence": resolution.confidence,
-                })
-                continue
-            if not graph.has_node(target) or target == source:
-                continue
-            target_def = self.definitions.get(target)
-            if ref.kind == "new" or (target_def is not None and target_def.kind in CLASS_LIKE):
-                relation = "instantiates"  # Python/TS 里 ``Foo()`` 就是实例化
-            else:
-                relation = "calls"
-            graph.add_edge(
-                source,
-                target,
-                id=self._reference_edge_id(ref, source, target, relation, resolution),
-                relation=relation,
-                **self._reference_edge_attributes(ref, resolution),
-            )
-            self.stats[f"edges_{relation}"] += 1
-            self.stats[f"resolved_{resolution.resolution_method}"] += 1
+            resolutions, reason = self._compiler_bindings.resolutions(ref) if self._compiler_bindings else ([], None)
+            if not resolutions:
+                fallback = self._resolve_reference(ref)
+                resolutions = [self._compiler_bindings.fallback(fallback, reason) if self._compiler_bindings else fallback]
+            for resolution in resolutions:
+                self._write_reference(source, ref, resolution)
 
-            if self.include_virtual_dispatch and relation == "calls":
-                self._expand_virtual(graph, source, target, ref)
+    def _write_reference(self, source: str, ref: Reference, resolution: ReferenceResolution) -> None:
+        """将唯一解析入口的结果写入调用边或未解析诊断，索引复用同一结果。"""
+        graph, target = self.global_graph, resolution.target
+        if target is None:
+            self.stats["unresolved"] += 1
+            self.global_index["unresolved"].append({
+                "callsite_id": ProgramIdentity.callsite_id(ref.file, ref.line, ref.column, ref.end_line, ref.end_column),
+                "file": ref.file, "line": ref.line, "column": ref.column,
+                "end_line": ref.end_line, "end_column": ref.end_column,
+                "from_fqn": ref.from_fqn, "kind": ref.kind, "name": ref.name, "receiver": ref.receiver,
+                "resolution_method": resolution.resolution_method,
+                "unresolved_reason": resolution.unresolved_reason or "symbol_not_found",
+                "fallback_reason": resolution.fallback_reason,
+                "target_certainty": "unresolved", "confidence": resolution.confidence,
+            })
+            return
+        if not graph.has_node(target) or target == source:
+            return
+        target_def = self.definitions.get(target)
+        if ref.kind == "call" and ref.name == "super" and not ref.receiver and ref.lang in {"javascript", "typescript"} \
+                and target_def is not None and target_def.kind in CLASS_LIKE:
+            constructor = self.class_members.get(target, {}).get("constructor")
+            if constructor:
+                target = constructor
+                target_def = self.definitions.get(target)
+                resolution = replace(resolution, target=target, dispatch="direct",
+                                     resolution_method=resolution.resolution_method + "_initializer")
+        relation = "instantiates" if ref.kind == "new" or (
+            target_def is not None and target_def.kind in CLASS_LIKE) else "calls"
+        graph.add_edge(
+            source, target,
+            id=self._reference_edge_id(ref, source, target, relation, resolution),
+            relation=relation, **self._reference_edge_attributes(ref, resolution),
+        )
+        self.stats[f"edges_{relation}"] += 1
+        self.stats[f"resolved_{resolution.resolution_method}"] += 1
+        if self.include_virtual_dispatch and relation == "calls" and (
+            not resolution.resolution_method.endswith("_declaration_binding") or resolution.dispatch == "virtual"
+        ):
+            self._expand_virtual(graph, source, target, ref, resolution)
 
     @staticmethod
     def _reference_edge_attributes(ref: Reference, resolution: ReferenceResolution) -> dict:
         """把引用位置和解析不确定性转换为可持久化边属性。"""
-        callsite_id = ProgramIdentity.callsite_id(
-            ref.file, ref.line, ref.column, ref.end_line, ref.end_column
-        )
         location_id = ProgramIdentity.location_id(
             ref.file, ref.line, ref.column, ref.end_line, ref.end_column
         )
+        callsite_id = ProgramIdentity.callsite_for_location(location_id)
         return {
             "callsite_id": callsite_id,
             "dispatch": resolution.dispatch,
@@ -170,6 +177,7 @@ class GraphResolutionPhase(DependencyAnalyzerState):
             "confidence": resolution.confidence,
             "truncated": resolution.truncated,
             "unresolved_reason": resolution.unresolved_reason,
+            "fallback_reason": resolution.fallback_reason,
             "origin": "inferred",
             "callsite": {
                 "id": callsite_id,
@@ -199,7 +207,8 @@ class GraphResolutionPhase(DependencyAnalyzerState):
         ))
         return "ref:" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
 
-    def _expand_virtual(self, graph: nx.MultiDiGraph, source: str, target: str, ref: Reference) -> None:
+    def _expand_virtual(self, graph: nx.MultiDiGraph, source: str, target: str, ref: Reference,
+                        parent_resolution: ReferenceResolution) -> None:
         """多态：调用点连向基类方法时，同时连向各子类的覆写实现。"""
         definition = self.definitions.get(target)
         if definition is None or definition.kind not in ("method", "constructor"):
@@ -218,16 +227,19 @@ class GraphResolutionPhase(DependencyAnalyzerState):
                 continue
             seen.add(override)
             overrides.append(override)
-        truncated = len(overrides) > self.MAX_VIRTUAL_TARGETS
-        for override in overrides[:self.MAX_VIRTUAL_TARGETS]:
+        truncated = len(overrides) > self.max_virtual_targets
+        for override in overrides[:self.max_virtual_targets]:
             resolution = ReferenceResolution(
                 target=override,
                 dispatch="virtual",
                 target_scope="project",
-                resolution_method="virtual_expansion",
+                resolution_method=("typescript_binding_virtual_expansion"
+                                   if parent_resolution.resolution_method == "typescript_declaration_binding"
+                                   else "virtual_expansion"),
                 target_certainty="may",
                 confidence="medium",
-                truncated=truncated,
+                truncated=truncated or parent_resolution.truncated,
+                fallback_reason=parent_resolution.fallback_reason,
             )
             graph.add_edge(
                 source,
@@ -244,7 +256,9 @@ class GraphResolutionPhase(DependencyAnalyzerState):
                 "file": ref.file,
                 "line": ref.line,
                 "available": len(overrides),
-                "retained": self.MAX_VIRTUAL_TARGETS,
+                "retained": self.max_virtual_targets,
+                "omitted_target_symbols": overrides[self.max_virtual_targets:self.max_virtual_targets + 256],
+                "omitted_target_list_truncated": len(overrides) > self.max_virtual_targets + 256,
             })
 
     @staticmethod
@@ -276,6 +290,15 @@ class GraphResolutionPhase(DependencyAnalyzerState):
         name, receiver = ref.name, ref.receiver
         file = ref.file
         class_fqn = self._real_class(ref.class_fqn) if ref.class_fqn else ""
+
+        if not receiver and class_fqn and name in {"super", "this"} and lang in {"java", "javascript", "typescript"}:
+            hierarchy = getattr(self, "_type_hierarchy", None)
+            parents = [base.symbol_id for base in hierarchy.types[class_fqn].bases if base.relation == "inherits"] \
+                if hierarchy is not None and class_fqn in hierarchy.types else []
+            owner = class_fqn if name == "this" else parents[0] if len(parents) == 1 else ""
+            constructor_name = owner.split("::")[-1] if lang == "java" else "constructor"
+            target = self.class_members.get(owner, {}).get(constructor_name)
+            return self._resolution(target, "constructor_delegation", unresolved_reason="initializer_target_not_unique")
 
         if ref.kind == "new":
             literal = f"{receiver}.{name}" if receiver else name

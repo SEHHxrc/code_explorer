@@ -1,0 +1,10 @@
+{
+  "name": "code-explorer-typescript-semantics",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "只读 JS/TS 编译器语义工作进程，不安装或执行被分析项目",
+  "dependencies": {
+    "typescript": "6.0.3"
+  }
+}

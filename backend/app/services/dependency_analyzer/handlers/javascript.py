@@ -270,7 +270,8 @@ class JavaScriptHandler(BaseHandler):
 
     def h_call(self, node: tree_sitter.Node, ctx: FileContext) -> int | None:
         """解析函数调用语法节点并把结果写入文件上下文。"""
-        name, receiver = self.split_callee(ctx, _field(node, "function"))
+        callee = _field(node, "function")
+        name, receiver = ("super", "") if callee is not None and callee.type == "super" else self.split_callee(ctx, callee)
         if name:
             ctx.add_ref(node, "call", name, receiver)
         return 0

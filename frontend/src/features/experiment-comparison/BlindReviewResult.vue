@@ -1,7 +1,7 @@
 <template>
   <section v-if="review" class="saved-review" aria-label="已保存的盲评结果">
     <h4>已保存的盲评结果 · {{ reviewPreference(review.preferred_lane) }}</h4>
-    <p>分数为人工评价，不代表系统已验证结论正确。每项满分 5 分；缺失历史分数不补填。</p>
+    <p>分数为人工评价，不代表系统已验证结论正确。每项满分 5 分；缺失历史分数不补填。不计算加权总分，条目多不能抵消闭合误判。</p>
     <table>
       <thead><tr><th>答案</th><th v-for="label in dimensions" :key="label">{{ label }}</th></tr></thead>
       <tbody><tr v-for="lane in ['left', 'right']" :key="lane">
@@ -14,9 +14,11 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { reviewPreference } from './history.js'
-defineProps({ review: { type: Object, default: null } })
-const dimensions = { correctness: '正确性', completeness: '完整性', evidence: '证据充分', hallucination_control: '幻觉控制' }
+import { savedReviewDimensions } from './reviewRubric.js'
+const props = defineProps({ review: { type: Object, default: null } })
+const dimensions = computed(() => savedReviewDimensions(props.review))
 </script>
 
 <style scoped>

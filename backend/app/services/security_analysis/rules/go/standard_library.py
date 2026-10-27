@@ -21,9 +21,8 @@ GO_CORE_CALL_RULES: tuple[CallRule, ...] = (
         "GO-SOURCE-HTTP-REQUEST", "source", "http_request",
         (
             "http.Request.FormValue", "http.Request.PostFormValue",
-            "Header.Get",
         ),
-        languages=("go",), trust_class="untrusted", match_suffix=True,
+        languages=("go",), trust_class="untrusted", receiver_api_types=("http.Request",),
         result_role="source",
         result_positions=(0,),
     ),
@@ -98,15 +97,20 @@ GO_CORE_CALL_RULES: tuple[CallRule, ...] = (
     ),
     CallRule(
         "GO-GUARD-VALIDATION", "guard", "validation",
-        ("regexp.MatchString", "url.ParseRequestURI"), languages=("go",),
+        ("url.ParseRequestURI",), languages=("go",),
         match_suffix=True, argument_role="guard", argument_positions=(0,),
+    ),
+    CallRule(
+        "GO-GUARD-REGEXP", "guard", "validation", ("regexp.MatchString",), languages=("go",),
+        match_suffix=True, argument_role="guard", argument_positions=(1,),
+        preconditions=("第二实参是待验证文本；还须核实模式、matched/error 与分支。匹配观察不证明已过滤或已阻断危险操作。",),
     ),
 )
 
 
 GO_STANDARD_LIBRARY_PACK = RulePack(
     name="go-core",
-    version="1.1",
+    version="1.3",
     languages=("go",),
     call_rules=GO_CORE_CALL_RULES,
 )

@@ -38,7 +38,7 @@
               v-else-if="activeWorkspace === 'explore'"
               class="workspace-view explore-view"
               :file-tree="analysis.fileTree.value"
-              :dependency-graph="analysis.dependencyGraph.value"
+              :project-id="analysis.currentProjectId.value"
             />
             <AgentWorkspace
               v-else-if="activeWorkspace === 'agent'"
