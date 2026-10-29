@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from backend.app.services.value_binding import BindingPattern, BindingValue
+from backend.app.services.value_binding.contracts import CallableAccess
 from backend.app.services.value_binding.parameters import ParameterKind
 from backend.app.services.value_binding.returns import ReturnBinding
 from backend.app.services.value_binding.storage import StorageAllocation
@@ -44,6 +45,8 @@ class ControlCallSite:
     initializer_kind: Literal["", "base", "same"] = ""
     positional_conditions: tuple[ConditionExpression, ...] = ()
     keyword_conditions: tuple[tuple[str, ConditionExpression], ...] = ()
+    callable_access: CallableAccess | None = None
+    argument_binding_error: str = ""
 
 
 @dataclass(frozen=True)

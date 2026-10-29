@@ -41,9 +41,6 @@ class CompilerBindingIndex:
         if result is None or ref.kind not in {"call", "new"}:
             return [], None
         counts = self.counts[result.backend]
-        if ref.file.endswith(".vue"):
-            counts["fallback_calls"] += 1
-            return [], "vue_semantics_not_integrated"
         if result.status in {"unavailable", "failed"}:
             reason = str(result.diagnostics[0]["reason"]) if result.diagnostics else "compiler_unavailable"
             counts["fallback_calls"] += 1
@@ -153,7 +150,7 @@ class CompilerBindingIndex:
             "backend_runs": [result.summary() | dict(self.counts[result.backend]) for result in self.results],
             "coverage": artifact.coverage.model_copy(update={"variable_type_count": len(types)}),
             "limitations": list(dict.fromkeys([*artifact.limitations,
-                "编译器结果仅提供声明绑定和类型信息，不证明唯一动态目标、完整堆传播或路径可行性；Vue 暂用显式回退。",
+                "编译器结果仅提供声明绑定和类型信息，不证明唯一动态目标、完整堆传播或路径可行性。",
                 "Go 原生 SSA 保留 CFG/φ/操作数关系；内存读写不等于别名分析，现有安全传播仍使用公共 ProgramGraph。",
                 "JS/TS 未显式配置 moduleDetection 时使用独立模块语义，传统共享全局脚本可能回退。"])),
         })

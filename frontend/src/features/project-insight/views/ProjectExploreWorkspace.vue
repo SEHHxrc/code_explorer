@@ -14,7 +14,8 @@
       </div>
       <div class="path-notice">
         {{ pathCounts }}。仅展示已保存事实，非全部可能路径或已确认漏洞；边沿用调用方向，不等同数据流方向。
-        未配对操作以独立节点标记，不补造传播连线。
+        实线保留已有解析调用，灰色细箭头仅为调用结构；虚线为动态派发或启发式候选目标。线型不证明值传播闭合，断点表示传播尚未建立。
+        <span v-if="paths.data.value?.structure_truncated" class="warning">结构上下文达到展示上限。</span>
         <span v-if="hasLimit" class="warning">存在分析/显示上限、诊断或缺失项，请查看覆盖说明。</span>
         <el-tooltip placement="bottom" :content="coverageDescription"><el-button link size="small">覆盖说明</el-button></el-tooltip>
       </div>

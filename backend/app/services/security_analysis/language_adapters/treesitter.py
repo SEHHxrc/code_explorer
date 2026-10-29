@@ -15,8 +15,7 @@ from ..ir import SecurityProgramIR, IRLocation, IRExpression
 from backend.app.services.program_index import ProgramIdentity
 from backend.app.services.syntax_analysis import text, walk_named
 from backend.app.services.syntax_analysis.javascript import parser_for_file
-from backend.app.services.syntax_analysis.source_units import SourceUnit
-from backend.app.services.syntax_analysis.session import parse_tree, source_view
+from backend.app.services.syntax_analysis.session import parse_tree
 from backend.app.services.syntax_analysis.javascript_bindings import javascript_binding_scope
 from backend.app.services.syntax_analysis.static_sequences import static_sequence_value
 from .base import LanguageFrontend
@@ -103,11 +102,6 @@ class TreeSitterSecurityFrontend(LanguageFrontend):
                     program.failures.append({"path": relative, "reason": "file_too_large"})
                     continue
                 source = target.read_bytes()
-                unit = source_view(str(target), source, self.language)
-                if unit.language != self.language:
-                    program.files_considered -= 1
-                    continue
-                source = unit.source
                 tree = parse_tree(str(target), source, parser_for_file(self.parser_name, relative), self.parser_pool)
                 if tree.root_node.has_error:
                     program.failures.append({
@@ -116,8 +110,7 @@ class TreeSitterSecurityFrontend(LanguageFrontend):
                         "reason": f"{self.language}_partial_parse_error",
                     })
                 with javascript_binding_scope(source, relative):
-                    self.collect_file_context(program, relative, unit, tree.root_node, root)
-                program.failures.extend({"path": relative, "language": self.language, "reason": reason} for reason in unit.diagnostics)
+                    self.collect_file(program, relative, source, tree.root_node)
                 program.files_scanned += 1
             except (OSError, UnicodeError, ValueError, RuntimeError) as exc:
                 program.failures.append({
@@ -128,16 +121,6 @@ class TreeSitterSecurityFrontend(LanguageFrontend):
                 })
         return program
 
-    def collect_file_context(
-        self, program: SecurityProgramIR, path: str, unit: SourceUnit,
-        root: Any, project_root: Path,
-    ) -> None:
-        """提供受控项目上下文；默认适配器不读取额外配置或保存跨项目状态。"""
-        self.collect_unit(program, path, unit, root)
-
-    def collect_unit(self, program: SecurityProgramIR, path: str, unit: SourceUnit, root: Any) -> None:
-        """默认只消费脚本视图，嵌入语言前端可附加模板事实。"""
-        self.collect_file(program, path, unit.source, root)
 
     @abstractmethod
     def collect_file(

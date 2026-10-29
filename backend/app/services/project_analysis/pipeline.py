@@ -90,12 +90,12 @@ class ProjectAnalysisPipeline:
         )
         report_progress(progress, "projection")
         file_tree = build_file_tree_with_symbols(project_root, file_symbols)
-        manifest = ProjectManifestBuilder(project_root).build(raw_graph)
+        manifest = ProjectManifestBuilder(project_root).build(raw_graph, graph_summary=analysis.get("graph_summary"))
         repo_map = build_repo_map(manifest, file_symbols)
         overview = render_deterministic_overview(manifest)
         diagnostics = {**analysis["diagnostics"], "syntax_reuse": syntax_statistics()}
         logger.info("analysis.completed", extra={"duration_ms": round((time.monotonic() - started) * 1000, 2),
-            "file_count": len(file_symbols), "node_count": len(raw_graph.get("nodes", [])),
+            "file_count": len(file_symbols), "node_count": manifest.graph_summary.get("node_count", 0),
             "stage": "completed" if security_evidence.completed else "partial_security_analysis"})
         return ProjectAnalysisBundle(
             raw_graph=raw_graph,
@@ -124,7 +124,9 @@ class ProjectAnalysisPipeline:
                 max_workers=max(1, min(max_workers, 16)),
             )
             report_progress(progress, "dependency", getattr(analyzer, "get_progress", None))
-            result = analyzer.run_full_analysis()
+            # 新公共入口不强制导出全量图；旧注入后端仍按原协议兼容，不能另跑一次解析。
+            runner = getattr(analyzer, "analyze_program", None)
+            result = runner() if runner is not None else analyzer.run_full_analysis()
             raw_graph = result.get("dependency_graph")
             file_symbols = result.get("file_symbols")
             stats = result.get("stats") or {}
@@ -140,6 +142,7 @@ class ProjectAnalysisPipeline:
                 "semantic_index": semantic_index,
                 "stats": stats,
                 "diagnostics": diagnostics,
+                "graph_summary": result.get("graph_summary"),
             }
         except ParserUnavailableError as exc:
             raise ProjectAnalysisPrerequisiteError(exc.public_message) from exc

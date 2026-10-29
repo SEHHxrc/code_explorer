@@ -73,11 +73,10 @@ class AnalysisBatches:
     def publish(self, ledger_json: str, evidence_ids: list[str], scopes: list[str]) -> dict[str, Any]:
         """验证输出格式/供应商元数据与展示状态，再原子提交一批；不做语义验证。"""
         from backend.app.experiments.findings import parse_ledger
+        from backend.app.experiments.report import report_transport_complete
         metadata = self.metadata
-        if metadata.refused or metadata.incomplete_reason or metadata.finish_reason in {"length", "content_filter"} or metadata.response_status in {"incomplete", "failed", "cancelled"}:
-            raise ValueError("本批模型输出未完整返回，不能标记为已分析。")
-        if metadata.finish_reason not in {"stop", "tool_calls", "function_call"} and metadata.response_status != "completed":
-            raise ValueError("本批终止状态未知，不能把有效 JSON 当作已完整返回。")
+        if report_transport_complete(metadata, allow_tool_calls=True) is not True:
+            raise ValueError("本批模型输出未完整返回或终止状态未知，不能标记为已分析。")
         ledger = parse_ledger(ledger_json)
         report = ledger.render()
         ids = set(evidence_ids)

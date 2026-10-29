@@ -1,6 +1,14 @@
 import { apiClient } from './httpClient.js'
 import { consumeSse } from './sseClient.js'
 
+/** 失败后的独立诊断；只有显式 POST 会调用模型，GET/重载不会产生模型用量。 */
+export const requestReportDiagnostic = async (comparisonId, lane, signal) => (
+  (await apiClient.post(`/api/experiments/comparisons/${encodeURIComponent(comparisonId)}/diagnostic/${lane}`, {}, { signal })).data.data
+)
+export const readReportDiagnostic = async (comparisonId, lane, signal) => (
+  (await apiClient.get(`/api/experiments/comparisons/${encodeURIComponent(comparisonId)}/diagnostic/${lane}`, { signal })).data.data
+)
+
 /** 历史摘要按项目分页；原结果/提示词快照按需读取，完整审计权限不变。 */
 export const listExperimentHistory = async (projectId, offset = 0, limit = 20) => (
   (await apiClient.get(`/api/experiments/projects/${encodeURIComponent(projectId)}/comparisons`, {

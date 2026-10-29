@@ -71,3 +71,5 @@ ProgramGraph 前端对同一语法节点生成完全相同的 `callsite_id`。
 3. 输出同一 IR 语义；
 4. 将语言特有参数绑定放入 `LanguageSemantics`；
 5. 不在前端中硬编码 Source/Sink 规则。
+
+Node.js 请求体回调的专属适配位于 `node_http.py`；只保留服务端 data/end 局部值边界。浏览器事件、React 状态及 Vue 模板适配已从实现中删除，不维护平行版本。

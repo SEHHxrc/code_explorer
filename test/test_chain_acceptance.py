@@ -27,7 +27,7 @@ class ChainAcceptanceTests(unittest.TestCase):
     def test_frozen_framework_chains_and_exact_delivery(self) -> None:
         """输入→调用/返回/对象→敏感槽位→证据交付逐项验收；所有目标只静态读取。"""
         matrix = json.loads(MATRIX.read_text(encoding="utf8"))
-        self.assertEqual("chain-acceptance-v1", matrix["version"])
+        self.assertEqual("chain-acceptance-server-v2", matrix["version"])
         for case in matrix["cases"]:
             with self.subTest(case=case["id"]):
                 with tempfile.TemporaryDirectory() as directory:

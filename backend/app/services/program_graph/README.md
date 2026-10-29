@@ -1,5 +1,10 @@
 # program_graph 模块
 
+文件范围优先读取公共语义索引的 `files`，不依赖展示图的模块节点；旧图和无范围的直接调用仍兼容。
+前端只观察 `CallableAccess(receiver, member)`，由公共语义解析器解释可调用值；不在 CFG 前端猜调用目标。
+Python 非字面量 `**mapping` 保留为独立展开实参及直接引用，已观察的重复关键字保留 `argument_binding_error`。
+`ControlCallSite` 到 `ProgramCallSite` 共用这份契约；参数和对象求解仍在相应公共/语言语义消费者中完成。
+
 本模块是依赖图和静态安全分析之间的最小 CPG 公共层。它不替代前端依赖图，也不向浏览器返回函数内部的全部节点。
 
 `value_paths.ValuePathSearch(function).search(...)` 查询既有值边的有界不同序列，返回
@@ -207,7 +212,6 @@ JS/TS 额外复用 `syntax_analysis/javascript.py` 的函数/参数语法，匿�
 TypeScript `.tsx` 使用 TSX grammar。spread 之后实参位置未知，停止绑定而非伪造位置映射。
 复杂解构、实参和形参通过 `value_binding` 协议处理，固定字段的空输入显式保留，避免安全兄弟字段获得污点。
 JS/TS 的 `obj["key"]` 与 `obj.key` 规范为同一词法字段；其他语言保留自己的下标语义。
-Vue `.vue` 与其他分析器共用 `source_units`，单个 `<script setup>` 建立生成的 `vue_setup` 函数分区，脚本操作后接入 `v-html` 读值；分区范围覆盖原文件但不伪装源码中真的声明了该函数。
 匿名回调的函数内 CFG/DFG 不代表异步回调调用图、闭包捕获或完整 Promise 时序已实现。
 公共 Def/Use、调用点和结构绑定遍历止于嵌套函数作用域，不把函数创建当函数体执行。
 安全消费者可通过显式 `IRValueBoundary` 在私有副本中绑定捕获槽位和 CFG 退出值，复用
@@ -253,8 +257,7 @@ Go 仅显式直接 return 和有序接收得到分量隔离，裸命名返回、
 
 公共 `ControlStatement/ProgramGraphNode` 提供默认 must 的 certainty；历史图缺少字段时仍按
 原来的确定写入处理。框架可能写入可显式标记 inferred/may，通用到达定义算法保留之前定义，
-值流 Overlay 延续 may。Vue setup 的有限文本 v-model 使用这个公共能力；它不是按模板源码
-排列事件，也不模拟完整响应式调度。ref 词法身份由 syntax_analysis.vue_bindings 统一映射。
+值流 Overlay 延续 may。Node.js 请求体回调等有静态依据的服务端绑定可以使用该公共能力；浏览器模板和组件专用降低已移除。
 
 八种语言现在都对可由语法确定的声明和赋值执行输入输出配对：Python 序列解包、Java 多
 declarator、JavaScript/TypeScript declarator、Go 并行绑定、C/C++ init declarator 与 Rust

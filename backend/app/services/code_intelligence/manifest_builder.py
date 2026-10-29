@@ -77,7 +77,7 @@ class ProjectManifestBuilder:
         """输入项目根目录、文件树与依赖图，初始化 Manifest 构建器。"""
         self.root = Path(project_root).resolve()
 
-    def build(self, dependency_graph: dict[str, Any] | None = None) -> ProjectManifest:
+    def build(self, dependency_graph: dict[str, Any] | None = None, *, graph_summary: dict[str, Any] | None = None) -> ProjectManifest:
         """输入可选依赖图，输出语言、框架、入口、命令、模块和证据组成的 manifest。"""
         files = self._collect_files()
         language_counts = Counter(
@@ -155,7 +155,7 @@ class ProjectManifestBuilder:
         ])
 
         modules = self._build_modules(files)
-        graph_summary = self._summarize_graph(dependency_graph or {})
+        graph_summary = graph_summary if graph_summary is not None else self._summarize_graph(dependency_graph or {})
         return ProjectManifest(
             project_name=self.root.name,
             languages=[name for name, _ in language_counts.most_common()],

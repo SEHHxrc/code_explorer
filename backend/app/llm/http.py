@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 
 MAX_ERROR_BODY_BYTES = 64 * 1024
 MAX_TRANSIENT_RETRIES = 2
-MAX_RATE_LIMIT_WAIT_SECONDS = 60.0
-RETRY_POLICY_VERSION = "bounded-rate-limit-v1"
+MAX_RETRY_WAIT_SECONDS = 300.0
+RETRY_POLICY_VERSION = "exponential-jitter-v2"
 _TRANSIENT_UPSTREAM_STATUSES = {502, 503, 504}
 _NON_RETRYABLE_LIMIT_CODES = {
     "insufficient_quota",
@@ -236,7 +236,16 @@ async def _request_with_retry(
 
 
 def _retry_delay(retry_after: str | None, attempt: int, *, rate_limited: bool = False) -> float | None:
-    """解析秒数/HTTP 日期；429 默认 30/60 秒，超出本地等待边界时返回 None、禁止提前重试。"""
+    """计算从零编号的重试等待秒数，返回 None 表示服务端等待超出本地边界。
+
+    指数窗口上限每次翻倍，在其后半段均匀采样以错开并发请求；429 的
+    初始窗口为 60 秒、最大 300 秒，其余临时故障为 1 秒、最大 8 秒。
+    Retry-After 支持秒数和 HTTP 日期，仅作为下限，绝不截短后提前重试。
+    """
+    if attempt < 0:
+        raise ValueError("Retry attempt must be nonnegative")
+    base, limit = (60.0, MAX_RETRY_WAIT_SECONDS) if rate_limited else (1.0, 8.0)
+    minimum = 0.0
     try:
         if retry_after is not None:
             try:
@@ -245,15 +254,14 @@ def _retry_delay(retry_after: str | None, attempt: int, *, rate_limited: bool = 
                 date = parsedate_to_datetime(retry_after)
                 seconds = date.replace(tzinfo=date.tzinfo or timezone.utc).timestamp() - time.time()
             if math.isfinite(seconds):
-                seconds = max(seconds, 0.0)
-                if rate_limited:
-                    return seconds if seconds <= MAX_RATE_LIMIT_WAIT_SECONDS else None
-                return min(seconds, 30.0)
+                minimum = max(seconds, 0.0)
     except (ValueError, TypeError, OverflowError):
         pass
-    if rate_limited:
-        return min(30.0 * 2.0 ** attempt + random.uniform(0.0, 0.25), MAX_RATE_LIMIT_WAIT_SECONDS)
-    return min(2.0 ** attempt + random.uniform(0.0, 0.25), 8.0)
+    if minimum > MAX_RETRY_WAIT_SECONDS:
+        return None
+    # 达到上限后仍保留随机区间；指数先封顶，避免异常重试编号导致浮点溢出。
+    ceiling = min(base * 2.0 ** min(attempt, math.ceil(math.log2(limit / base))), limit)
+    return max(minimum, random.uniform(ceiling / 2.0, ceiling))
 
 
 def _request_json_sync(

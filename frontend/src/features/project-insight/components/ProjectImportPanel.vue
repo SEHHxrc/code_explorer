@@ -9,7 +9,7 @@
     <div v-show="!importing">
       <el-form :inline="true">
         <el-form-item label="Git 仓库链接">
-          <el-input v-model="repoUrl" :disabled="hasProject || importing" placeholder="https://github.com/xxx/xxx" style="width: 300px" clearable />
+          <el-input v-model="repoUrl" :disabled="hasProject || importing" placeholder="GitHub / GitLab 仓库地址" style="width: 300px" clearable />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" :loading="importing" :disabled="hasProject" @click="submitGit">分析 Git 项目</el-button>

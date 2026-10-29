@@ -9,11 +9,11 @@ from collections.abc import Iterable
 
 from backend.app.services.program_index import ProgramIdentity
 from backend.app.services.value_binding import BindingPattern, BindingValue, PatternMember
+from backend.app.services.value_binding.contracts import CallableAccess
 from backend.app.services.value_binding.returns import ReturnBinding
 from backend.app.services.value_binding.parameters import ParameterKind
 from backend.app.services.syntax_analysis.javascript import parser_for_file
-from backend.app.services.syntax_analysis.source_units import SourceUnit
-from backend.app.services.syntax_analysis.session import parse_tree, source_view
+from backend.app.services.syntax_analysis.session import parse_tree
 from backend.app.services.syntax_analysis.javascript_bindings import javascript_binding_scope
 from backend.app.services.syntax_analysis import (
     DEFAULT_TREE_SITTER_PARSER_POOL,
@@ -84,8 +84,6 @@ class TreeSitterProgramGraphFrontend(ProgramGraphFrontend):
         target = project_root / relative_path
         source = target.read_bytes()
         identity = str(target.absolute())
-        unit = source_view(identity, source, self.language)
-        source = unit.source
         tree = parse_tree(identity, source, parser_for_file(self.parser_name, relative_path), self.parser_pool)
         failures = []
         if tree.root_node.has_error:
@@ -97,8 +95,6 @@ class TreeSitterProgramGraphFrontend(ProgramGraphFrontend):
         collector = self.collector_type(relative_path, source)
         with javascript_binding_scope(source, relative_path):
             collector.collect(tree.root_node)
-            collector.collect_unit(unit, tree.root_node)
-        failures.extend({"path": relative_path, "language": self.language, "reason": reason} for reason in unit.diagnostics)
         return FrontendFileResult(
             functions=collector.functions,
             failures=failures,
@@ -156,9 +152,6 @@ class TreeSitterFunctionCollector:
         """从语法树根递归收集语言适配器识别的函数。"""
         self._walk_declarations(root, ())
 
-    def collect_unit(self, unit: SourceUnit, root: Any) -> None:
-        """混合文件可选入口；普通语言无需实现模板语义。"""
-        return None
 
     def _walk_declarations(self, node: Any, scope: tuple[str, ...]) -> None:
         """维护词法作用域并避免把函数体中的语句误当作外层声明。"""
@@ -580,6 +573,9 @@ class TreeSitterFunctionCollector:
                         if self.storage_language and StorageSyntax.operator(item) == "&"),
                     keyword_references=tuple((name, self._direct_reference(item)) for name, item in keywords),
                     initializer_kind=self.instance_syntax.initializer_call(current, self.source) if self.instance_syntax else "",
+                    callable_access=self._callable_access(current),
+                    argument_binding_error=("duplicate_keyword_argument" if len([key for key, _ in keywords if not key.startswith("**")])
+                        != len({key for key, _ in keywords if not key.startswith("**")}) else ""),
                 ))
             pending.extend(reversed(current.named_children))
         return tuple(sorted(result, key=lambda item: (
@@ -587,6 +583,10 @@ class TreeSitterFunctionCollector:
             item.location.column,
             item.callsite_id,
         )))
+
+    def _callable_access(self, node: Any) -> CallableAccess | None:
+        """可选语言钩子：返回成员可调用值的规范表达；默认不猜测动态访问。"""
+        return None
 
     def _direct_reference(self, node: Any) -> str:
         """只接受 AST 确认的名称、字段或固定下标；运算、调用、动态下标不冒充引用。"""

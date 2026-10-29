@@ -33,7 +33,7 @@ class ModelHttpErrorTests(unittest.TestCase):
         observer = Mock()
         with patch("backend.app.llm.http._request_json_sync", side_effect=[error, error, {"ok": True}]) as send, \
                 patch("backend.app.llm.http.asyncio.sleep", new=AsyncMock()) as sleep, \
-                patch("backend.app.llm.http.random.uniform", return_value=0), observe_requests(observer):
+                patch("backend.app.llm.http.random.uniform", side_effect=lambda low, high: low), observe_requests(observer):
             self.assertEqual({"ok": True}, asyncio.run(post_json("http://mock", payload, {}, 180)))
         self.assertEqual([30, 60], [call.args[0] for call in sleep.call_args_list])
         self.assertEqual([1, 2, 3], [call.kwargs["attempt"] for call in send.call_args_list])
@@ -68,21 +68,45 @@ class ModelHttpErrorTests(unittest.TestCase):
     def test_retry_after_seconds_date_invalid_and_excessive_delay(self) -> None:
         """429 遵守服务端等待；长于本地边界时停止，不提前重试。"""
         with patch("backend.app.llm.http.time.time", return_value=1000), \
-                patch("backend.app.llm.http.random.uniform", return_value=0):
+                patch("backend.app.llm.http.random.uniform", side_effect=lambda low, high: low):
             self.assertEqual(45, _retry_delay("45", 0, rate_limited=True))
-            self.assertEqual(20, _retry_delay(formatdate(1020, usegmt=True), 0, rate_limited=True))
-            self.assertEqual(0, _retry_delay(formatdate(900, usegmt=True), 0, rate_limited=True))
+            self.assertEqual(30, _retry_delay(formatdate(1020, usegmt=True), 0, rate_limited=True))
+            self.assertEqual(30, _retry_delay(formatdate(900, usegmt=True), 0, rate_limited=True))
             for invalid in (None, "invalid", "nan", "inf"):
                 self.assertEqual(30, _retry_delay(invalid, 0, rate_limited=True))
-            self.assertEqual(1, _retry_delay(None, 0))  # 网关短退避不变。
-            self.assertIsNone(_retry_delay("120", 0, rate_limited=True))
-        error = ModelEndpointError(status_code=429, error_code="RateLimitReached", retry_after="120")
+            self.assertEqual(0.5, _retry_delay(None, 0))
+            self.assertEqual(120, _retry_delay("120", 0, rate_limited=True))
+            self.assertEqual(120, _retry_delay("120", 0))  # 网关也不能截短服务端要求。
+            self.assertEqual(300, _retry_delay("300", 0, rate_limited=True))
+            self.assertIsNone(_retry_delay("301", 0, rate_limited=True))
+            self.assertIsNone(_retry_delay("301", 0))
+        error = ModelEndpointError(status_code=429, error_code="RateLimitReached", retry_after="301")
         with patch("backend.app.llm.http._request_json_sync", side_effect=error) as send, \
                 patch("backend.app.llm.http.asyncio.sleep", new=AsyncMock()) as sleep:
             with self.assertRaises(ModelEndpointError):
                 asyncio.run(post_json("http://mock", {}, {}, 180))
             self.assertEqual(1, send.call_count)
             sleep.assert_not_called()
+
+    def test_exponential_windows_keep_jitter_after_reaching_cap(self) -> None:
+        """等待窗口翻倍，封顶后仍采样；异常大的编号不会计算溢出。"""
+        for rate_limited, bounds in (
+            (True, [(30, 60), (60, 120), (120, 240), (150, 300), (150, 300)]),
+            (False, [(0.5, 1), (1, 2), (2, 4), (4, 8), (4, 8)]),
+        ):
+            with patch("backend.app.llm.http.random.uniform", side_effect=lambda low, high: (low + high) / 2) as sample:
+                delays = [_retry_delay(None, attempt, rate_limited=rate_limited) for attempt in (0, 1, 2, 3, 10**6)]
+                self.assertEqual(bounds, [call.args for call in sample.call_args_list])
+                self.assertEqual([(low + high) / 2 for low, high in bounds], delays)
+        with self.assertRaises(ValueError):
+            _retry_delay(None, -1)
+
+    def test_retry_after_is_a_floor_not_a_fixed_wait(self) -> None:
+        """服务端下限不能跳过退避；指数等待更长时仍采用指数等待。"""
+        with patch("backend.app.llm.http.random.uniform", side_effect=lambda low, high: high):
+            self.assertEqual(60, _retry_delay("0", 0, rate_limited=True))
+            self.assertEqual(120, _retry_delay("60", 1, rate_limited=True))
+            self.assertEqual(200, _retry_delay("200", 1, rate_limited=True))
 
     def test_cancelling_rate_limit_wait_stops_before_retry(self) -> None:
         """取消可中断等待，不发送下一次请求，等待记录不能写为完成。"""
@@ -229,7 +253,7 @@ class ModelHttpErrorTests(unittest.TestCase):
         with patch(
             "backend.app.llm.http._request_json_sync",
             side_effect=[temporary, {"ok": True}],
-        ) as request:
+        ) as request, patch("backend.app.llm.http.asyncio.sleep", new=AsyncMock()):
             result = asyncio.run(post_json("https://example.test", {}, {}, 1.0))
         self.assertEqual(result, {"ok": True})
         self.assertEqual(request.call_count, 2)

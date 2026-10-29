@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 from typing import BinaryIO
 
+from ..contracts import AcquiredProjectSource
 from ..exceptions import AcquisitionError, SourceValidationError, WorkspacePolicyError
 from ..policy import WorkspacePolicy
 
@@ -19,21 +20,21 @@ class ZipProjectSource:
         """输入工作区策略，初始化受限 ZIP 上传来源。"""
         self.policy = policy
 
-    def acquire(self, file_obj: BinaryIO, filename: str | None, operation_root: Path, destination: Path) -> str:
+    def acquire(self, file_obj: BinaryIO, filename: str | None, operation_root: Path, destination: Path) -> AcquiredProjectSource:
         """把项目来源获取到指定暂存工作区。"""
         archive = operation_root / "upload.part"
         try:
             self._write_upload(file_obj, archive)
             if not zipfile.is_zipfile(archive):
                 raise SourceValidationError("Uploaded file is not a valid ZIP archive.")
-            self._extract(archive, destination)
+            skipped_links = self._extract(archive, destination)
             archive.unlink(missing_ok=True)
         except (SourceValidationError, WorkspacePolicyError):
             raise
         except Exception as exc:
             raise AcquisitionError("Unable to read or extract the uploaded ZIP project.") from exc
         safe_name = os.path.basename(filename or "project.zip").replace("\x00", "")
-        return f"local_upload://{safe_name or 'project.zip'}"
+        return AcquiredProjectSource(f"local_upload://{safe_name or 'project.zip'}", skipped_links)
 
     def _write_upload(self, file_obj: BinaryIO, archive: Path) -> None:
         """把上传流按字节上限写入暂存文件。"""
@@ -45,15 +46,20 @@ class ZipProjectSource:
                     raise WorkspacePolicyError("Uploaded ZIP exceeds the archive size limit.")
                 output.write(chunk)
 
-    def _extract(self, archive: Path, destination: Path) -> None:
+    def _extract(self, archive: Path, destination: Path) -> int:
         """校验并解压 ZIP 归档到受控目录。"""
         actual_total = 0
+        skipped_links = 0
         with zipfile.ZipFile(archive, "r") as bundle:
             entries = bundle.infolist()
             if len(entries) > self.policy.max_archive_files:
                 raise WorkspacePolicyError("Uploaded ZIP contains too many files.")
             for entry in entries:
                 relative = self._validate_entry(entry)
+                if stat.S_ISLNK(entry.external_attr >> 16):
+                    # 与 Git 清洗一致：不创建/读取/跟随链接，也不将链接目标文本误当源码。
+                    skipped_links += 1
+                    continue
                 target = destination.joinpath(*relative.parts)
                 if not target.resolve().is_relative_to(destination.resolve()):
                     raise WorkspacePolicyError("Uploaded ZIP contains an unsafe path.")
@@ -67,6 +73,7 @@ class ZipProjectSource:
                         if actual_total > self.policy.max_extracted_bytes:
                             raise WorkspacePolicyError("Uploaded ZIP expands beyond the workspace size limit.")
                         output.write(chunk)
+        return skipped_links
 
     def _validate_entry(self, entry: zipfile.ZipInfo) -> PurePosixPath:
         """校验 ZIP 条目的路径、类型、大小和压缩比。"""
@@ -80,9 +87,10 @@ class ZipProjectSource:
             or relative.is_absolute()
             or ".." in relative.parts
             or any(":" in part for part in relative.parts)
-            or stat.S_ISLNK(unix_mode)
         ):
             raise WorkspacePolicyError("Uploaded ZIP contains an unsafe entry.")
+        if stat.S_IFMT(unix_mode) not in {0, stat.S_IFREG, stat.S_IFDIR, stat.S_IFLNK}:
+            raise WorkspacePolicyError("Uploaded ZIP contains an unsupported special-file entry.")
         if ratio > self.policy.max_compression_ratio:
             raise WorkspacePolicyError("Uploaded ZIP contains a suspicious compression ratio.")
         return relative

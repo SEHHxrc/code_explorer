@@ -4,15 +4,12 @@ from __future__ import annotations
 
 import ast
 from dataclasses import replace
-from pathlib import Path
 from typing import Any, Iterator
 
 from backend.app.services.program_index import ProgramIdentity
 from backend.app.services.syntax_analysis import extensions_for_language, field, text, semantic_children
-from backend.app.services.syntax_analysis.source_units import SourceUnit
-from backend.app.services.syntax_analysis.vue_bindings import vue_model_target, vue_setup_bindings, vue_template_expression_nodes, vue_template_names
 from backend.app.services.syntax_analysis.callback_inputs import CallbackParameterInput
-from backend.app.services.syntax_analysis.javascript_inputs import javascript_callback_inputs, project_uses_react
+from backend.app.services.syntax_analysis.node_http import node_request_inputs
 from backend.app.services.syntax_analysis.javascript import (
     JAVASCRIPT_FUNCTION_NODES,
     javascript_access_name,
@@ -38,7 +35,7 @@ from ..ir import (
     SecurityProgramIR,
 )
 from .treesitter import TreeSitterSecurityFrontend
-from .javascript_state import collect_javascript_value_boundaries
+from .node_http import collect_request_body_boundaries
 
 _CALLS = {"call_expression", "new_expression"}
 _FUNCTIONS = {
@@ -48,15 +45,10 @@ _FUNCTIONS = {
     "method_definition",
 }
 _GLOBALS = {
-    "location",
-    "document",
-    "window",
     "process",
     "eval",
     "Function",
     "fetch",
-    "localStorage",
-    "sessionStorage",
 }
 
 _PARAMETER_TYPES = {
@@ -70,7 +62,7 @@ _PARAMETER_TYPES = {
 
 
 class JavaScriptSecurityFrontend(TreeSitterSecurityFrontend):
-    """将 JavaScript/JSX 源码转换成通用安全 IR，复用公共 CFG/DFG。"""
+    """将 JavaScript 服务端源码转换成通用安全 IR，复用公共 CFG/DFG。"""
 
     language = "javascript"
     parser_name = "javascript"
@@ -82,76 +74,9 @@ class JavaScriptSecurityFrontend(TreeSitterSecurityFrontend):
         """追加一个文件的函数、调用、读写和覆盖缺口；不执行项目代码。"""
         _JavaScriptIRCollector(program, path, source, root).collect(root)
 
-    def collect_file_context(
-        self, program: SecurityProgramIR, path: str, unit: SourceUnit,
-        root: Any, project_root: Path,
-    ) -> None:
-        """利用项目内静态依赖识别自动 JSX 运行库，不执行配置或共享可变状态。"""
-        self._collect_unit(program, path, unit, root, project_uses_react(project_root, path))
-
-    def collect_unit(
-        self, program: SecurityProgramIR, path: str, unit: SourceUnit, root: Any
-    ) -> None:
-        """Vue 内联脚本与 v-html 共享原始坐标，模板只提取事实，不运行组件。"""
-        self._collect_unit(program, path, unit, root, False)
-
-    def _collect_unit(
-        self, program: SecurityProgramIR, path: str, unit: SourceUnit,
-        root: Any, react: bool,
-    ) -> None:
-        """将静态项目线索传入本文件收集器，再合并脚本及模板事实。"""
-        collector = _JavaScriptIRCollector(program, path, unit.source, root, react=react and not path.endswith(".vue"))
-        if unit.setup:
-            if "defineProps" not in collector.global_shadows:
-                collector.aliases.setdefault("defineProps", "vue.defineProps")
-            collector.module_symbol = ProgramIdentity.symbol_id(path, ("vue_setup",))
-            collector.collect(root)
-            symbol = collector.module_symbol
-            lines = unit.source.split(b"\n")
-            location = IRLocation(
-                path,
-                1,
-                1,
-                len(lines),
-                len(lines[-1]) + 1,
-                ProgramIdentity.location_id(path, 1, 1, len(lines), len(lines[-1]) + 1),
-            )
-            program.functions.append(IRFunction(symbol, "vue_setup", (), (), location))
-        else:
-            collector.collect(root)
-            symbol = path
-        if unit.template_source:
-            mutable, refs = vue_setup_bindings(root, unit.source)
-            tree = self.parser_pool.get(self.parser_name).parse(unit.template_source)
-            if tree.root_node.has_error:
-                collector._failure(root, "vue_template_partial_parse_error")
-                return
-            collector.source = unit.template_source
-            for binding, expression in vue_template_expression_nodes(unit, tree.root_node):
-                if binding.directive.startswith("v-model"):
-                    target = vue_model_target(expression, unit.template_source, mutable, refs) if unit.setup else ""
-                    if target:
-                        program.accesses.append(IRAccess(
-                            "vue.template.v-model", symbol, "read",
-                            collector._location(expression), assigned_targets=(target,),
-                            binding_certainty="may",
-                        ))
-                    else:
-                        collector._failure(expression, "vue_v_model_target_not_modeled")
-                else:
-                    program.accesses.append(
-                        IRAccess(
-                            "vue.template.v-html",
-                            symbol,
-                            "write",
-                            collector._location(expression),
-                            value_identifiers=vue_template_names(collector._identifiers(expression), refs),
-                        )
-                    )
-
 
 class TypeScriptSecurityFrontend(JavaScriptSecurityFrontend):
-    """TypeScript/TSX 复用 JS 运行时语义，只在参数中保留类型注解。"""
+    """TypeScript 复用 JS 运行时语义，只在参数中保留类型注解。"""
 
     language = "typescript"
     parser_name = "typescript"
@@ -163,7 +88,6 @@ class _JavaScriptIRCollector:
 
     def __init__(
         self, program: SecurityProgramIR, path: str, source: bytes, root: Any,
-        *, react: bool = False,
     ) -> None:
         """索引文件作用域绑定与路由注册，为后续函数扫描提供有限类型证据。"""
         self.program, self.path, self.source = (
@@ -182,10 +106,6 @@ class _JavaScriptIRCollector:
         self.aliases = {
             name: value for name, value in self.aliases.items() if name not in writes
         }
-        self.react = react or any(
-            value == "react" or value.startswith(("react.", "react/"))
-            for value in self.aliases.values()
-        )
         self.callback_inputs: dict[tuple[int, int], list[CallbackParameterInput]] = {}
         self.instances = self._instances(root, self.aliases, self.global_shadows)
         self.instances = {
@@ -198,8 +118,8 @@ class _JavaScriptIRCollector:
         shadows: set[str],
     ) -> tuple[CallbackParameterInput, ...]:
         """缓存当前作用域的注册事实，以精确回调范围而非名字绑定形参。"""
-        bindings = javascript_callback_inputs(
-            root, self.source, react=self.react,
+        bindings = node_request_inputs(
+            root, self.source,
             qualify=lambda node: self._qualified(node, aliases, instances, shadows),
         )
         for binding in bindings:
@@ -299,15 +219,9 @@ class _JavaScriptIRCollector:
         }
         callback_inputs = self.callback_inputs.get((target.start_byte, target.end_byte), [])
         input_types = {binding.type_name for binding in callback_inputs if binding.parameter_position == 0}
-        component = not callback_inputs and self.react and name[:1].isupper() and any(
-            item.type in {"jsx_element", "jsx_self_closing_element"}
-            for item in self._walk(body, skip_functions=True)
-        )
-        if component and parameters:
-            instances[parameters[0][0]] = "react.Component.props"
         if len(input_types) == 1 and parameters:
             input_type = next(iter(input_types))
-            if input_type in {"react.DOM.InputEvent", "node.IncomingMessage", "express.Request"} and parameters[0][0] not in writes:
+            if input_type in {"node.IncomingMessage", "express.Request"} and parameters[0][0] not in writes:
                 instances[parameters[0][0]] = input_type
             elif input_type == "node.IncomingMessage.bodyChunk":
                 self.program.accesses.append(IRAccess(
@@ -320,10 +234,8 @@ class _JavaScriptIRCollector:
             for parameter in function.parameters
         ))
         registrations = self._register_inputs(body, aliases, instances, shadows)
-        boundaries, gaps = collect_javascript_value_boundaries(
+        boundaries, gaps = collect_request_body_boundaries(
             body, self.source, self.path, self._location(node), registrations,
-            component=component,
-            qualify=lambda value: self._qualified(value, aliases, instances, shadows),
             location=self._location,
         )
         self.program.value_boundaries.extend(boundaries)
@@ -371,25 +283,6 @@ class _JavaScriptIRCollector:
                                 parameter_seed=projection.output,
                             )
                         )
-            elif index == 0 and input_types == {"react.DOM.InputEvent"} and pattern.kind != "name":
-                for projection in result.projections:
-                    selected = next((part for part in ("target.value", "currentTarget.value") if p + "." + part in projection.inputs), None)
-                    if selected:
-                        self.program.accesses.append(IRAccess(
-                            "react.DOM.InputEvent." + selected, symbol, "read",
-                            self._location(item), parameter_seed=projection.output,
-                        ))
-            elif index == 0 and component and pattern.kind != "name":
-                for projection in result.projections:
-                    self.program.accesses.append(
-                        IRAccess(
-                            "react.Component.props",
-                            symbol,
-                            "read",
-                            self._location(item),
-                            parameter_seed=projection.output,
-                        )
-                    )
         self._body(body, symbol, aliases, instances, shadows)
 
     def _body(
@@ -466,110 +359,6 @@ class _JavaScriptIRCollector:
                     unknown_keywords=dynamic_options,
                 )
             )
-            if (
-                qualified in {"react.createElement", "vue.h"}
-                and len(items) >= 2
-                and items[0].type == "string"
-                and self._text(items[0]).strip("'\"")[:1].islower()
-            ):
-                props = javascript_value(items[1], self.source, self.path)
-                if qualified == "react.createElement":
-                    selected = next(
-                        (
-                            item.value
-                            for item in props.members
-                            if item.selector == "dangerouslySetInnerHTML"
-                        ),
-                        None,
-                    )
-                    if selected is not None:
-                        html = next(
-                            (
-                                item.value
-                                for item in selected.members
-                                if item.selector == "__html"
-                            ),
-                            None,
-                        )
-                        identifiers = (
-                            html.variables
-                            if html is not None
-                            else tuple(name + ".__html" for name in selected.variables)
-                        )
-                        self.program.accesses.append(
-                            IRAccess(
-                                "react.DOM.dangerouslySetInnerHTML",
-                                symbol,
-                                "write",
-                                self._location(node),
-                                value_identifiers=identifiers,
-                            )
-                        )
-                else:
-                    selected = next(
-                        (
-                            item.value
-                            for item in props.members
-                            if item.selector == "innerHTML"
-                        ),
-                        None,
-                    )
-                    if selected is not None:
-                        self.program.accesses.append(
-                            IRAccess(
-                                "vue.render.innerHTML",
-                                symbol,
-                                "write",
-                                self._location(node),
-                                value_identifiers=selected.variables,
-                            )
-                        )
-        if node.type == "jsx_attribute":
-            attribute = node.named_children[0] if node.named_children else None
-            parent = node.parent
-            tag = self._text(field(parent, "name"))
-            if (
-                self._text(attribute) == "dangerouslySetInnerHTML"
-                and tag
-                and tag[0].islower()
-            ):
-                expression = next(
-                    (
-                        item
-                        for item in node.named_children
-                        if item.type == "jsx_expression"
-                    ),
-                    None,
-                )
-                value = (
-                    expression.named_children[0]
-                    if expression is not None and expression.named_children
-                    else None
-                )
-                if value is not None:
-                    resolved = javascript_value(value, self.source, self.path)
-                    selected = next(
-                        (
-                            item.value
-                            for item in resolved.members
-                            if item.selector == "__html"
-                        ),
-                        None,
-                    )
-                    identifiers = (
-                        selected.variables
-                        if selected is not None
-                        else tuple(name + ".__html" for name in resolved.variables)
-                    )
-                    self.program.accesses.append(
-                        IRAccess(
-                            "react.DOM.dangerouslySetInnerHTML",
-                            symbol,
-                            "write",
-                            self._location(node),
-                            value_identifiers=identifiers,
-                        )
-                    )
         if node.type in {"member_expression", "subscript_expression"}:
             parent = node.parent
             writing = (
@@ -650,7 +439,6 @@ class _JavaScriptIRCollector:
             if node.type == "subscript_expression" and receiver in {
                 "process.argv",
                 "process.env",
-                "react.Component.props",
                 "node.IncomingMessage.headers",
             }:
                 return receiver
@@ -662,7 +450,6 @@ class _JavaScriptIRCollector:
             if receiver.startswith("express.Request.") or receiver in {
                 "process.env",
                 "process.argv",
-                "react.Component.props",
                 "node.IncomingMessage.url",
                 "node.IncomingMessage.headers",
             }:
@@ -677,17 +464,13 @@ class _JavaScriptIRCollector:
                 return f"{receiver}.{name}"
             if receiver == "node.IncomingMessage" and name in {"url", "headers"}:
                 return f"{receiver}.{name}"
-            if receiver in {"DOM.Element", "document.body", "document.documentElement"}:
-                return f"DOM.Element.{name}"
-            if receiver == "window" and name in {"location", "document"}:
-                return name
             return f"{receiver}.{name}" if receiver else ""
         raw = self._text(node)
         if raw in aliases:
             return aliases[raw]
         if raw in instances:
             return instances[raw]
-        if raw in {"http", "https", "fs", "child_process", "express", "react", "vue", "axios"}:
+        if raw in {"http", "https", "fs", "child_process", "express", "axios"}:
             # 这些不是平台全局；不能让遮蔽后的词法名字重新匹配同名库 API。
             return f"local.{raw}"
         if raw in _GLOBALS and raw in shadows:
@@ -761,7 +544,7 @@ class _JavaScriptIRCollector:
     def _instances(
         self, root: Any, aliases: dict[str, str], shadows: set[str]
     ) -> dict[str, str]:
-        """仅从显式 Express/DOM 工厂调用记录接收者，不根据变量名称推断类型。"""
+        """仅从显式 Express 工厂调用记录接收者，不根据变量名称推断类型。"""
         result: dict[str, str] = {}
         for node in self._walk(root, skip_functions=True):
             if node.type != "variable_declarator":
@@ -772,12 +555,6 @@ class _JavaScriptIRCollector:
             callee = self._qualified(field(value, "function"), aliases, result, shadows)
             if callee in {"express", "express.Router"}:
                 result[self._text(target)] = "express.Application"
-            elif callee in {
-                "document.getElementById",
-                "document.querySelector",
-                "document.createElement",
-            }:
-                result[self._text(target)] = "DOM.Element"
         return result
 
     def _targets(self, node: Any) -> tuple[str, ...]:

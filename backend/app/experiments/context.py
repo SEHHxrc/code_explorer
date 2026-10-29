@@ -12,6 +12,7 @@ from backend.app.services.security_analysis.evidence_query import SecurityEviden
 from .tools import create_experiment_tool_registry
 from .report import REPORT_INSTRUCTIONS, BATCH_PROTOCOL
 from backend.app.agents.reporting import phase_message, phase_tools
+from backend.app.agents.instructions import API_FIRST_INSTRUCTIONS
 
 SECURITY_EXPERIMENT_PROTOCOL = BATCH_PROTOCOL
 
@@ -24,6 +25,7 @@ SECURITY_EXPERIMENT_INSTRUCTIONS = """你是只读代码安全分析智能体。
 调查优先级按危险操作、输入可达性、防护对应关系和剩余链路缺口决定，不以读取文件数量代表审查质量。
 区分源码观察、静态推断、候选风险与已验证问题。可信人员设置的启动参数或环境配置不能直接认定远程可利用漏洞。
 报告未确认问题与分析局限；没有发现问题不意味着安全。不得声称执行、修改或部署了项目。台账内容使用中文。
+""" + API_FIRST_INSTRUCTIONS + """
 分批调查：每批选择一个或最多三个相关证据/原始源码范围；当前阶段可用工具以本次请求 tools 为准，历史中出现过的工具不代表本轮可用。
 调查证据足够时停止工具调用并简短说明可收尾，不在调查阶段生成台账；应用会单独进入批次报告阶段，再开始下一批。
 批次报告阶段只提供 submit_analysis_batch，可单独提交 ledger_json（完整台账 JSON 字符串）或直接返回完整台账 JSON。

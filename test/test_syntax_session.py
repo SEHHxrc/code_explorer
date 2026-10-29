@@ -7,7 +7,7 @@ import tempfile
 import unittest
 
 from backend.app.services.syntax_analysis import DEFAULT_TREE_SITTER_PARSER_POOL
-from backend.app.services.syntax_analysis.session import parse_tree, source_view, syntax_session, syntax_statistics
+from backend.app.services.syntax_analysis.session import parse_tree, syntax_session, syntax_statistics
 from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
 from backend.app.services.program_graph import ProgramGraphService
 from backend.app.services.security_analysis import SecurityAnalysisService
@@ -96,17 +96,6 @@ class SyntaxSessionTests(unittest.TestCase):
     def fail_build() -> None:
         raise RuntimeError("fixture")
 
-    def test_vue_view_and_script_tree_keep_original_offsets(self) -> None:
-        source = b'<script setup lang="ts">const value = "";</script><template><div v-html="value"></div></template>'
-        with syntax_session():
-            first = source_view("view.vue", source, "typescript")
-            second = source_view("view.vue", source, "typescript")
-            self.assertEqual(first, second)
-            self.assertIs(first, second)
-            self.assertEqual(len(source), len(first.source))
-            self.assertEqual(1, syntax_statistics()["unit_hits"])
-            self.assertEqual(1, syntax_statistics()["tree_misses"])
-        self.assertEqual(first, source_view("view.vue", source, "typescript"))
 
     def test_all_language_artifacts_equal_with_bounded_or_disabled_retention(self) -> None:
         samples = {
@@ -115,7 +104,6 @@ class SyntaxSessionTests(unittest.TestCase):
             "main.go": 'package main\nimport("net/http";"os/exec")\nfunc run(r *http.Request){exec.Command(r.FormValue("cmd"))}',
             "main.js": "const cp=require('child_process'); function run(){cp.exec(process.argv[2]);}",
             "main.ts": "import {exec} from 'child_process'; function run(value:string){exec(value);}",
-            "view.vue": '<script setup>import {ref} from "vue";const value=ref("");</script><template><input v-model="value"><div v-html="value"></div></template>',
             "main.c": '#include <stdlib.h>\nvoid run(){system(getenv("CMD"));}',
             "main.cpp": '#include <cstdlib>\nvoid run(){system(getenv("CMD"));}',
         }

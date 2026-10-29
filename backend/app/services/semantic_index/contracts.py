@@ -84,6 +84,7 @@ class CallSiteFact(BaseModel):
     truncated: bool = False
     provenance: Literal["observed"] = "observed"
     fallback_reason: str | None = None
+    binding_diagnostics: list[str] = Field(default_factory=list)
 
 
 class VariableTypeFact(BaseModel):
@@ -243,7 +244,8 @@ class SSAFunctionFact(BaseModel):
 class SemanticIndexArtifact(BaseModel):
     """依赖图、ProgramGraph 和安全分析共享的只读语义事实索引。"""
 
-    schema_version: Literal["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"] = "1.1"
+    schema_version: Literal["1.0", "1.1", "1.2", "1.3", "1.4", "1.5", "1.6"] = "1.1"
+    files: dict[str, str] | None = Field(default=None, description="项目相对文件→语言；None 表示旧产物未记录，空字典表示明确的空范围。")
     types: dict[str, TypeFact] = Field(default_factory=dict)
     callables: dict[str, CallableFact] = Field(default_factory=dict)
     callsites: dict[str, CallSiteFact] = Field(default_factory=dict)

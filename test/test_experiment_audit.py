@@ -25,7 +25,7 @@ from backend.app.llm.observation import observe_requests
 from backend.app.llm.http import post_json, ModelRequestError
 from backend.app.llm.response_metadata import response_channel_sizes
 from backend.app.experiments.audit.policy import digest
-from backend.app.agents.tools.source import search_literals, SearchProjectTextManyTool
+from backend.app.agents.tools.source import search_literals
 from backend.app.agents.tools.base import ToolContext
 from backend.app.agents.observations import compact_observation
 from backend.app.api.experiment import require_local_audit_access

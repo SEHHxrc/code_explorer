@@ -2,16 +2,12 @@
 
 from __future__ import annotations
 
-import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from backend.app.services.dependency_analyzer import UnifiedCodeAnalyzer
-from backend.app.services.security_analysis import (
-    SecurityAnalysisService,
-    SecurityEvidenceCatalog,
-)
+from backend.app.services.security_analysis import SecurityAnalysisService
 from backend.app.services.security_analysis.contracts import SecurityEvidencePack
 
 
@@ -31,40 +27,10 @@ class JavaScriptSecurityTests(unittest.TestCase):
                 semantic_index=result["semantic_index"],
             )
 
-    def test_browser_dom_flow_and_exact_positions(self) -> None:
-        """浏览器输入经变量赋值到真实 DOM 接收者，验证精确属性写入位置。"""
-        pack = self._analyze(
-            {
-                "view.js": "function render() {\n const value = location.hash;\n const el = document.getElementById('root');\n el.innerHTML = value;\n}\n"
-            }
-        )
-        candidate = next(
-            item for item in pack.candidates if item.rule_id == "JS-SINK-DOM"
-        )
-        self.assertTrue(candidate.dataflow_verified)
-        self.assertEqual(4, pack.facts[candidate.sink_fact_id].location.line)
-        self.assertIn("javascript-typescript-core/1.3", pack.rule_packs)
-        self.assertIn("javascript", pack.languages_analyzed)
 
-    def test_safe_sibling_and_same_line_are_not_tainted(self) -> None:
-        """同一行的安全兄弟初始化不得获得其他变量的外部输入。"""
-        pack = self._analyze(
-            {
-                "view.js": "function render() { const value = location.hash, safe = 'fixed'; document.body.innerHTML = safe; }"
-            }
-        )
-        candidates = [item for item in pack.candidates if item.rule_id == "JS-SINK-DOM"]
-        self.assertTrue(candidates)
-        self.assertTrue(all(not item.dataflow_verified for item in candidates))
-
-    def test_direct_property_sources_to_dom_and_shell(self) -> None:
-        """直接属性写入/实参能验证词法值连接，且不重复子属性 Source。"""
+    def test_direct_property_source_to_shell(self) -> None:
+        """直接属性实参能验证词法值连接，且不重复子属性 Source。"""
         for filename, source, rule_id in (
-            (
-                "view.js",
-                "function render() { document.body.innerHTML = location.hash; }",
-                "JS-SINK-DOM",
-            ),
             (
                 "run.js",
                 "const cp=require('child_process'); function run() { cp.exec(process.env.CMD); }",
@@ -131,17 +97,6 @@ class JavaScriptSecurityTests(unittest.TestCase):
             )
         )
 
-    def test_shadowed_globals_imports_and_arbitrary_dom_property(self) -> None:
-        """同名自定义函数与普通对象的 innerHTML 不能伪装成平台危险 API。"""
-        pack = self._analyze(
-            {
-                "view.js": "import {exec} from 'child_process';\nfunction safe(exec, eval, location, Function) {\n const v = location.hash;\n exec(v); eval(v); new Function(v);\n const obj = {}; obj.innerHTML = v;\n}\n"
-            }
-        )
-        self.assertFalse(pack.candidates)
-        self.assertFalse(
-            any(item.fact_kind == "source" for item in pack.facts.values())
-        )
 
     def test_execfile_shell_option_is_not_default(self) -> None:
         """execFile 默认无 Shell；只有显式 shell:true 才检查命令参数注入。"""
@@ -161,7 +116,7 @@ class JavaScriptSecurityTests(unittest.TestCase):
         """TSX 不产生 grammar 错误；JS/TS 使用同一控制和数据流实现。"""
         pack = self._analyze(
             {
-                "view.tsx": "export function View() {\n const value = location.hash;\n document.body.innerHTML = value;\n return <div>hello</div>;\n}\n"
+                "server.tsx": "import {exec} from 'node:child_process';\nexport function run() {\n const value = process.env.CMD;\n exec(value);\n const handler = (input: string) => input;\n return handler(value);\n}\n"
             }
         )
         self.assertIn("typescript", pack.languages_analyzed)
@@ -170,34 +125,6 @@ class JavaScriptSecurityTests(unittest.TestCase):
         )
         self.assertTrue(any(item.dataflow_verified for item in pack.candidates))
 
-    def test_literal_sink_and_textcontent_do_not_confirm_xss(self) -> None:
-        """安全文本写入不作 DOM Sink，固定 HTML 不产生已验证外部输入路径。"""
-        pack = self._analyze(
-            {
-                "view.js": "function render() {\n const value = location.hash;\n document.body.textContent = value;\n document.body.innerHTML = '<b>fixed</b>';\n}\n"
-            }
-        )
-        self.assertTrue(all(not item.dataflow_verified for item in pack.candidates))
-        self.assertFalse(
-            any(item.name.endswith("textContent") for item in pack.facts.values())
-        )
-
-    def test_unmatched_sanitizer_keeps_candidate_and_json_contract(self) -> None:
-        """未验证净化上下文不能删除污点路径；投影有界且是有效 JSON。"""
-        pack = self._analyze(
-            {
-                "view.js": "import DOMPurify from 'dompurify';\nfunction render() {\n const value = location.hash;\n const cleaned = DOMPurify.sanitize(value);\n document.body.innerHTML = cleaned;\n}\n"
-            }
-        )
-        self.assertTrue(
-            any(item.fact_kind == "sanitizer" for item in pack.facts.values())
-        )
-        self.assertTrue(any(item.dataflow_verified for item in pack.candidates))
-        catalog = SecurityEvidenceCatalog(pack.model_dump())
-        summary = json.loads(catalog.summary())
-        self.assertTrue(summary["items"])
-        candidate = pack.candidates[0]
-        self.assertTrue(catalog.detail(candidate.candidate_id, section="protections")["items"])
 
     def test_cross_file_call_uses_resolved_dependency_edge(self) -> None:
         """模块间传播只沿已解析调用边，仍是 may-reach 而不是确定漏洞。"""

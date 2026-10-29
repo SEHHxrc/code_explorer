@@ -77,6 +77,25 @@ class PathEdgeEvidence(BaseModel):
     provenance: Literal["observed", "inferred"] = "inferred"
     callsite: EvidenceLocation | None = None
 
+    @property
+    def connection_status(self) -> Literal["modelled", "possible", "unresolved"]:
+        """统一解释已有目标证据；modelled 仅指模型内绑定，不证明执行或值传播。"""
+        if self.target_certainty == "unresolved":
+            return "unresolved"
+        if (self.target_certainty == "must" and self.confidence == "high" and not self.truncated
+                and not self.unresolved_reason and not self.fallback_reason):
+            return "modelled"
+        return "possible"
+
+    @property
+    def is_speculative_target(self) -> bool:
+        """判断目标是否来自显式候选解析，用于线型，不改变分析确定性。
+
+        编译器不可用或调用点未映射时，已有作用域/类型解析也会被保守标成
+        may；这类回退、低置信度、截断及旧产物缺字段本身不构成虚连接依据。
+        """
+        return self.dispatch in {"dynamic", "virtual"} or self.resolution_method.endswith("_heuristic")
+
 
 class CodeSnippet(BaseModel):
     """经过长度限制和敏感值遮蔽的最小源码片段。"""
@@ -189,18 +208,19 @@ class SecurityCoverage(BaseModel):
     candidate_count: int = Field(default=0, ge=0)
     dataflow_count: int = Field(default=0, ge=0)
     candidate_limit_reached: bool = False
-    facts_complete: bool | None = Field(default=None, description="仅指全部已识别事实均已保存，不证明规则识别了所有输入/操作；旧产物未知。")
+    facts_complete: bool | None = Field(default=None, description="仅指当前服务端规则范围内全部已识别事实均已保存，不证明识别了所有输入/操作，也不包含浏览器安全审查；旧产物未知。")
     candidate_source_count: int | None = Field(default=None, ge=0)
     candidate_sink_count: int | None = Field(default=None, ge=0)
     flows_without_candidate: int | None = Field(default=None, ge=0)
     candidate_search: dict[str, Any] | None = None
     dataflow_status: Literal["completed", "partial", "failed", "not_recorded"] = "not_recorded"
+    analysis_scope: dict[str, Any] | None = Field(default=None, description="只读兼容历史 2.13 产物的范围元数据；当前实现不再生成或消费浏览器筛选策略。")
 
 
 class SecurityEvidencePack(BaseModel):
     """使用 ID 注册表去重且不含完整图和 Repo Map 的安全证据包。"""
 
-    schema_version: Literal["2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.8", "2.9", "2.10", "2.11"] = "2.11"
+    schema_version: Literal["2.1", "2.2", "2.3", "2.4", "2.5", "2.6", "2.7", "2.8", "2.9", "2.10", "2.11", "2.12", "2.13", "2.14"] = "2.14"
     ir_version: Literal["1.2", "1.3"] = "1.3"
     analysis_kind: Literal["static_security_evidence"] = "static_security_evidence"
     rule_packs: list[str] = Field(default_factory=list)

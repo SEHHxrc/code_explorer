@@ -40,6 +40,14 @@ class WorkspaceOperation:
 
 
 @dataclass(frozen=True)
+class AcquiredProjectSource:
+    """一次来源获取的结果；过滤计数按操作返回，避免共享 Source 对象上的并发状态。"""
+
+    source_tag: str
+    skipped_links: int = 0
+
+
+@dataclass(frozen=True)
 class SanitizeReport:
     """不暴露具体敏感路径的分类清洗计数。"""
 

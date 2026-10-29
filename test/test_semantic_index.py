@@ -36,10 +36,10 @@ class SemanticIndexTests(unittest.TestCase):
             result = UnifiedCodeAnalyzer(directory, max_workers=1).run_full_analysis()
 
         artifact = SemanticIndexArtifact.model_validate(result["semantic_index"])
-        self.assertEqual("1.5", artifact.schema_version)
+        self.assertEqual("1.6", artifact.schema_version)
         index = SemanticIndex(artifact)
         self.assertIsInstance(index, SemanticIndexView)
-        self.assertEqual("1.5", index.schema_version)
+        self.assertEqual("1.6", index.schema_version)
         self.assertIn("Demo.java::Demo::run", artifact.callables)
         variable_type = index.variable_type("Demo.java::Demo::run", "command")
         self.assertIsNotNone(variable_type)
@@ -113,8 +113,8 @@ class SemanticIndexTests(unittest.TestCase):
             base,
             program_graph=program_graph,
         )
-        self.assertEqual("1.5", base.schema_version)
-        self.assertEqual("1.5", enriched.schema_version)
+        self.assertEqual("1.6", base.schema_version)
+        self.assertEqual("1.6", enriched.schema_version)
         self.assertGreaterEqual(enriched.coverage.parameter_count, 2)
         self.assertGreaterEqual(enriched.coverage.return_count, 2)
         callsite = next(item for item in base.callsites.values() if item.name == "forward")

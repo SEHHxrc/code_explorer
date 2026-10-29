@@ -109,7 +109,7 @@
             <div><dt>调查请求（应用发起）</dt><dd>{{ laneMetrics(lane).phase_requests?.investigation ?? 0 }}</dd></div>
             <div><dt>批次报告请求（另计）</dt><dd>{{ laneMetrics(lane).phase_requests?.batch_report ?? 0 }}</dd></div>
             <div><dt>最终汇总请求（另计）</dt><dd>{{ laneMetrics(lane).phase_requests?.final_report ?? 0 }}</dd></div>
-            <div><dt>格式重提交请求（另计）</dt><dd>{{ laneMetrics(lane).phase_requests?.report_format_retry ?? 0 }}</dd></div>
+            <div><dt>台账重提交请求（另计）</dt><dd>{{ laneMetrics(lane).phase_requests?.report_format_retry ?? 0 }}</dd></div>
           </template>
           <div><dt>最终报告模式</dt><dd>{{ reportModeLabel(lane) }}</dd></div>
           <div>
@@ -140,9 +140,12 @@
         </dl>
         <p class="audit-note">审计：{{ auditLabel(lane) }}。引用检查仅做机械核对，不代表结论正确。</p>
         <p v-if="laneMetrics(lane).report_format?.rejections?.length" class="audit-note">
-          曾发生台账格式拒绝；格式重提交 {{ laneMetrics(lane).report_format.retries }} 次。
-          原始回复及全部请求用量保留，未在本地修补 JSON；重提交不代表语义核验通过。
+          曾发生台账格式或状态一致性拒绝；重提交 {{ laneMetrics(lane).report_format.retries }} 次。
+          原始回复及全部请求用量保留，未在本地修补 JSON 或自动改写状态；重提交不代表语义核验通过。
         </p>
+        <ReportConflictDiagnostic v-if="comparison" :key="`${comparison.id}:${lane}`" :comparison-id="comparison.id" :lane="lane"
+          :available="laneMetrics(lane).report_diagnostic?.available" :snapshot="laneMetrics(lane).report_diagnostic?.record"
+          :model-configured="modelStatus.configured" />
         <p v-if="laneMetrics(lane).assumed_zero_token_attempts" class="audit-note">
           按本次冻结的当前端点声明，{{ laneMetrics(lane).assumed_zero_token_attempts }} 次 429/503 为执行前拒绝，假设模型 Token 为 0；这不是供应商返回的 usage，也不代表所有端点如此。未知成本尝试：{{ metric(lane, 'unknown_cost_http_attempts') }}。
         </p>
@@ -213,6 +216,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { apiErrorMessage } from '../../services/httpClient.js'
 import ExperimentHistory from './ExperimentHistory.vue'
 import BlindReviewResult from './BlindReviewResult.vue'
+import ReportConflictDiagnostic from './ReportConflictDiagnostic.vue'
 import { historyConditions } from './history.js'
 import { REVIEW_RUBRIC_VERSION, reviewDimensions, emptyReviewScores } from './reviewRubric.js'
 import {

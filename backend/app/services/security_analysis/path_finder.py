@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from backend.app.services.program_index import ProgramIdentity
+from backend.app.services.semantic_index.projection import ProgramFacts
+from backend.app.services.semantic_index.contracts import SemanticIndexArtifact
 
 from .contracts import Confidence, EvidenceLocation, PathEdgeEvidence, TargetCertainty
 
@@ -24,7 +26,8 @@ class StructuralPath:
 class StructuralCallPathFinder:
     """只搜索 ``calls`` 边，不把结构可达性解释为变量级数据流。"""
 
-    def __init__(self, graph: dict[str, Any], *, max_depth: int = 6) -> None:
+    def __init__(self, graph: dict[str, Any] | None = None, *, max_depth: int = 6,
+                 semantic_index: SemanticIndexArtifact | dict[str, Any] | None = None) -> None:
         """输入 NetworkX node-link 图和最大调用深度，构建稳定邻接索引。"""
         self.max_depth = max(1, max_depth)
         self.adjacency: dict[str, list[tuple[str, PathEdgeEvidence]]] = defaultdict(list)
@@ -32,7 +35,7 @@ class StructuralCallPathFinder:
         self._cache: dict[tuple[str, str], StructuralPath | None] = {}
         self.reverse: dict[str, set[str]] = defaultdict(set)
         self._relevant_cache: dict[frozenset[str], set[str]] = {}
-        raw_edges = graph.get("links", graph.get("edges", [])) or []
+        raw_edges = ProgramFacts(semantic_index, graph).call_edges()
         for raw_edge in raw_edges:
             if not isinstance(raw_edge, dict):
                 continue
@@ -43,7 +46,7 @@ class StructuralCallPathFinder:
             target = self._endpoint(raw_edge.get("target"))
             if not source or not target:
                 continue
-            evidence = self._edge_evidence(source, target, raw_edge)
+            evidence = self.edge_evidence(source, target, raw_edge)
             if relation == "calls":
                 self.adjacency[source].append((target, evidence))
                 self.reverse[target].add(source)
@@ -127,7 +130,7 @@ class StructuralCallPathFinder:
                          for path in values] for target, values in results.items()}
 
     @classmethod
-    def _edge_evidence(
+    def edge_evidence(
         cls,
         source: str,
         target: str,

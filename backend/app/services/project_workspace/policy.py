@@ -1,6 +1,8 @@
 """受控项目工作区的容量和安全策略。"""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+
+DEFAULT_GIT_HOSTS = frozenset({"github.com", "gitlab.com"})
 
 
 @dataclass(frozen=True)
@@ -14,5 +16,5 @@ class WorkspacePolicy:
     max_compression_ratio: int = 200
     git_timeout_seconds: int = 120
     stale_operation_seconds: int = 6 * 60 * 60
-    allowed_git_hosts: frozenset[str] = field(default_factory=frozenset)
+    allowed_git_hosts: frozenset[str] = DEFAULT_GIT_HOSTS
 

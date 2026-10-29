@@ -1,4 +1,4 @@
-"""公共结构化绑定及 Vue/React/Node.js 真实静态管线回归。"""
+"""公共结构化绑定及 Node.js 服务端静态管线回归。"""
 
 from __future__ import annotations
 
@@ -106,15 +106,15 @@ class JavaScriptBindingIntegrationTests(unittest.TestCase):
         """重命名与静态计算键保留污点；固定安全字段和默认字面量不串流。"""
         lines = self._verified(
             {
-                "view.js": """function render() {
- const obj = {nested: {bad: location.hash, safe: 'fixed'}};
+                "view.js": """const {exec}=require('node:child_process'); function render() {
+ const obj = {nested: {bad: process.env.CMD, safe: 'fixed'}};
  const {nested: {['bad']: renamed, safe}} = obj; const {absent = 'fixed'} = {};
- document.body.innerHTML = renamed;
- document.body.innerHTML = safe;
- document.body.innerHTML = absent;
+ exec(renamed);
+ exec(safe);
+ exec(absent);
 }"""
             },
-            "JS-SINK-DOM",
+            "JS-SINK-SHELL",
         )
         self.assertIn(4, lines)
         self.assertNotIn(5, lines)
@@ -124,14 +124,14 @@ class JavaScriptBindingIntegrationTests(unittest.TestCase):
         """数组空槽不改变后续位置，rest 对静态数组重新编号。"""
         lines = self._verified(
             {
-                "view.js": """function render() {
- const [safe,,...tail] = ['fixed', 'skip', location.hash, 'safe'];
- document.body.innerHTML = safe;
- document.body.innerHTML = tail[0];
- document.body.innerHTML = tail[1];
+                "view.js": """const {exec}=require('node:child_process'); function render() {
+ const [safe,,...tail] = ['fixed', 'skip', process.env.CMD, 'safe'];
+ exec(safe);
+ exec(tail[0]);
+ exec(tail[1]);
 }"""
             },
-            "JS-SINK-DOM",
+            "JS-SINK-SHELL",
         )
         self.assertIn(4, lines)
         self.assertNotIn(3, lines)
@@ -141,16 +141,16 @@ class JavaScriptBindingIntegrationTests(unittest.TestCase):
         """赋值解构与声明同义；整体覆写使旧的危险字段定义失效。"""
         lines = self._verified(
             {
-                "view.js": """function render() {
- let obj = {bad: location.hash}; let value;
+                "view.js": """const {exec}=require('node:child_process'); function render() {
+ let obj = {bad: process.env.CMD}; let value;
  ({bad: value} = obj);
- document.body.innerHTML = value;
+ exec(value);
  obj = {bad: 'fixed'};
  const {bad: safe} = obj;
- document.body.innerHTML = safe;
+ exec(safe);
 }"""
             },
-            "JS-SINK-DOM",
+            "JS-SINK-SHELL",
         )
         self.assertIn(4, lines)
         self.assertNotIn(7, lines)
@@ -159,13 +159,13 @@ class JavaScriptBindingIntegrationTests(unittest.TestCase):
         """跨文件调用按实际对象字段绑定形参，安全字段不得获得兄弟字段污点。"""
         lines = self._verified(
             {
-                "main.js": "import {render} from './worker.js'; export function run() { const v = location.hash; render({bad:v,safe:'fixed'}); }",
-                "worker.js": """export function render({bad: renamed, safe}) {
- document.body.innerHTML = renamed;
- document.body.innerHTML = safe;
+                "main.js": "import {render} from './worker.js'; export function run() { const v = process.env.CMD; render({bad:v,safe:'fixed'}); }",
+                "worker.js": """const {exec}=require('node:child_process'); export function render({bad: renamed, safe}) {
+ exec(renamed);
+ exec(safe);
 }""",
             },
-            "JS-SINK-DOM",
+            "JS-SINK-SHELL",
         )
         self.assertIn(2, lines)
         self.assertNotIn(3, lines)
@@ -181,74 +181,6 @@ class JavaScriptBindingIntegrationTests(unittest.TestCase):
             )
         )
 
-    def test_react_raw_html_and_safe_children(self) -> None:
-        """React 原生标签 __html 为 Sink；普通 children 与自定义组件不是该 Sink。"""
-        lines = self._verified(
-            {
-                "view.tsx": """import React from 'react';
-export function View() {
- const html = location.hash;
- return <div dangerouslySetInnerHTML={{__html:html}}/>;
-}
-export function Safe() { const html=location.hash; return <div>{html}</div>; }
-export function Custom() { const html=location.hash; return <Widget dangerouslySetInnerHTML={{__html:html}}/>; }
-"""
-            },
-            "JS-SINK-REACT-HTML",
-        )
-        self.assertEqual([4], lines)
-
-    def test_react_destructured_props(self) -> None:
-        """props 来自实际 React 组件语法且保留可信性前提。"""
-        self.assertTrue(
-            self._verified(
-                {
-                    "view.jsx": "import React from 'react'; export function View({html}) {return <div dangerouslySetInnerHTML={{__html:html}}/>;}"
-                },
-                "JS-SINK-REACT-HTML",
-            )
-        )
-
-    def test_vue_script_setup_js_and_ts(self) -> None:
-        """SFC 原始行号、脚本数据流与模板写入保持可追溯。"""
-        for lang in ("", ' lang="ts"'):
-            with self.subTest(lang=lang):
-                self.assertEqual(
-                    [2],
-                    self._verified(
-                        {
-                            "View.vue": '<template>\n<div v-html="html"></div><p>{{html}}</p>\n</template>\n<script setup'
-                            + lang
-                            + ">\nconst html=location.hash;\n</script>"
-                        },
-                        "JS-SINK-VUE-HTML",
-                    ),
-                )
-
-    def test_vue_props_and_interpolation_boundary(self) -> None:
-        """defineProps 宏仅在 setup 生效；普通插值不成为原始 HTML Sink。"""
-        pack = self._analyze(
-            {
-                "View.vue": '<template><div v-html="html"></div><p>{{html}}</p></template>\n<script setup>\nconst {html}=defineProps(["html"]);\n</script>'
-            }
-        )
-        self.assertTrue(
-            any(
-                item.dataflow_verified
-                for item in pack.candidates
-                if item.rule_id == "JS-SINK-VUE-HTML"
-            )
-        )
-        self.assertEqual(
-            1,
-            len(
-                [
-                    item
-                    for item in pack.facts.values()
-                    if item.rule_id == "JS-SINK-VUE-HTML"
-                ]
-            ),
-        )
 
     def test_node_http_and_cli_trust(self) -> None:
         """Node http 注册的 req.url 与 CLI 参数可进入 Sink，但保留不同信任等级。"""
@@ -269,38 +201,9 @@ export function Custom() { const html=location.hash; return <Widget dangerouslyS
             )
         )
 
-    def test_render_api_and_jsx_container_field_isolation(self) -> None:
-        """render API 保留原始 HTML 角色；JSX 容器的无关危险字段不污染 __html。"""
-        for filename, source, rule in (
-            (
-                "view.jsx",
-                "import React from 'react'; function View(){const html=location.hash; return React.createElement('div',{dangerouslySetInnerHTML:{__html:html}});}",
-                "JS-SINK-REACT-HTML",
-            ),
-            (
-                "view.js",
-                "import {h} from 'vue'; function render(){const html=location.hash; return h('div',{innerHTML:html});}",
-                "JS-SINK-VUE-HTML",
-            ),
-            (
-                "view.tsx",
-                "import React from 'react'; function View(){const html={__html:location.hash}; return <div dangerouslySetInnerHTML={html}/>;}",
-                "JS-SINK-REACT-HTML",
-            ),
-        ):
-            with self.subTest(filename=filename):
-                self.assertTrue(self._verified({filename: source}, rule))
-        self.assertFalse(
-            self._verified(
-                {
-                    "safe.tsx": "import React from 'react'; function View(){const html={__html:'fixed',unused:location.hash}; return <div dangerouslySetInnerHTML={html}/>;}"
-                },
-                "JS-SINK-REACT-HTML",
-            )
-        )
 
     def test_dynamic_patterns_spread_and_framework_gaps_reported(self) -> None:
-        """未知动态语义必须进入持久化缺口，Options API 不伪装已验证模板流。"""
+        """未知动态绑定语义必须进入持久化缺口。"""
         pack = self._analyze(
             {
                 "view.js": "function render(key){const {[key]:value,...rest}=data; const [first,...tail]=[...data];}"
@@ -310,39 +213,28 @@ export function Custom() { const html=location.hash; return <Widget dangerouslyS
         self.assertIn("dynamic_binding_selector_not_resolved", reasons)
         self.assertIn("opaque_rest_exclusions_not_proven", reasons)
         self.assertIn("dynamic_array_spread_positions_not_resolved", reasons)
-        pack = self._analyze(
-            {
-                "View.vue": '<template><div v-html="html"></div></template><script>export default {data(){return {html:location.hash};}};</script>'
-            }
-        )
-        self.assertIn(
-            "vue_options_api_and_template_scope_not_modeled",
-            {item.get("reason") for item in pack.scan_failures},
-        )
-        self.assertFalse(any(item.dataflow_verified for item in pack.candidates))
-
     def test_object_spread_overwrites_are_not_assumed_safe(self) -> None:
         """不确定 spread 可覆写前面的安全字段，之后的显式字面量仍覆盖该字段。"""
         lines = self._verified(
             {
-                "view.js": """function render(){
- const input=location.hash;
+                "view.js": """const {exec}=require('node:child_process'); function render(){
+ const input=process.env.CMD;
  const {html:bad}={html:'fixed',...input};
- document.body.innerHTML=bad;
+ exec(bad);
  const {html:safe}={...input,html:'fixed'};
- document.body.innerHTML=safe;
+ exec(safe);
 }"""
             },
-            "JS-SINK-DOM",
+            "JS-SINK-SHELL",
         )
         self.assertIn(4, lines)
         self.assertNotIn(6, lines)
         self.assertTrue(
             self._verified(
                 {
-                    "view.js": "function render(){const input=location.hash; const {keep,...rest}={keep:'fixed',...input}; document.body.innerHTML=rest;}"
+                    "view.js": "const {exec}=require('node:child_process'); function render(){const input=process.env.CMD; const {keep,...rest}={keep:'fixed',...input}; exec(rest);}"
                 },
-                "JS-SINK-DOM",
+                "JS-SINK-SHELL",
             )
         )
 
@@ -366,32 +258,18 @@ export function Custom() { const html=location.hash; return <Widget dangerouslyS
             )
         )
 
-    def test_program_binding_profiles_round_trip_and_vue_discovery(self) -> None:
-        """递归绑定契约可 JSON 往返，程序图独立发现 TS Vue 而非错误选 JS grammar。"""
+    def test_program_binding_profiles_round_trip(self) -> None:
+        """服务端 TypeScript 参数的递归绑定契约可 JSON 往返。"""
         import tempfile
         from pathlib import Path
-        from backend.app.services.program_graph import (
-            ProgramGraphArtifact,
-            ProgramGraphService,
-        )
-
+        from backend.app.services.program_graph import ProgramGraphArtifact, ProgramGraphService
         with tempfile.TemporaryDirectory() as directory:
-            Path(directory, "View.vue").write_text(
-                '<template><div v-html="html"></div></template><script setup lang="ts">const html: string=location.hash;</script>',
-                encoding="utf-8",
-            )
-            Path(directory, "run.ts").write_text(
-                "function run({nested:{value='fixed'}}:{nested:{value?:string}}){return value;}",
-                encoding="utf-8",
-            )
+            Path(directory, "run.ts").write_text("function run({value}:{value:string}){return value;}", encoding="utf-8")
             graph = ProgramGraphService().analyze(directory)
         self.assertEqual([], graph.failures)
-        self.assertEqual(["typescript"], graph.languages)
         recovered = ProgramGraphArtifact.model_validate_json(graph.model_dump_json())
         self.assertEqual(graph, recovered)
-        self.assertTrue(
-            any(item.parameter_patterns for item in recovered.functions.values())
-        )
+        self.assertTrue(any(item.parameter_patterns for item in recovered.functions.values()))
 
 
 if __name__ == "__main__":

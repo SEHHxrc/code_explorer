@@ -13,6 +13,8 @@
 | `execution.py` | `/api/executions` | `get_execution_configuration()`、`create_execution_task()`、任务查询、取消与事件流 |
 | `sse.py` | 公共 SSE 支撑 | `sse_response(stream)` 和 `persisted_events(...)` |
 
+失败台账解释使用 `POST /api/experiments/comparisons/{comparison_id}/diagnostic/{left|right}` 显式启动，`GET` 同路径读取状态。两者校验本人配对与对应失败运行，不暴露盲态组别映射或原始审计；刷新、重复点击和历史恢复复用记录，只有首次有效 POST 才申请独立模型任务。业务处理位于 `experiments.report_diagnostics`，不修改主实验或评分；原始审计的管理员读取要求保持独立。
+
 ## 依赖关系
 
 路由通过 `core.deps.get_current_user()` 读取并校验 `X-User-Id`。项目路由只调用

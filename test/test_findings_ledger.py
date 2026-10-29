@@ -85,6 +85,16 @@ class FindingsLedgerTests(unittest.TestCase):
                 parse_ledger(json.dumps(self.ledger(finding()|patch)))
         with self.assertRaises(ValueError):parse_ledger(json.dumps(self.ledger(finding('excluded')|{'exclusion_reason':''})))
 
+    def test_closed_chain_can_be_scoped_to_a_known_trigger_without_claiming_unconditional_execution(self):
+        item = finding()
+        item['confirmed_conditions'] = ['源码条件：enabled=true 时该局部控制片段执行敏感调用。']
+        ledger = parse_ledger(json.dumps(self.ledger(item)))
+        self.assertEqual('closed', ledger.findings[0].chain.status)
+        report = ledger.render()
+        self.assertIn('已核实条件/路径前提', report)
+        self.assertIn('不表示实际部署已满足', report)
+        self.assertEqual(item['unresolved_conditions'], [condition.model_dump() for condition in ledger.findings[0].unresolved_conditions])
+
     def test_duplicate_literal_roots_and_model_supplied_counts_are_rejected(self):
         with self.assertRaises(ValueError):parse_ledger(json.dumps(self.ledger(finding(),finding())))
         with self.assertRaises(ValueError):parse_ledger(json.dumps(self.ledger(finding())|{'confirmed_count':9}))

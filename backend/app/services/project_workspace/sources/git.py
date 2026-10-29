@@ -9,6 +9,7 @@ from urllib.parse import urlparse
 
 import git
 
+from ..contracts import AcquiredProjectSource
 from ..exceptions import AcquisitionError, SourceValidationError
 from ..filesystem import WorkspaceFilesystem
 from ..policy import WorkspacePolicy
@@ -50,7 +51,7 @@ class GitProjectSource:
         self.policy = policy
         self.filesystem = filesystem
 
-    def acquire(self, repo_url: str, destination: Path) -> str:
+    def acquire(self, repo_url: str, destination: Path) -> AcquiredProjectSource:
         """把项目来源获取到指定暂存工作区。"""
         validate_repo_url(repo_url, self.policy)
         try:
@@ -68,5 +69,5 @@ class GitProjectSource:
             raise
         except Exception as exc:
             raise AcquisitionError() from exc
-        return repo_url
+        return AcquiredProjectSource(repo_url)
 

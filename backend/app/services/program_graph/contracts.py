@@ -7,6 +7,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from backend.app.services.value_binding import BindingPattern, BindingValue
+from backend.app.services.value_binding.contracts import CallableAccess
 from backend.app.services.value_binding.parameters import ParameterKind
 from backend.app.services.value_binding.returns import ReturnBinding
 from backend.app.services.value_binding.objects import StorageValueSlot
@@ -73,6 +74,8 @@ class ProgramCallSite(BaseModel):
     object_effect_arguments: list[str] = Field(default_factory=list)
     object_effect_receiver: bool = False
     collection_effect_model: str = ""  # 私有编译模型版本；空值表示未核实，不能按同名方法放行。
+    callable_access: CallableAccess | None = None
+    argument_binding_error: str = ""
 
 
 class ProgramValueTransfer(BaseModel):

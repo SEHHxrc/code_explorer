@@ -160,7 +160,8 @@ class ProjectImportService:
                 "analysis_metadata": {
                     "schema_version": "2.0",
                     "analyzer": "ProjectAnalysisPipeline",
-                    "graph_kind": "multidigraph" if bundle.raw_graph.get("multigraph") else "digraph",
+                    "graph_kind": "not_exported" if not bundle.raw_graph and bundle.semantic_index.get("files") is not None else
+                        "multidigraph" if bundle.raw_graph.get("multigraph") else "digraph",
                     "security_evidence_kind": "hybrid_static",
                     "semantic_index_schema_version": str(
                         bundle.semantic_index.get("schema_version") or ""

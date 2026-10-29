@@ -2,14 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Any
 
-from backend.app.services.syntax_analysis import DEFAULT_TREE_SITTER_PARSER_POOL, semantic_children
-from backend.app.services.program_index import ProgramIdentity
-from backend.app.services.syntax_analysis.source_units import SourceUnit
-from backend.app.services.syntax_analysis.javascript_inputs import javascript_scope_nodes
-from backend.app.services.syntax_analysis.vue_bindings import vue_model_target, vue_setup_bindings, vue_template_expression_nodes, vue_template_names
+from backend.app.services.syntax_analysis import semantic_children
 from backend.app.services.value_binding import BindingValue
 from backend.app.services.value_binding.returns import ReturnBinding
 from backend.app.services.syntax_analysis.javascript_bindings import javascript_pattern, javascript_value, resolve_javascript_binding
@@ -19,7 +14,7 @@ from backend.app.services.syntax_analysis.go import GO_FUNCTION_NODES, go_callab
 from backend.app.services.value_binding.access_paths import AccessPath, AccessPathSegment
 
 from backend.app.services.syntax_analysis.javascript import (
-    JAVASCRIPT_FUNCTION_NODES, javascript_function, javascript_parameters,
+    JAVASCRIPT_FUNCTION_NODES, javascript_function, javascript_parameters, javascript_scope_nodes,
 )
 
 from backend.app.services.syntax_analysis import (
@@ -79,41 +74,6 @@ class _JavaScriptCollector(TreeSitterFunctionCollector):
         "array", "array_pattern", "assignment_pattern",
     })
 
-    def collect_unit(self, unit: SourceUnit, root: Any) -> None:
-        """Vue setup 先执行脚本，再接入模板读值；不按模板在文件中的位置伪造执行顺序。"""
-        if not unit.setup:
-            return
-        self._append_function(root, FunctionDescriptor("vue_setup", (), (), (), root))
-        function = self.functions[-1]
-        lines = unit.source.split(b"\n")
-        location = function.location.model_copy(update={
-            "line": 1, "column": 1, "end_line": len(lines), "end_column": len(lines[-1]) + 1,
-            "location_id": ProgramIdentity.location_id(self.path, 1, 1, len(lines), len(lines[-1]) + 1),
-        })
-        self.functions[-1] = replace(function, location=location)
-        if unit.template_source:
-            tree = DEFAULT_TREE_SITTER_PARSER_POOL.get(self.language).parse(unit.template_source)
-            function = self.functions[-1]
-            mutable, refs = vue_setup_bindings(root, unit.source)
-            original = self.source
-            self.source = unit.template_source
-            inputs, renders, limitations = [], [], []
-            if not tree.root_node.has_error:
-                for binding, node in vue_template_expression_nodes(unit, tree.root_node):
-                    if binding.directive.startswith("v-model"):
-                        target = vue_model_target(node, self.source, mutable, refs)
-                        if target:
-                            limitations.append("vue_v_model_event_state_write_is_may")
-                            inputs.append(replace(
-                                self._leaf(function.method_id, "assignment", node, definitions=(target,)),
-                                certainty="may", provenance="inferred",
-                            ))
-                        else:
-                            limitations.append("vue_v_model_target_not_modeled")
-                    else:
-                        renders.append(self._leaf(function.method_id, "operation", node, uses=vue_template_names(self._identifiers(node), refs)))
-            self.source = original
-            self.functions[-1] = replace(function, body=function.body + tuple(inputs) + tuple(renders), limitations=function.limitations + tuple(limitations) + (("vue_template_partial_parse_error",) if tree.root_node.has_error else ()))
 
     def _scope_for_node(
         self,
@@ -216,22 +176,6 @@ class _JavaScriptCollector(TreeSitterFunctionCollector):
         return tuple(BindingValue(variables=self._identifiers(item)) if any("[?" in name for name in self._identifiers(item))
                      else javascript_value(item, self.source, self.path) for item in arguments)
 
-    def _identifiers(self, node: Any | None) -> tuple[str, ...]:
-        """JSX 对象型 HTML 属性只读取 __html 字段，保留传入容器的词法字段身份。"""
-        if node is None or self._is_value_scope_boundary(node):
-            return ()
-        names = list(super()._identifiers(node))
-        for attribute in javascript_scope_nodes(node, self.source):
-            if attribute.type != "jsx_attribute":
-                continue
-            if not attribute.named_children or self._text(attribute.named_children[0]) != "dangerouslySetInnerHTML":
-                continue
-            expression = next((item for item in attribute.named_children if item.type == "jsx_expression"), None)
-            value = expression.named_children[0] if expression is not None and expression.named_children else None
-            normalized = javascript_value(value, self.source, self.path)
-            if normalized.kind == "opaque":
-                names.extend(name + ".__html" for name in normalized.variables)
-        return self._unique(names)
 
     def resolve_access_path(self, node: Any | None) -> AccessPath | None:
         """JS 中 obj['key'] 与 obj.key 同义；其他语言保留自己的下标语义。"""

@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Any
 
+from .artifact_format import pack_semantic_index, unpack_semantic_index
+
 ARTIFACT_ROOT = Path("backend/storage/artifacts").resolve()
 _IDENTIFIER = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
@@ -29,12 +31,24 @@ def _deletion_root(operation_id: str) -> Path:
 
 
 def save_analysis_artifact(project_id: str, payload: dict[str, Any]) -> None:
-    """通过同目录临时文件替换，原子创建或更新项目分析产物。"""
+    """共享大语义索引的重复表示并流式写入；原子替换，不修改调用者的领域对象。"""
     ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
     target = _artifact_path(project_id)
     temporary = _artifact_path(project_id, ".tmp")
-    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    temporary.replace(target)
+    stored = payload
+    semantic = payload.get("semantic_index")
+    if isinstance(semantic, dict) and sum(len(value) for value in semantic.values() if isinstance(value, dict)) >= 256:
+        stored = {**payload, "semantic_index": pack_semantic_index(semantic)}
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            json.dump(stored, stream, ensure_ascii=False, separators=(",", ":"))
+        temporary.replace(target)
+    except BaseException:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass  # 保留最初的写入异常；导入补偿仍会检查残留临时文件。
+        raise
 
 
 def load_analysis_artifact(project_id: str) -> dict[str, Any] | None:
@@ -42,7 +56,12 @@ def load_analysis_artifact(project_id: str) -> dict[str, Any] | None:
     target = _artifact_path(project_id)
     if not target.exists():
         return None
-    return json.loads(target.read_text(encoding="utf-8"))
+    with target.open(encoding="utf-8") as stream:
+        payload = json.load(stream)
+    semantic = payload.get("semantic_index")
+    if isinstance(semantic, dict) and "storage_format" in semantic:
+        payload["semantic_index"] = unpack_semantic_index(semantic)
+    return payload
 
 
 def analysis_artifact_size(project_id: str) -> int | None:

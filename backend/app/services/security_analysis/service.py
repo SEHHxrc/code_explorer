@@ -18,6 +18,7 @@ from backend.app.services.semantic_index import (
     SemanticIndexEnricher,
 )
 from backend.app.services.syntax_analysis.session import reuse_syntax
+from backend.app.services.semantic_index.dynamic import BoundedCallableResolver
 
 from .contracts import (
     CodeSnippet,
@@ -43,7 +44,7 @@ DEFAULT_LIMITATIONS = [
     "动态派发、反射、运行时导入和未解析引用可能造成漏报或不完整路径。",
     "Guard/Sanitizer 是规则匹配观察，未经实际值、危险上下文和执行顺序验证，不作为传播截断或防护有效的证明。",
     "Source 记录已识别的输入来源，不证明攻击者可控；未确认的权限要求保持 unknown，不因可能由管理员提供而删除路径。无路径、无告警或无诊断均不证明安全或完整覆盖。",
-    "当前规则包覆盖 Python/FastAPI、Java/Spring/Servlet、Go net/http/Gin/net、C/C++ 标准库/POSIX/SQLite，以及 JS/TS 的浏览器、Node.js、Express、Vue/React 核心语法；不是全量语言/框架扫描。",
+    "当前规则包覆盖 Python/FastAPI、Java/Spring/Servlet、Go net/http/Gin/net、C/C++ 标准库/POSIX/SQLite，以及 JS/TS 的 Node.js/Express 服务端；浏览器、React/Vue 交互和 DOM 安全分析已移除，也不是全量语言/框架扫描。",
 ]
 
 
@@ -90,7 +91,7 @@ class SecurityAnalysisService:
         self,
         *,
         project_root: str | Path,
-        dependency_graph: dict[str, Any],
+        dependency_graph: dict[str, Any] | None = None,
         analysis_diagnostics: dict[str, Any] | None = None,
         semantic_index: dict[str, Any] | None = None,
     ) -> SecurityEvidencePack:
@@ -108,15 +109,19 @@ class SecurityAnalysisService:
         self,
         *,
         project_root: str | Path,
-        dependency_graph: dict[str, Any],
+        dependency_graph: dict[str, Any] | None = None,
         analysis_diagnostics: dict[str, Any] | None = None,
         semantic_index: dict[str, Any] | None = None,
         progress: AnalysisProgressReporter | None = None,
     ) -> tuple[SecurityEvidencePack, dict[str, Any]]:
         """生成安全证据，并返回经 ProgramGraph 补充后的语义索引。"""
         enriched_index = SemanticIndexArtifact.model_validate(semantic_index or {})
+        # 新产物的文件和调用事实已独立；完整旧图仅用于旧产物兼容，不能混入另一套目标。
+        if enriched_index.files is not None:
+            dependency_graph = None
         report_progress(progress, "security_scan")
-        scan = self.scanner.scan(project_root, dependency_graph=dependency_graph)
+        scan = self.scanner.scan(project_root, dependency_graph=dependency_graph,
+            **({"semantic_index": enriched_index} if enriched_index.files is not None else {}))
         if sum(map(len, (scan.sources, scan.sinks, scan.guards, scan.sanitizers))) > self.max_fact_records:
             raise ValueError("已识别安全事实超过持久化条数安全上限；请调整存储预算或缩小项目，未保存冒充完整的部分事实包。")
         flow_diagnostics = FlowDiagnostics()
@@ -128,11 +133,13 @@ class SecurityAnalysisService:
                 project_root,
                 dependency_graph=dependency_graph,
                 languages=set(scan.languages_analyzed),
-                **({"semantic_index": enriched_index} if enriched_index.variable_declarations or enriched_index.variable_references else {}),
+                **({"semantic_index": enriched_index} if enriched_index.files is not None or enriched_index.variable_declarations or enriched_index.variable_references else {}),
             )
             scan.failures.extend({"stage": "program_graph", **failure} for failure in program_graph.failures)
             graph_partial = bool(program_graph.failures)
             flow_stage = "semantic_index"
+            if enriched_index.callsites:
+                enriched_index, program_graph = BoundedCallableResolver().enrich(enriched_index, program_graph)
             enriched_index = self.semantic_index_enricher.enrich(
                 enriched_index,
                 program_graph=program_graph,
@@ -173,7 +180,7 @@ class SecurityAnalysisService:
         limitations = list(DEFAULT_LIMITATIONS)
         if set(scan.languages_analyzed).intersection({"javascript", "typescript"}):
             limitations.append(
-                "JS/TS 已有限连接原生表单/useState、Vue v-model/ref 与请求体 data→end；尚未建模完整回调调度、任意闭包、完整 hooks、Promise 时序和堆别名。此项是能力边界，不表示项目实际使用了全部这些特性。"
+                "JS/TS 仅保留服务端 API、Node.js 平台及请求体 data→end 的有限绑定；浏览器、React/Vue 交互及 DOM 安全分析已移除，未建模完整回调调度、Promise 时序和堆别名。"
             )
         if set(scan.languages_analyzed).intersection({"c", "cpp"}):
             limitations.append(
@@ -204,10 +211,18 @@ class SecurityAnalysisService:
         path_finder = StructuralCallPathFinder(
             dependency_graph,
             max_depth=self.max_path_depth,
+            semantic_index=enriched_index,
         )
         slicer = SourceSlicer(project_root)
         diagnostics = analysis_diagnostics or {}
-        unresolved = diagnostics.get("unresolved_references") or []
+        resolved_dynamic = {key for key, call in enriched_index.callsites.items()
+                            if any(target.resolution_method == "bounded_callable_value" for target in call.targets)}
+        unresolved = [item for item in diagnostics.get("unresolved_references", [])
+                      if item.get("callsite_id") not in resolved_dynamic]
+        unresolved.extend({"callsite_id": call.callsite_id, "from_fqn": call.caller_symbol,
+            "file": call.location.path, "line": call.location.line,
+            "unresolved_reason": reason, "target_certainty": "may"}
+            for call in enriched_index.callsites.values() for reason in call.binding_diagnostics)
         guards_by_symbol = self._by_symbol(retained_guards)
         sanitizers_by_symbol = self._by_symbol(retained_sanitizers)
         candidates: list[SecurityCandidate] = []

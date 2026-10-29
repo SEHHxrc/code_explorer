@@ -25,6 +25,7 @@ from .frontends import (
 from .passes import ControlFlowGraphBuilder, ReachingDefinitionsPass, ValueFlowPass
 from .registry import ProgramGraphFrontendRegistry
 from backend.app.services.semantic_index import SemanticIndex, SemanticIndexArtifact
+from backend.app.services.semantic_index.projection import ProgramFacts
 from .passes.declaration_bindings import DeclarationBindingPass
 from .passes.selectors import SelectorResolutionPass
 from .passes.control_dependence import ControlDependencePass
@@ -78,6 +79,7 @@ class ProgramGraphService:
             root,
             dependency_graph,
             languages=languages,
+            semantic_index=semantic_index,
         )
         functions = {}
         failures: list[dict[str, object]] = []
@@ -88,6 +90,8 @@ class ProgramGraphService:
             if frontend is None:
                 continue
             paths = files_by_language[language]
+            if not paths:
+                continue
             frontend_result = frontend.build(root, file_paths=paths)
             files_considered += frontend_result.files_considered
             files_parsed += frontend_result.files_parsed
@@ -162,24 +166,16 @@ class ProgramGraphService:
         dependency_graph: dict[str, Any] | None,
         *,
         languages: set[str] | None = None,
+        semantic_index: SemanticIndex | SemanticIndexArtifact | None = None,
     ) -> dict[str, list[str]]:
         """优先复用依赖图文件范围，否则按已注册扩展名发现文件。"""
         grouped: dict[str, set[str]] = defaultdict(set)
         registered = set(self.frontends.languages())
         allowed = registered if languages is None else registered.intersection(languages)
-        if dependency_graph is not None:
-            for node in dependency_graph.get("nodes", []) or []:
-                if not isinstance(node, dict):
-                    continue
-                if str(node.get("kind") or node.get("type") or "") != "module":
-                    continue
-                language = str(node.get("lang") or "").lower()
-                if language not in allowed:
-                    continue
-                path = ProgramIdentity.file_id(str(node.get("file") or node.get("id") or ""))
-                if path:
-                    grouped[language].add(path)
-            return {language: sorted(paths) for language, paths in grouped.items()}
+        files = ProgramFacts(semantic_index, dependency_graph).files_by_language()
+        if files is not None:
+            return {language: [ProgramIdentity.file_id(path) for path in paths]
+                    for language, paths in files.items() if language in allowed}
 
         extensions = {
             extension: language
@@ -193,10 +189,5 @@ class ProgramGraphService:
             if any(part in IGNORED_SOURCE_DIRECTORIES for part in relative.parts):
                 continue
             language = extensions[path.suffix.lower()]
-            if path.suffix.lower() == ".vue":
-                from backend.app.services.syntax_analysis.session import source_view
-                language = source_view(str(path.absolute()), path.read_bytes(), language).language
-                if language not in allowed:
-                    continue
             grouped[language].add(relative.as_posix())
         return {language: sorted(paths) for language, paths in grouped.items()}

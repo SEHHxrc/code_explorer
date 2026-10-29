@@ -11,7 +11,7 @@ from pathlib import Path
 
 from tree_sitter_language_pack import PackConfig, cache_dir, configure, downloaded_languages, prefetch
 
-SUPPORTED_GRAMMARS = frozenset({"python", "java", "javascript", "typescript", "tsx", "html", "go", "c", "cpp", "rust"})
+SUPPORTED_GRAMMARS = frozenset({"python", "java", "javascript", "typescript", "tsx", "go", "c", "cpp", "rust"})
 _CONFIGURATION_LOCK = threading.Lock()
 _configured = False
 

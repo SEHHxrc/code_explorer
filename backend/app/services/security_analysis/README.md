@@ -1,5 +1,32 @@
 # 静态安全证据模块
 
+## 服务端安全分析（证据包 2.14）
+
+JS/TS 仅保留 Node.js、HTTP/Express 路由、进程/文件/网络等服务端规则和公共调用/值绑定。浏览器输入、React props/表单/hooks、Vue SFC/模板/ref、DOM 输出与专用规则已删除；不再使用 HTML 入口筛选、延后开关或另一套浏览器执行模式。
+
+Node HTTP 注册由 `syntax_analysis/node_http.py:node_request_inputs()` 提供；同请求 data→end 的局部槽位连接由 `language_adapters/node_http.py:collect_request_body_boundaries()` 提供。后者输出既有公共 `IRValueBoundary`，仍由同一 CFG/DFG 和跨过程求解器消费。普通语言适配、Node 参数/返回/对象/集合传播继续保留，纯本地 CLI 不扩展。
+
+`.vue` 不再作为支持的源码扩展名，也不再准备 HTML grammar。JS/TS 的普通语法和类型解析仍用于服务端；读取到 JavaScript 本身不证明其运行于服务器，网络/进程候选仍需核实真实入口与运行环境。HTTP 请求字段是输入，req/res/框架依赖并非整体不可信 Source。
+
+旧产物需重新分析；2.13 的范围字段仅保留只读数据兼容，没有对应筛选执行代码。新规则包为 `javascript-typescript-core/1.4`，共同范围为 `server-analysis-only-v3`。旧实验、审计、原始项目及评分不改写，不能将新旧范围混算。
+
+## 公共事实入口与有界展开（证据包 2.12）
+
+`SecurityAnalysisService.analyze_with_semantic_index(project_root=..., semantic_index=...)` 可直接消费带文件范围的
+公共语义索引，不需要完整依赖图。扫描、CFG/值流与调用解析增补共用原语法会话；旧调用图仅兼容缺失事实的旧记录。
+ProgramGraph 构建后先通过公共 BoundedCallableResolver 补充有依据的目标，再执行同一个跨过程求解器。
+未知字典展开不会被前端丢弃：参数规则投影到具体成员槽，`argument_slots` 有界迭代转发的成员需求，
+继续复用集合到达定义/值流。位置专用参数、显式实参、重复关键字、兄弟键和覆盖均保持隔离。
+键存在性、运行时映射协议、动态重复键未证明时，只允许 may 传播；这不等于闭合利用链或端点实际可调用。
+候选携带新的调用绑定边界；已解析的动态调用不再继续引用旧的 symbol_not_found 作为当前断点。
+该变更不调用 LLM、不启用第三方安全语义屏障；需要重新分析后用于新实验，旧实验内容不修改。
+
+## Source/Sink 角色与匹配依据
+
+Source 表示某处操作引入的值，包含函数形参、调用返回值、输出参数和属性读取；Sink 表示某处敏感操作消费的实参、接收者或属性写入值。两者均绑定操作位置和具体值槽，不是“变量一定是 Source、函数整体一定是 Sink”。`flow_analysis/program_graph.py` 的 `_source_seed/_sink_target` 分别选择生产和消费位置；同一变量覆盖后不能自动保留旧污点，同一 API 的不同参数也不能混用。
+
+规则事实的 `name` 是展示名：参数 Source 常显示参数名，调用 Source 和 Sink 常显示 API 名，不能据此推断跟踪粒度。调用元数据 `name_match_basis=exact_name/name_suffix` 只说明名称匹配方式，不证明完整库身份或安全语义。Guard/Sanitizer 继续保留 `protection_effectiveness=not_verified`，并以 `observation_kind` 区分普通控制条件、依赖标记、候选校验和候选变换；不能将普通 if、Depends 或某个 resolve 方法当成已验证防护，也不因匹配名称截断传播。
+
 ## 事实与查询预算（证据包 2.11）
 
 全部已识别 Source、Sink、Guard、Sanitizer 按事实 ID 保存；不再因 300/600 的前缀选择丢失端点。
@@ -21,7 +48,14 @@
 
 ## 当前交付：来源边界 v5（2026-10-26）
 
-选择器版本为 `security-path-summary-v5-source-boundaries`，延续下述路径族组织和排序。
+选择器版本为 `security-path-summary-v6-possible-connections`，延续下述路径族组织和排序。
+`PathEdgeEvidence.connection_status` 是摘要及安全图共用的调用目标状态：`modelled` 仅表示
+高置信、无已知缺口的模型内绑定；`possible` 保留 may、回退、低置信和截断；`unresolved`
+表示目标未确认。族/路线的 `call_connection_counts` 按路线内调用边计数，族中共享调用可重复计数，
+不是独立调用点、闭合传播或漏洞计数。完全未知的调用仍保留诊断，不补造目标。
+绘图线型由独立的 `is_speculative_target` 判定：仅显式动态/虚派发或启发式目标使用虚线，
+不因保守 may 或编译器回退使全部已有调用虚线化；摘要的状态、计数及选择版本保持不变。
+API 效果摘要的建议契约仍与分析结果隔离，不因图或摘要增加这些状态就启用 LLM 建议传播或剪枝。
 Source 定位额外保留 `source_kind` 和 `permission_requirement`；权限未验证时为 unknown，
 CLI、环境配置或可能由管理员提供的值不会因此被丢弃，也不能直接升级为远程攻击者可控。
 全部已识别 Source 事实仍保存；当前 `max_sources` 语义以上述 2.11 分批窗口为准。
@@ -127,7 +161,7 @@ Python、Java、JS/TS 共用公共 CFG、到达定义和值流算法，不新增
 JS/TS 新分析会在依赖图写边前优先采用官方 TypeScript 声明绑定；安全前端本身仍按已有
 语法 IR 匹配规则，ProgramGraph/传播算法不变，不在这里再次启动编译器。工具版本、配置与
 覆盖摘要保存在语义索引 backend_runs；路径边保留 resolution_method 与 fallback_reason。
-声明绑定不等于唯一运行时实现，虚派发、Vue 和缺依赖仍有显式边界。安装见
+声明绑定不等于唯一运行时实现，虚派发和缺依赖仍有显式边界。安装见
 `backend/tools/typescript_semantics/README.md`。
 
 `SecurityEvidencePack` 当前使用模式版本 `2.7`、IR 版本 `1.3`，并兼容读取 `2.1/2.2/2.3/2.4/2.5/2.6`；固定标记
@@ -171,7 +205,7 @@ program_index/ProgramIdentity
 
 ## 多语言流水线
 
-JS/TS 复杂绑定通过公共 `value_binding` 协议进入程序图和安全 IR；Vue/React/Node 核心规则使用 `javascript-typescript-core/1.3`。各语言都不是完整覆盖，见 `docs/SECURITY_COVERAGE.md`。旧项目须重新分析才获得新规则事实。
+JS/TS 复杂绑定通过公共 `value_binding` 协议进入程序图和安全 IR；Node.js/Express 服务端规则使用 `javascript-typescript-core/1.4`。各语言都不是完整覆盖，见 `docs/SECURITY_COVERAGE.md`。旧项目须重新分析才获得新规则事实。
 
 ```text
 依赖图模块节点按语言分组
@@ -190,7 +224,7 @@ SecurityEvidencePack 2.7
 ```
 
 当前默认注册 Python、Java、Go、C/C++、JavaScript/TypeScript 前端。规则覆盖 Python 核心/FastAPI、Java 核心高价值 API、
-Spring Web/Servlet、Go 标准库与 `net/http`、Gin、net、C/C++ 标准库/POSIX/SQLite，以及 JS/TS 浏览器 DOM、Node 平台和 Express 路由。依赖图中出现尚未注册的语言（目前 Rust）时，会写入
+Spring Web/Servlet、Go 标准库与 `net/http`、Gin、net、C/C++ 标准库/POSIX/SQLite，以及 JS/TS Node 平台和 Express 路由。依赖图中出现尚未注册的语言（目前 Rust）时，会写入
 `unsupported_languages`、覆盖率和诊断，不会静默标记为已完成扫描。
 
 ## 文件与职责

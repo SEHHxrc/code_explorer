@@ -1,21 +1,26 @@
 """共同格式重提交协议；模拟模型，不修复原文、不调用真实端点。"""
 
 import asyncio
+import copy
+from dataclasses import replace
 import json
 import tempfile
 import unittest
 from types import SimpleNamespace
+from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
 from backend.app.agents.orchestrator import AgentRunManager
 from backend.app.agents.reporting import execution_policy
 from backend.app.agents.contracts import AgentRunRequest, ContextPacket
-from backend.app.agents.tools.base import ToolRegistry
+from backend.app.agents.tools.base import ToolContext, ToolRegistry
+from backend.app.agents.tools.batches import SubmitAnalysisBatchTool
 from backend.app.experiments.findings import LedgerValidationError, parse_ledger
 from backend.app.experiments.report import BATCH_PROTOCOL, REPORT_INSTRUCTIONS, format_retry_message
 from backend.app.llm.base import ModelOutputError, ModelTurn, ToolCall
 from backend.app.llm.budget import BudgetPlanner, request_payload
 from backend.app.llm.response_metadata import ModelResponseMetadata
+from backend.app.llm.conversation import chat_messages, response_items, validate_messages
 from backend.app.llm.settings import ModelLimits
 from test.test_agent_foundation import MemoryRunStore
 from test.test_findings_ledger import finding
@@ -30,14 +35,16 @@ class ReportFormatRetryTests(unittest.IsolatedAsyncioTestCase):
         self.messages = [{"role": "user", "content": "共同问题及已展示证据。"}]
 
     async def generate(self, *turns: ModelTurn | BaseException, report: bool = True,
-                       run_id: str = "run") -> tuple[ModelTurn, SimpleNamespace]:
+                       run_id: str = "run", report_mode: str = "tools_none",
+                       tools: list[dict] | None = None) -> tuple[ModelTurn, SimpleNamespace]:
         """复用生产生成路径；模型替身只返回给定轮次，不执行任何工具。"""
         provider = SimpleNamespace(name="mock", model="mock", generate_with_tools=AsyncMock(side_effect=turns))
+        tools = tools or []
         payload = request_payload(provider, instructions=REPORT_INSTRUCTIONS, messages=self.messages,
-                                  tools=[], max_output_tokens=None)
+                                  tools=tools, max_output_tokens=None)
         result = await self.manager._generate(provider, payload, 1, run_id=run_id,
-            report_planner=self.planner if report else None, instructions=REPORT_INSTRUCTIONS,
-            messages=self.messages, tools=[])
+            report_planner=self.planner if report else None, report_mode=report_mode, instructions=REPORT_INSTRUCTIONS,
+            messages=self.messages, tools=tools)
         return result, provider
 
     @staticmethod
@@ -92,16 +99,124 @@ class ReportFormatRetryTests(unittest.IsolatedAsyncioTestCase):
         _, later = await self.generate(self.turn("{another broken"))
         self.assertEqual(1, later.generate_with_tools.await_count)
 
-    async def test_state_conflicts_do_not_trigger_semantic_reclassification(self) -> None:
+    async def test_state_conflicts_require_explicit_model_resubmission_and_keep_unknown_conditions(self) -> None:
         raw = json.loads(LEDGER_JSON)
         item = finding()
-        item["chain"].update(status="open", description="关键实现未读。")
+        item['unresolved_conditions'].append({'kind': 'security_requirement', 'description': '资源是否应限制访问尚不明确。'})
         raw["findings"] = [item]
-        result, provider = await self.generate(self.turn(json.dumps(raw)))
-        self.assertEqual(1, provider.generate_with_tools.await_count)
+        corrected = copy.deepcopy(raw)
+        corrected['findings'][0]['status'] = 'unclosed_candidate'
+        original = self.turn(json.dumps(raw))
+        result, provider = await self.generate(original, self.turn(json.dumps(corrected)))
+        self.assertEqual(2, provider.generate_with_tools.await_count)
+        self.assertEqual(corrected, parse_ledger(result.text).model_dump())
+        self.assertEqual(raw, json.loads(original.text))
+        self.assertEqual(raw['findings'][0]['unresolved_conditions'], corrected['findings'][0]['unresolved_conditions'])
+        feedback = provider.generate_with_tools.call_args_list[1].kwargs['messages'][-1]['content']
+        self.assertIn('"category":"state"', feedback)
+        self.assertIn('不得删除条目/未知条件', feedback)
         with self.assertRaises(LedgerValidationError) as caught:
-            parse_ledger(result.text)
+            parse_ledger(original.text)
         self.assertEqual("state", caught.exception.category)
+
+    @staticmethod
+    def submission(text: str, call_id: str = 'submit') -> ModelTurn:
+        return ModelTurn('', 'mock', 'mock', (ToolCall(call_id, 'submit_analysis_batch', {
+            'ledger_json': text, 'evidence_ids': [], 'scopes': ['app.py:1-2']}),),
+            metadata=ModelResponseMetadata(finish_reason='tool_calls'))
+
+    async def test_batch_tool_state_rejection_is_paired_and_only_valid_resubmission_is_published(self) -> None:
+        """完整报告阶段复现：拒绝不一致台账后才重提，未知前提保留，不推进失败批次。"""
+        raw = json.loads(LEDGER_JSON)
+        item = finding()
+        item['unresolved_conditions'].append({'kind': 'security_requirement', 'description': '授权要求未知。'})
+        raw['findings'] = [item]
+        corrected = copy.deepcopy(raw)
+        corrected['findings'][0]['status'] = 'unclosed_candidate'
+        original, valid = self.submission(json.dumps(raw), 'rejected'), self.submission(json.dumps(corrected), 'accepted')
+        context = ToolContext('project', 'user', Path('.'), {})
+        context.batches.scopes.add('app.py:1-2')
+        self.manager.tools = ToolRegistry([SubmitAnalysisBatchTool()])
+
+        async def respond(**kwargs):
+            self.assertFalse(context.batches.reports)
+            self.assertFalse(context.batches.completed_scopes)
+            return original if 'APPLICATION_REPORT_FORMAT_RETRY' not in kwargs['messages'][-1].get('content', '') else valid
+
+        provider = SimpleNamespace(name='mock', model='mock', generate_with_tools=AsyncMock(side_effect=respond))
+        result = await self.manager._report_batch('run', provider, self.planner, self.messages[0], [],
+            self.manager.tools.schemas(), 'tools_none', context)
+        self.assertIs(valid, result)
+        self.assertEqual(2, provider.generate_with_tools.await_count)
+        retry = provider.generate_with_tools.call_args_list[1].kwargs
+        validate_messages(retry['messages'])
+        self.assertEqual('auto', retry['tool_choice'])
+        self.assertEqual(['submit_analysis_batch'], [tool['name'] for tool in retry['tools']])
+        feedback = next(message for message in retry['messages'] if message.get('tool_call_id') == 'rejected')
+        self.assertFalse(json.loads(feedback['content'])['published'])
+        self.assertEqual(1, len(context.batches.reports))
+        self.assertEqual('unclosed_candidate', context.batches.reports[0]['ledger']['findings'][0]['status'])
+        self.assertEqual({'app.py:1-2'}, context.batches.completed_scopes)
+        self.assertEqual(1, sum(kind == 'batch.completed' for kind, _ in self.store.events))
+        self.assertEqual(1, sum(kind == 'tool.failed' for kind, _ in self.store.events))
+        self.assertEqual(raw, json.loads(original.tool_calls[0].arguments['ledger_json']))
+
+    async def test_batch_tool_argument_and_ledger_syntax_use_the_same_bounded_retry(self) -> None:
+        tools = [SubmitAnalysisBatchTool().schema()]
+        invalid_arguments = ModelTurn('', 'mock', 'mock', (ToolCall('invalid', 'submit_analysis_batch', {'ledger_json': {}}),),
+                                     metadata=ModelResponseMetadata(finish_reason='tool_calls'))
+        for invalid in (invalid_arguments, self.submission('{')):
+            with self.subTest(arguments=invalid.tool_calls[0].arguments), patch.object(self.manager, '_generation_states', {}):
+                valid = self.submission(LEDGER_JSON, 'valid')
+                result, provider = await self.generate(invalid, valid, report_mode='batch_submit_only', tools=tools)
+                self.assertIs(valid, result)
+                self.assertEqual(2, provider.generate_with_tools.await_count)
+                validate_messages(provider.generate_with_tools.call_args_list[1].kwargs['messages'])
+
+    async def test_rejected_native_submission_preserves_responses_items_and_chat_pairing(self) -> None:
+        """原生续接状态和工具拒绝结果必须同时可序列化，不制造孤立 function_call_output。"""
+        original = self.submission('{', 'native-rejected')
+        call = original.tool_calls[0]
+        function = {'name': call.name, 'arguments': json.dumps(call.arguments)}
+        original = replace(original, metadata=ModelResponseMetadata(response_status='completed'), continuation={
+            'role': 'assistant', 'content': None,
+            'tool_calls': [{'id': call.id, 'type': 'function', 'function': function}],
+            'provider_items': [{'type': 'reasoning', 'id': 'synthetic-reasoning', 'encrypted_content': 'synthetic-state'},
+                               {'type': 'function_call', 'call_id': call.id, **function}]})
+        _, provider = await self.generate(original, self.submission(LEDGER_JSON), report_mode='batch_submit_only',
+                                          tools=[SubmitAnalysisBatchTool().schema()])
+        messages = provider.generate_with_tools.call_args_list[1].kwargs['messages']
+        items = response_items(messages)
+        self.assertEqual(1, sum(item.get('type') == 'function_call' for item in items))
+        self.assertEqual([call.id], [item['call_id'] for item in items if item.get('type') == 'function_call_output'])
+        self.assertIn('synthetic-reasoning', [item.get('id') for item in items])
+        self.assertEqual(1, sum(message['role'] == 'tool' for message in chat_messages('report', messages)))
+
+    async def test_repeated_state_conflicts_remain_invalid_and_do_not_receive_unlimited_retries(self) -> None:
+        raw = json.loads(LEDGER_JSON)
+        raw['findings'] = [finding()]
+        raw['findings'][0]['unresolved_conditions'].append({'kind': 'other', 'description': '未核实条件。'})
+        invalid = self.turn(json.dumps(raw))
+        result, provider = await self.generate(invalid, invalid)
+        self.assertEqual(2, provider.generate_with_tools.await_count)
+        with self.assertRaises(LedgerValidationError):
+            parse_ledger(result.text)
+        _, later = await self.generate(invalid)
+        self.assertEqual(1, later.generate_with_tools.await_count)
+
+    async def test_incomplete_or_mixed_batch_tools_are_not_repaired_or_executed(self) -> None:
+        valid = self.submission(LEDGER_JSON)
+        for turn in (ModelTurn('', 'mock', 'mock', valid.tool_calls,
+                metadata=ModelResponseMetadata(finish_reason='length')),
+                ModelTurn('', 'mock', 'mock', (*valid.tool_calls, ToolCall('read', 'read_file_range', {})),
+                          metadata=ModelResponseMetadata(finish_reason='tool_calls')),
+                ModelTurn('', 'mock', 'mock', (ToolCall('read', 'read_file_range', {}),),
+                          metadata=ModelResponseMetadata(finish_reason='tool_calls'))):
+            with self.subTest(reason=turn.metadata.finish_reason):
+                self.manager._generation_states.clear()
+                _, provider = await self.generate(turn, report_mode='batch_submit_only')
+                self.assertEqual(1, provider.generate_with_tools.await_count)
+        self.assertFalse(any(kind == 'tool.completed' for kind, _ in self.store.events))
 
     async def test_empty_truncated_unknown_or_tool_finished_outputs_are_not_format_retried(self) -> None:
         for text, metadata in (("", STOP), (LEDGER_JSON[:-1], ModelResponseMetadata(finish_reason="length")),

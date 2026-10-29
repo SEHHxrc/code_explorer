@@ -2,8 +2,9 @@
 """保护依赖图配对实验的变量隔离与临时对照组删除边界。"""
 
 import unittest
+from contextlib import ExitStack
 from unittest.mock import patch
-from backend.app.llm.registry import ModelLimits
+from backend.app.llm.registry import ModelConfiguration, ModelLimits
 from pathlib import Path
 
 from backend.app.experiments.baseline.context_builder import BaselineContextBuilder
@@ -54,6 +55,16 @@ class CapturingManager:
 
 
 class ExperimentIsolationTests(unittest.TestCase):
+    def setUp(self):
+        """隔离本机连接/预算配置；拒绝小预算的用例仍在方法内显式覆盖。"""
+        contexts=ExitStack()
+        self.addCleanup(contexts.close)
+        contexts.enter_context(patch('backend.app.experiments.context.get_model_limits',
+            return_value=ModelLimits(0,1024,max_input_tokens=64000)))
+        contexts.enter_context(patch('backend.app.experiments.context.get_model_configuration',
+            return_value=ModelConfiguration('fixture','fixture','',False)))
+        contexts.enter_context(patch('backend.app.experiments.context.create_model_provider',return_value=None))
+
     def test_baseline_context_contains_no_graph_material(self):
         packet = BaselineContextBuilder().build(
             project_id="p1", question="入口在哪", artifact=sample_artifact(),

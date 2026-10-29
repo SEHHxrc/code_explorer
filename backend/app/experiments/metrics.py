@@ -9,6 +9,7 @@ from typing import Callable
 from sqlalchemy.orm import Session
 
 from backend.app.models import AgentEventModel, AgentRunModel, ExperimentAuditSessionModel, SessionLocal
+from .report_diagnostics import diagnostic_available
 
 
 def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[[], Session] = SessionLocal) -> dict:
@@ -51,10 +52,13 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
         findings_ledger = None
         format_retries = 0
         format_rejections = []
+        report_diagnostic = None
         format_skips = []
         phase_requests: Counter[str] = Counter()
         for event in events:
             payload = event.payload or {}
+            if event.event_type in {"report.diagnostic.started", "report.diagnostic.finished"}:
+                report_diagnostic = payload
             if event.event_type == "model.started" and payload.get("phase"):
                 phase_requests[payload["phase"]] += 1
             if event.event_type == "report.format_retry_started":
@@ -233,6 +237,8 @@ def collect_run_metrics(run_id: str, user_id: str, *, session_factory: Callable[
             "batch_reports": batch_reports,
             "findings_ledger": findings_ledger,
             "report_format": {"retries": format_retries, "rejections": format_rejections, "skipped": format_skips},
+            "report_diagnostic": {"available": diagnostic_available(run.status, run.error, format_rejections),
+                                  "record": report_diagnostic},
             "pending_batch": pending_batch,
             "evidence_count": len(evidence_keys),
             "initial_evidence_count": initial_evidence_count,

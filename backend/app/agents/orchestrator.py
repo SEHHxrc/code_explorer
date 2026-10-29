@@ -7,6 +7,7 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
+from pydantic import ValidationError
 
 from backend.app.agents.batching import AnalysisBatches
 from backend.app.agents.path_delivery import PathDeliveryObserver
@@ -15,6 +16,7 @@ from backend.app.agents.contracts import AgentEvidence, AgentRunRequest, Context
 from backend.app.agents.run_store import AgentRunStore
 from backend.app.agents.tools import create_project_tool_registry
 from backend.app.agents.tools.base import ToolContext, ToolRegistry
+from backend.app.agents.tools.batches import BatchReportArguments
 from backend.app.llm.http import ModelEndpointError, ModelRequestError
 from backend.app.llm.registry import ModelLimits, create_model_provider, get_model_limits
 from backend.app.llm.response_metadata import ModelResponseMetadata
@@ -24,7 +26,7 @@ from backend.app.agents.conversation_window import (
 )
 from backend.app.llm.budget import BudgetPlanner, ModelBudgetError, initial_message, request_payload
 from backend.app.llm.conversation import ModelMessage
-from backend.app.experiments.report import REPORT_VERSION, assess_answer, BATCH_PROTOCOL, CUMULATIVE_PROTOCOL, FULL_SOURCE_PROTOCOL, format_retry_message
+from backend.app.experiments.report import REPORT_VERSION, FORMAT_RETRY_POLICY, assess_answer, BATCH_PROTOCOL, CUMULATIVE_PROTOCOL, FULL_SOURCE_PROTOCOL, format_retry_message, report_transport_complete
 from backend.app.experiments.findings import parse_ledger, LedgerValidationError
 from backend.app.agents.instructions import AGENT_INSTRUCTIONS
 from backend.app.llm.observation import observe_requests
@@ -502,23 +504,44 @@ class AgentRunManager:
         self, provider: Any, payload: dict[str, Any], step: int, *, run_id: str,
         report_planner: BudgetPlanner | None = None, report_mode: str = "tools_none", **kwargs: Any,
     ) -> ModelTurn:
-        """实验完整台账格式失败时至多重提交一次；保留每次原文，不修补 JSON 或增加调查。"""
+        """文本/提交工具的台账校验失败时有界重提；不发布失败批次、不自动修补状态。"""
         state = self._generation_states.setdefault(run_id, _GenerationState())
         turn = await self._generate_once(run_id, provider, payload, step, **kwargs)
-        if report_planner is None or turn.tool_calls or not turn.text.strip() or not assess_answer(
-                turn.text, turn.metadata, require_report=False)["transport_complete"]:
+        if report_planner is None:
+            return turn
+        submission = None
+        if turn.tool_calls:
+            if report_mode != "batch_submit_only" or len(turn.tool_calls) != 1 or turn.tool_calls[0].name != BATCH_REPORT_TOOL:
+                return turn  # 非报告工具或混合调用仍交给阶段允许列表拒绝，不执行或借重提掩盖协议错误。
+            submission = turn.tool_calls[0]
+        if report_transport_complete(turn.metadata, allow_tool_calls=submission is not None) is not True:
+            return turn
+        if submission is None and not turn.text.strip():
             return turn
         try:
-            parse_ledger(turn.text)
+            if submission is not None:
+                try:
+                    text = BatchReportArguments.model_validate(submission.arguments).ledger_json
+                except ValidationError as exc:
+                    raise LedgerValidationError.from_validation_error(exc, prefix=(BATCH_REPORT_TOOL,)) from None
+            else:
+                text = turn.text
+            parse_ledger(text)
         except LedgerValidationError as exc:
             self._emit(run_id, "report.format_rejected", {"step": step, "category": exc.category,
                 "issues": exc.issues, "retry_used": state.format_retries_used})
             logger.warning("agent.report_format_rejected", extra={"run_id": run_id, "step": step,
                 "error_code": exc.category, "attempt": state.format_retries_used})
-            if exc.category == "state" or state.format_retries_used:
+            if exc.category not in FORMAT_RETRY_POLICY["eligible"] or state.format_retries_used >= FORMAT_RETRY_POLICY["max_extra_requests"]:
                 return turn
-            messages = [*kwargs["messages"], assistant_message(turn),
-                        ModelMessage(role="user", content=format_retry_message(exc))]
+            rejection = str(exc)
+            messages = [*kwargs["messages"], assistant_message(turn)]
+            if submission is not None:
+                # 原生调用必须配对真实的校验拒绝结果；publish 尚未发生，不推进批次/证据状态。
+                messages.append(ModelMessage(role="tool", tool_call_id=submission.id, content=json.dumps(
+                    {"error": rejection, "category": exc.category, "issues": exc.issues, "published": False},
+                    ensure_ascii=False, separators=(",", ":"))))
+            messages.append(ModelMessage(role="user", content=format_retry_message(exc)))
         else:
             return turn
         tools = kwargs["tools"] if report_mode in {"tools_none", "batch_submit_only"} else []
@@ -531,6 +554,11 @@ class AgentRunManager:
             self._emit(run_id, "report.format_retry_skipped", {"step": step, "reason": "input_budget"})
             return turn  # 不裁掉已有证据或原回复以容纳重提交；原格式错误继续由严格入口拒绝。
         budget = report_planner.require(retry_payload)
+        if submission is not None:
+            self._emit(run_id, "tool.requested", {"step": step, "phase": "batch_report", "call_id": submission.id,
+                "name": submission.name, "arguments": submission.arguments})
+            self._emit(run_id, "tool.failed", {"step": step, "call_id": submission.id,
+                "name": submission.name, "error": rejection})
         state.format_retries_used += 1
         self._emit(run_id, "report.format_retry_started", {"step": step, "attempt": state.format_retries_used})
         self._emit(run_id, "model.started", {"step": step, "phase": "report_format_retry",

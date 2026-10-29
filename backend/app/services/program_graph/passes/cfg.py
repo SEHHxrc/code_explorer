@@ -351,6 +351,8 @@ class ControlFlowGraphBuilder:
             addressed_argument_positions=list(call.addressed_argument_positions),
                 keyword_references=dict(call.keyword_references),
                 initializer_kind=call.initializer_kind,
+                callable_access=call.callable_access,
+                argument_binding_error=call.argument_binding_error,
             ) for call in statement.calls],
             value_transfers=[ProgramValueTransfer(
                 output_variable=transfer.output_variable,

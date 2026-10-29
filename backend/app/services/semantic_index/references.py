@@ -64,7 +64,7 @@ def project_variable_references(artifact: SemanticIndexArtifact, results: list[P
             references[identity] = fact
     if not any(result.variable_declarations or result.variable_references for result in results):
         return artifact
-    return artifact.model_copy(update={"schema_version": artifact.schema_version if artifact.schema_version in {"1.4", "1.5"} else "1.3",
+    return artifact.model_copy(update={"schema_version": artifact.schema_version if artifact.schema_version in {"1.4", "1.5", "1.6"} else "1.3",
                                        "variable_declarations": declarations, "variable_references": references})
 
 

@@ -479,6 +479,11 @@ class SecurityRuleEngine:
         metadata = dict(metadata or {})
         if fact_kind in {"guard", "sanitizer"}:
             metadata["protection_effectiveness"] = "not_verified"
+            metadata["observation_kind"] = (
+                "control_condition" if category in {"conditional_check", "assertion"} else
+                "dependency_marker" if category == "framework_dependency" else
+                "transformation_candidate" if fact_kind == "sanitizer" else "validation_candidate"
+            )
         fact = StaticSecurityFact(
             fact_id=fact_id,
             fact_kind=fact_kind,
@@ -517,6 +522,8 @@ class SecurityRuleEngine:
         """保存调用点、参数角色及少量跨语言通用参数形态。"""
         metadata: dict[str, Any] = {
             "callsite_id": call.callsite_id,
+            # 名称命中只说明规则依据，不等于库身份、调用成功或净化上下文已验证。
+            "name_match_basis": "exact_name" if call.qualified_name in rule.names else "name_suffix",
             "argument_count": len(call.arguments),
             "assigned_targets": list(call.assigned_targets),
             "value_flow": {

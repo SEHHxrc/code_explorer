@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from backend.app.services.program_index import ProgramIdentity
-from backend.app.services.semantic_index import CallTransitionIndex
+from backend.app.services.semantic_index import CallTransitionIndex, SemanticIndexArtifact
+from backend.app.services.semantic_index.projection import ProgramFacts
 
 from .language_adapters import (
     CSecurityFrontend,
@@ -72,10 +72,12 @@ class SecurityScanner:
         project_root: str | Path,
         *,
         dependency_graph: dict[str, Any] | None = None,
+        semantic_index: SemanticIndexArtifact | dict[str, Any] | None = None,
     ) -> SecurityScanResult:
         """按依赖图语言分组扫描；不支持的语言显式进入诊断。"""
         aggregate = SecurityScanResult()
-        if dependency_graph is None:
+        files_by_language = ProgramFacts(semantic_index, dependency_graph).files_by_language()
+        if files_by_language is None:
             for language in self.frontends.languages():
                 frontend = self.frontends.get(language)
                 if frontend is None:
@@ -88,7 +90,6 @@ class SecurityScanner:
                 aggregate.merge(result)
             return aggregate
 
-        files_by_language = self._files_by_language(dependency_graph)
         transitions: CallTransitionIndex | None = None
         for language in sorted(files_by_language):
             paths = files_by_language[language]
@@ -107,7 +108,7 @@ class SecurityScanner:
             packs = self.rule_packs.for_language(language)
             if semantics is not None and any(parameter.api_type for function in program.functions for parameter in function.parameters):
                 if transitions is None:
-                    transitions = CallTransitionIndex.from_dependency_graph(dependency_graph)
+                    transitions = CallTransitionIndex.from_sources(semantic_index=semantic_index, dependency_graph=dependency_graph)
                 forward_parameter_apis(program, transitions, semantics,
                                        {name for pack in packs for rule in pack.access_rules if rule.fact_kind == "source" for name in rule.names})
             result = self.rule_engine.evaluate(
@@ -117,18 +118,3 @@ class SecurityScanner:
             aggregate.merge(result)
         aggregate.unsupported_languages = sorted(set(aggregate.unsupported_languages))
         return aggregate
-
-    @staticmethod
-    def _files_by_language(graph: dict[str, Any]) -> dict[str, list[str]]:
-        """从依赖图模块节点提取语言与规范文件身份。"""
-        grouped: dict[str, set[str]] = {}
-        for node in graph.get("nodes", []) or []:
-            if not isinstance(node, dict):
-                continue
-            if str(node.get("kind") or node.get("type") or "") != "module":
-                continue
-            language = str(node.get("lang") or "").lower()
-            path = ProgramIdentity.file_id(str(node.get("file") or node.get("id") or ""))
-            if language and path:
-                grouped.setdefault(language, set()).add(path)
-        return {language: sorted(paths) for language, paths in grouped.items()}

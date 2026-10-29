@@ -1,12 +1,7 @@
 import { reactive, ref, shallowRef } from 'vue'
 import Sigma from 'sigma'
-import { createEdgeCurveProgram } from '@sigma/edge-curve'
+import { DirectedCurveProgram, PossibleCurveProgram } from '../curvePrograms.js'
 import { fadeColor } from '../graphStyle.js'
-
-// 略放大箭头，适配总览缩放下的统一小节点；仍由现有曲线程序渲染，不增加边或标签。
-const DirectedCurveProgram = createEdgeCurveProgram({
-  arrowHead: { extremity: 'target', lengthToThicknessRatio: 5, widenessToThicknessRatio: 3 },
-})
 
 /** Own Sigma, reducers, camera operations, hover state, and pointer interactions. */
 export const useSigmaRenderer = ({
@@ -92,7 +87,7 @@ export const useSigmaRenderer = ({
       // 构造前仍校验尺寸；只容忍已排队的原生 resize 帧遇到短暂的零尺寸过渡。
       allowInvalidContainer: true,
       defaultEdgeType: 'curved',
-      edgeProgramClasses: { curved: DirectedCurveProgram },
+      edgeProgramClasses: { curved: DirectedCurveProgram, possible: PossibleCurveProgram },
       minCameraRatio: 0.02,
       maxCameraRatio: 20,
       hideEdgesOnMove: true,

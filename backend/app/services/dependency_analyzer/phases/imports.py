@@ -121,7 +121,7 @@ class ImportResolutionPhase(DependencyAnalyzerState):
             if extension in substitutions:
                 return next((stem + suffix for suffix in substitutions[extension]
                              if stem + suffix in self.file_lang), "")
-        for suffix in ("", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue"):
+        for suffix in ("", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"):
             if joined + suffix in self.file_lang:
                 return joined + suffix
         hit = self.js_modules.get(joined)

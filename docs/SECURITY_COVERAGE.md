@@ -233,7 +233,7 @@ Python、Java、JS/TS 的直接引用事实现在包括纯属性 RHS。公共引
 
 新分析可使用锁定 TypeScript 6.0.3 的声明/类型绑定，发生在依赖图写边前，安全分析不重复
 启动工具。覆盖普通 JS/JSX/TS/TSX 的导入/重导出、函数/方法/构造器声明和有限类型；不新增
-污点求解器或安全规则。无实现签名、动态类型、缺依赖、工具失败和 Vue 均有明确回退原因。
+污点求解器或安全规则。无实现签名、动态类型、缺依赖、工具失败 均有明确回退原因。
 编译器目标一律 inferred/may，完整动态分派、堆和并发仍未覆盖。未显式配置 moduleDetection
 时隔离模块，避免不同测试脚本串联；传统全局脚本可能回退。backend_runs 保存真实版本、
 能力、诊断计数、截断样本和工具哈希，不把 partial 写成全覆盖。旧记录不会被重建。
@@ -309,7 +309,7 @@ CLI、环境、props 和存储须核实信任边界。可信人员设置启动�
 - FastAPI 按规范化注解排除 BackgroundTasks/Response，不按名字子串误删真实请求模型。
 - Python `request(method, url)` 的 URL 是位置 1，`get(url)` 是位置 0；文件移动的源/目标位置分别保存。
 - 跨语言值流区分操作读取的 `read_variable` 与写回的 `target_variable`。因此
-  `result = sink(value)` 核实真正的 value 实参；DOM 属性写入仍核实写出的属性，不混用两个阶段。
+  `result = sink(value)` 核实真正的 value 实参，不混用调用前读取与调用后写入。
 - 精确嵌套实参与直接 return 使用公共返回表达式位置；已解析项目调用必须经过实际 return，
   固定安全常量返回不再直接透传原始输入。复杂表达式和库行为仍不是完整模型。
 - 删除按 Sanitizer 所在节点整段阻断的逻辑；HTML 转义、URL 编码、basename 等只作为待核实观察，
@@ -478,7 +478,7 @@ Go 空白标识符 `_` 不具有存储身份。ProgramGraph 1.6 保留返回接�
 | Java | Spring Web/Servlet；环境/请求/文件；Runtime、JDBC、文件、反序列化、网络、弱随机数 | 公共 CFG/DFG、签名身份、字段/静态下标、有限跨方法、可变参数常量成员/直接打包数组、直接嵌套 Source | classpath/字节码绑定、多态、反射、泛型、动态数组/整集合传递、堆/副作用、其他框架 |
 | Go | net/http、Gin、net；环境/请求/文件/连接；进程、SQL、文件、网络、弱随机数；类型和敏感参数角色 | 匿名路由、并行绑定、字段/静态下标、有限跨函数、多返回内容/状态隔离、绑定输出、具名连接缓冲区、可变参数常量槽位 | goroutine/channel、完整接口动态目标、命名裸返回/多返回转发、动态切片、任意指针/别名、自定义路由工厂、Echo/Fiber |
 | C/C++ | 标准库/POSIX/SQLite；环境/标准输入/缓冲区 Source；Shell、可执行路径、文件、格式字符串、SQL | 声明符、字段/静态下标、有限直接调用；read/fgets/recv 等独立调用的具名输出缓冲区 may 写入、直接嵌套 Source | 完整预处理、宏、函数指针/虚函数/模板、指针算术/别名、复杂缓冲区/字节范围/通用副作用、argv、完整内存越界 |
-| JS/TS | 浏览器、Node.js、Express、本轮 Vue/React 核心模式 | 公共 CFG/DFG、复杂解构、字段隔离、有限跨文件传播 | 异步/事件、闭包、堆别名、动态键、spread/rest 长度、完整 SQL/全部 npm 库 |
+| JS/TS | Node.js、Express 服务端 | 公共 CFG/DFG、复杂解构、字段隔离、有限跨文件传播 | 异步/事件、闭包、堆别名、动态键、spread/rest 长度、完整 SQL/全部 npm 库 |
 | Rust | 无安全规则包，报告 unsupported | 有 ProgramGraph | 本轮不扩展 |
 
 所有语言仍缺完整控制依赖、路径求解和异常语义。调用目标唯一复用 dependency_analyzer/semantic_index。
@@ -510,44 +510,14 @@ Go 空白标识符 `_` 不具有存储身份。ProgramGraph 1.6 保留返回接�
 `test/test_taint_language_gaps.py` 覆盖内容/状态与安全兄弟值隔离、普通调用续接、固定安全返回、
 不可达语句、Context 参数角色、IR/程序图绑定一致、公共契约往返和原图不可变；最新回归结果以当前测试运行输出为准。
 
-## 已有范围：Vue、React、Node.js
+## 当前 JS/TS 范围：Node.js 服务端
 
-版本未指定，按 API/语法建立有限支持，未启动框架运行时，不构成全部版本认证。
-保留已有 Express，其他框架先不扩展。Node.js 是运行平台。
+浏览器、React/Vue、DOM 专用分析及模板/事件/状态实现已删除，不再列为支持能力。Node.js/Express 保留 HTTP handler、实际请求字段、data 回调内容、同请求局部字符串/数组到 end 读取、原始 argv/env、文件/进程/网络/动态代码规则。
+不把 response/next 或 end 参数当请求体；默认 execFile/spawn 的普通参数不作为 Shell 注入。完整事件时序、Buffer/共享堆身份、Promise 与第三方 API 语义仍有局限。规则命中需核实服务端运行环境、输入控制、防护及利用前提。
 
-| 范围 | 本轮支持 | 不确认危险/漏洞 | 未完整覆盖 |
-| --- | --- | --- | --- |
-| Vue | .vue 内联 JS/TS；单块 script setup 顶层值到 v-html；原生文本 input/textarea 的 v-model 到可写变量或显式 ref/shallowRef；defineProps 待验证 Source；vue.h 的 innerHTML | 普通插值、固定 HTML、安全兄弟 ref、默认认定 props 可控；trim/number 修饰符不等于安全净化 | Options API、双 script、外部 script、v-for/slot、动态类型/非文本输入、自定义组件/select、完整响应式/事件、跨组件、Router/Pinia/Nuxt、模板调用目标 |
-| React | JSX/TSX 原生 DOM 的 dangerouslySetInnerHTML.__html；react.createElement；原生表单 onChange/onInput 的 target/currentTarget.value；简单 useState 直接 setter 值到同组件状态读取；明确 React 线索下的组件 props | 普通 children、固定 HTML、安全兄弟字段、自定义组件同名属性、事件其他字段；状态本身不是新 Source，props 不默认攻击者可控 | 函数式 updater、对象/数组字面量状态更新、完整 hooks/context/重渲染生命周期、HOC、跨组件、路由/SSR；未知 JSX 运行库、动态回调注册 |
-| Node.js | http/https.createServer 的 handler、req.url/headers；已确认请求 data 首形参；同请求局部字符串/简单数组累积到 end 读取及普通函数调用；env/argv；同步/fs.promises 文件读取；进程/文件/网络/动态代码 | res/next Source、任意对象同名 data 事件、end 参数、默认 execFile/spawn 普通参数当 Shell 注入、可信配置自动当远程漏洞 | 完整事件时序、复杂数组控制流/重绑定、共享堆/Buffer 身份、其他事件/socket、fs.readFile 回调、Promise 时序、动态 options、其他数据库/框架 |
+## 服务端传播维护重点
 
-Vue 顶层绑定/编译宏与原始 HTML 的依据：
-[script setup 官方说明](https://vuejs.org/api/sfc-script-setup.html)、
-[v-html 官方说明](https://vuejs.org/api/built-in-directives.html#v-html)。
-React 原始 HTML 属性与普通 children 分别处理，参考
-[React 官方说明](https://react.dev/reference/react-dom/components/common#dangerously-setting-the-inner-html)。
-Node Shell 行为参考 [child_process 官方说明](https://nodejs.org/api/child_process.html)。
-
-## 按影响与使用频率收敛的实施顺序
-
-1. **常见输入边界（本轮第一批）**：React 原生表单、Node HTTP body data、Vue 文本 v-model。
-   现代 JSX 不要求显式 React import：可由观察到的 React 导入，或项目内最近 package.json 的
-   明确 React 依赖提供线索；仅依赖配置且混有 Vue/Preact 时不推断，不执行构建配置。
-   这属于有限静态运行库推断，不是完整编译器绑定或所有 JSX 运行库认证。
-2. **常见传播桥接（已完成有限模型）**：React 表单→简单 useState setter→同组件状态读取；
-   Node data→局部字符串/简单空数组累积→同请求 end。字符串使用公共 CFG 的退出值，
-   保留分支、提前返回和确定安全覆写；数组仅支持直线 push。不是完整闭包、堆或事件循环分析。
-3. **与实测有关的语义规则（后续）**：实际数据库/网络 API、必要调用目标和净化上下文修正。
-   完整事件循环、全堆对象敏感、所有 npm 库、完整反射等暂缓；不因缺口数量多就全部实现。
-
-Vue 事件写入由公共程序图标记为 inferred/may，而非把 HTML 标签顺序当执行顺序；
-可能写入不杀死先前确定定义，模板读取与脚本 .value 使用同一 ref 身份。
-安全证据及 LLM 端点保留 binding_certainty=may。模型仍须核实攻击者控制与实际执行条件。
-参照 [Vue 表单说明](https://vuejs.org/guide/essentials/forms)、
-[React input 说明](https://react.dev/reference/react-dom/components/input)、
-[Node IncomingMessage 说明](https://nodejs.org/api/http.html#class-httpincomingmessage)。
-能力边界放入 global limitations，不再为每个 JS/TS 文件无条件记录同一异步缺口；
-不能将能力缺口诊断条数用作这些特性在项目中的使用频率。
+优先维护 API 请求字段到实际敏感参数的绑定、Node data/end 局部状态、公共调用/返回/对象/集合与反例。第三方语义、完整事件循环、全堆别名和反射按实际链路断点推进，不重新引入浏览器分析。
 
 ## 解构与公共协议
 
@@ -614,8 +584,7 @@ ObjectReferenceIndex 的同一状态，不新增语言私有污点引擎。工�
 
 ### 端到端矩阵与原生值消费（ProgramGraph 1.15）
 
-`test/fixtures/chain_acceptance.json` 固定 FastAPI、Spring、Servlet、Gin、net/http、Node、React、
-Vue、C 九组小链路；每组含固定安全值、状态分量、无关实参或普通输出等反例。
+`test/fixtures/chain_acceptance.json` 当前维护 FastAPI、Spring、Servlet、Gin、net/http、Node、C 七组服务端小链路；每组含固定安全值、状态分量、无关实参或普通输出等反例。
 `test/test_chain_acceptance.py` 逐阶段核对 Source、调用/对象/边界、敏感参数和完整交付。
 这些是可复现的 API 模式样例，不代表所有版本、所有业务语义或所有漏洞类别覆盖。
 
@@ -647,16 +616,13 @@ WSL Go 工具验证不依赖上述 Python 语法缓存，不与受阻的 Python 
 公共协议可接其他语言，但不代表 Java 等语言已实现闭包适配。
 
 匿名回调复用共享函数身份，使调用解析归属真实回调；公共程序图不再把嵌套函数体当父函数执行。
-创建函数值不等于执行函数体。安全覆写、局部遮蔽、跨组件/请求隔离和不可达写入有反例测试。
-对象/数组字面量状态更新及函数式 updater 显式报告未建模，避免错误扩散到安全兄弟字段。
+创建函数值不等于执行函数体。安全覆写、局部遮蔽、跨请求隔离和不可达写入有反例测试。
 
-test/test_javascript_bindings.py 覆盖协议、框架正反例、字段隔离、位置、跨文件、
-Vue JS/TS、动态诊断、独立发现、递归契约 JSON 往返。
-test/test_javascript_inputs.py 覆盖新增三类输入、现代 JSX、静态接收者、作用域/绑定反例、
-原始坐标和 LLM 中的 may；test/test_framework_bindings.py 验证公共可能写入不误杀旧定义、
-契约往返和旧节点默认行为。
-test/test_javascript_state.py 覆盖新增状态/请求体桥接及普通调用续接；
+test/test_javascript_bindings.py 覆盖协议、Node 服务端正反例、字段隔离、位置、跨文件及递归绑定往返。
+公共可能写入契约保留往返及旧节点默认行为验证。
 test/test_value_boundaries.py 验证公共契约、原图不变和无边界时默认行为。
 通过测试不意味着消除缺口或证明真实 LLM 质量。旧项目须重新导入/分析，恢复快照不重扫。
 两组保持原始文件工具一致，仅实验组增加安全证据；保留 scan_failures/limitations，
 无告警不能判为安全。另见 FUNCTIONAL_VALIDATION.md、EXPERIMENT_PROTOCOL.md。
+
+当前 Node.js 请求体回调及状态边界测试归入 `test/test_node_http.py`；公共可能写入契约继续由 `test/test_framework_bindings.py` 与 `test/test_value_boundaries.py` 验证。历史全量测试数字对应当时版本，不代表已移除浏览器功能仍受支持。

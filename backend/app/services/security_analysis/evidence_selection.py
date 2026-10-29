@@ -9,7 +9,7 @@ from typing import Any
 
 from .contracts import SecurityCandidate, SecurityEvidencePack, StaticSecurityFact
 
-SELECTION_VERSION = "security-path-summary-v5-source-boundaries"
+SELECTION_VERSION = "security-path-summary-v6-possible-connections"
 PRIORITIES = {"propagation_path": 1, "structural_lead": 2, "operation_lead": 3}
 
 
@@ -89,8 +89,9 @@ class SecurityEvidenceSelector:
             raise ValueError("候选与值流端点不一致，不能绑定为同一路径。")
         if source.fact_kind != "source" or sink.fact_kind != "sink":
             raise ValueError("候选端点角色与事实不一致。")
-        edges = [self.pack.call_edges[key] for key in candidate.call_edge_ids if key in self.pack.call_edges]
-        missing = len(edges) != len(candidate.call_edge_ids) or bool(candidate.dataflow_id and (not flow or not flow.steps))
+        edge_ids = list(dict.fromkeys([*candidate.call_edge_ids, *(flow.call_edge_ids if flow else [])]))
+        edges = [self.pack.call_edges[key] for key in edge_ids if key in self.pack.call_edges]
+        missing = len(edges) != len(edge_ids) or bool(candidate.dataflow_id and (not flow or not flow.steps))
         scope_gap = self.scope is not None and (
             any(step.location.path not in self.scope for step in flow.steps) if flow else
             any(edge.callsite and edge.callsite.path not in self.scope for edge in edges))
@@ -111,6 +112,7 @@ class SecurityEvidenceSelector:
                     "bounded_model_path" if flow or edges else "not_established"),
                 "step_count": len(flow.steps) if flow else len(edges),
                 "confidence": candidate.confidence, "value_flow": flow.status if flow and flow.steps else "not_analyzed",
+                **({"call_connection_counts": dict(Counter(edge.connection_status for edge in edges))} if edges else {}),
                 "unresolved_count": len(candidate.unresolved_boundaries) + (len(flow.unresolved) if flow else 0),
                 "analysis_truncated": candidate.truncated, "sequence_delivery": "detail_only" if (flow and flow.steps) or edges else "not_available"}
 
@@ -148,6 +150,7 @@ class SecurityEvidenceSelector:
                 "progress": "all_retained_reported" if not pending else "partial" if len(pending) < len(members) else "not_started",
                 "route_kinds": dict(Counter(row["kind"] for row in pending)),
                 "route_statuses": dict(Counter(row["path_status"] for row in pending)),
+                "call_connection_counts": dict(sum((Counter(row.get("call_connection_counts", {})) for row in pending), Counter())),
                 "condition_statuses": dict(Counter(status for row in pending for status in row.get("path_condition_status", []))),
                 "analysis_truncated": any(row["analysis_truncated"] or row["path_status"] == "incomplete" for row in members),
                 "sequence_delivery": "select_route_id", "count_semantics": "retained_candidates_not_all_paths_or_vulnerabilities"}
@@ -202,7 +205,8 @@ class SecurityEvidenceSelector:
                         if step.object_allocation_id else {}),
                      **({"argument_bindings": [item.model_dump(exclude_none=True) for item in step.argument_bindings]} if step.argument_bindings else {}),
                      "certainty": step.certainty, "provenance": step.provenance} for step in flow.steps]
-        return [self.pack.call_edges[key].model_dump(mode="json", exclude_none=True)
+        return [self.pack.call_edges[key].model_dump(mode="json", exclude_none=True) |
+                {"connection_status": self.pack.call_edges[key].connection_status}
                 for key in candidate.call_edge_ids if key in self.pack.call_edges]
 
     def build(self, *, max_bytes: int = 8000, excluded: set[str] | None = None, max_items: int = 8,
@@ -220,6 +224,7 @@ class SecurityEvidenceSelector:
             "semantics": ("族按同Source/Sink事实分组而非根因；族ID查路线目录，路线ID查详情；族浏览不算路线已核验。"
                           if details_available else "无静态详情工具，直接交付有界路线；not_delivered表示步骤未交付，不能按ID续读。") +
                          "priority为核验顺序非漏洞概率：1=模型传播，2=结构线索，3=操作线索。"
+                         "call_connection_counts按路线计调用目标证据：modelled=模型内绑定，possible=可能，unresolved=目标未确认；均非值传播证明。"
                          "保留静态路径非全路径、运行或利用证明；API/参数角色待核实。目录无源码/防护结论；零条目不证明安全。"}
 
         def fits(proposal: dict[str, Any]) -> bool:

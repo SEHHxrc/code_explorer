@@ -32,6 +32,38 @@ from backend.app.services.security_analysis.semantics import (
 class TaintLanguageGapTests(unittest.TestCase):
     """通过依赖分析、公共程序图和安全证据全流水线验证传播与隔离。"""
 
+    def test_source_produces_a_value_and_sink_consumes_a_specific_argument(self) -> None:
+        pack=self._analyze({'app.py':'import os\ndef run():\n value=input()\n os.system(value)\n'})
+        candidate=next(item for item in pack.candidates if item.dataflow_verified)
+        source,sink=(pack.facts[key] for key in (candidate.source_fact_id,candidate.sink_fact_id))
+        self.assertEqual('input',source.name)
+        self.assertEqual('source',source.metadata['value_flow']['result_role'])
+        self.assertEqual([0],sink.metadata['value_flow']['arguments'])
+        step=pack.dataflows[candidate.dataflow_id].steps[-1]
+        self.assertEqual(['value'],step.input_names)
+        self.assertEqual(0,step.argument_bindings[0].position)
+        overwritten=self._analyze({'app.py':'import os\ndef run():\n value=input()\n value="fixed"\n os.system(value)\n'})
+        self.assertFalse(any(item.dataflow_verified for item in overwritten.candidates))
+
+    def test_control_dependency_and_weak_transform_names_are_unverified_observations(self) -> None:
+        source='''from fastapi import FastAPI, Depends
+app=FastAPI()
+def dependency():
+ return object()
+@app.get('/run')
+def run(value: str, service=Depends(dependency)):
+ if value:
+  assert service
+  return service.resolve(value)
+'''
+        pack=self._analyze({'app.py':source})
+        guards=[fact for fact in pack.facts.values() if fact.fact_kind=='guard']
+        self.assertEqual({'control_condition','dependency_marker'},{fact.metadata['observation_kind'] for fact in guards})
+        transform=next(fact for fact in pack.facts.values() if fact.fact_kind=='sanitizer')
+        self.assertEqual('transformation_candidate',transform.metadata['observation_kind'])
+        self.assertEqual('name_suffix',transform.metadata['name_match_basis'])
+        self.assertEqual('not_verified',transform.metadata['protection_effectiveness'])
+
     def _analyze(self, files: dict[str, str], **limits: int) -> SecurityEvidencePack:
         """输入相对文件/源码，返回临时项目的安全包，不污染现有项目。"""
         with tempfile.TemporaryDirectory() as directory:

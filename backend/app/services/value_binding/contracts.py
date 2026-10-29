@@ -8,6 +8,14 @@ from .expressions import ConditionExpression
 
 
 @dataclass(frozen=True)
+class CallableAccess:
+    """前端观察到的成员可调用值；成员表达式未知时保留边界，不按同名函数猜目标。"""
+
+    receiver: str
+    member: ConditionExpression
+
+
+@dataclass(frozen=True)
 class BindingValue:
     """一个原始实参/初始化值；opaque 表示结构未知，missing 与 literal 必须区别。"""
 

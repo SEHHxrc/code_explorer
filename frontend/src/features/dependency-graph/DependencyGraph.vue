@@ -57,15 +57,22 @@
 
       <div class="legend">
         <div class="legend-title">{{ graphData.pathFamilies ? '颜色：路径族 · 箭头：调用方向' : '节点类型 · 箭头：关系方向' }}</div>
-        <div v-for="item in visibleLegend" :key="item.id || item.key" class="legend-item" :title="item.id">
+        <div v-for="item in visibleLegend" :key="item.id || item.key" class="legend-item" :title="item.title || item.label">
           <span class="swatch" :style="{ background:item.color }" />{{ item.label }}
         </div>
         <div v-if="graphData.hasSharedFamilies" class="legend-item" title="同一节点或边属于多个路径族；选择单条路线后使用所属族颜色">
           <span class="swatch" :style="{ background:SHARED_PATH_COLOR }" />跨族共享
         </div>
+        <div v-if="graphData.possibleCount" class="legend-item" title="动态派发或启发式候选目标；实线也不代表值传播已闭合或运行时必然执行">
+          <span style="width: 14px; border-top: 2px dashed currentColor" />候选目标（{{ graphData.possibleCount }}）
+        </div>
         <div v-if="graphData.operationCount" class="legend-item" title="仅有敏感操作事实，未建立 Source 到该操作的传播路线；不属于路径族">
           <span class="swatch" :style="{ background:UNPAIRED_OPERATION_COLOR }" />未配对操作（非路径族）
         </div>
+        <div v-if="graphData.structureCount" class="legend-item" title="已有调用结构，不代表值传播已建立">
+          <span class="swatch" style="background:#94a3b8" />灰细箭头：仅结构关系
+        </div>
+        <div v-if="graphData.boundaryCount" class="legend-more">{{ graphData.boundaryCount }} 处传播边界，可点节点查看</div>
         <div v-if="remainingFamilies" class="legend-more">另 {{ remainingFamilies }} 族，可选路查看</div>
       </div>
 

@@ -11,6 +11,7 @@
 | `repository.py` / `ProjectRepository` | 只管理 `ProjectModel` 的新增、按所有权查询、白名单更新和删除。 |
 | `repository.py` / `ProjectDeletionRepository` | 在单个数据库事务中检查活动任务并删除跨功能域关联记录。 |
 | `artifacts.py` / `ProjectArtifactRepository` | 原子创建/替换、读取、统计、隔离、恢复和删除分析产物。 |
+| `artifact_format.py` | 大语义索引的共享文本/字段布局存储格式；只处理序列化，不解析或合并语义实体。 |
 | `import_service.py` / `ProjectImportService` | 编排工作区获取、纯分析、发布、Artifact 和项目记录。 |
 | `progress.py` / `ImportProgressStore`、`ImportProgressTracker` | 按现有用户上下文隔离临时导入进度，复用分析器文件计数，记录事务完成或回滚后的终态。 |
 | `query_service.py` / `ProjectQueryService` | 项目库存、存储占用、资源完整性和前端快照恢复。 |
@@ -23,6 +24,14 @@
 `ProjectRepository.create()` 只执行新增，不是 upsert。`update_owned()` 必须同时匹配项目 ID 与
 用户 ID，并只接受 `ProjectUpdate`。普通项目仓储不读取或删除 Agent、Execution、Experiment
 表；跨域级联只存在于专用删除事务仓储。
+
+## 公共实体存储
+
+仓储对较大的 `semantic_index` 自动使用 `semantic-entities-v1` 物理格式：重复的长文本和实体字段布局各存一次，实体行引用共享表。声明、使用点、调用点、参数、返回槽及 SSA 的公开模型不变，不靠删字段或合并同名实体节省空间。
+
+文件根字段仍为原项目产物，`semantic_index` 内部保存 `storage_format/strings/shapes/root`。行 `[shape_id, values]` 表示对象，`[-1, values]` 表示列表，`[-2, negative_int]` 保留原始负数；裸负整数表示字符串外键，零值、False、None、空容器、字段顺序和列表顺序独立保留。外键或行损坏明确失败，不静默回退。解码共享不可变字符串，每个可变容器单独创建，避免修改一条位置记录影响其他实体。
+
+所有正常消费者继续通过 `ProjectArtifactRepository.load()` 取得原样领域字典；不要绕过仓储把落盘紧凑表示直接交给分析器。新写入使用流式紧凑 JSON 和原子替换，失败保留旧正式文件并清理临时文件。小索引使用普通 JSON，避免表头开销。旧普通 JSON 可直接读取，不在读取时迁移，隔离/恢复/删除仍使用相同文件生命周期。物理格式不改变逻辑内容哈希，不减少 LLM 的可见输入或 Token；它也不等于全流程流式分析或内存硬限制。需要在 API/Worker 更新后再保存新格式，旧运行进程不能直接读取该物理格式。
 
 ## 导入进度
 

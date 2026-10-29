@@ -26,6 +26,8 @@ class ProgramArgumentBinder:
     ) -> list[tuple[str, tuple[str, ...]]]:
         """返回目标形参与对应实参中词法变量的绑定。"""
         target = self._explicit_target(target)
+        if call.argument_binding_error:
+            return []
         context = target.instance_context
         if context is not None and not context.is_constructor and call.receiver_field_bindings is not None and target.method_id not in call.receiver_field_bindings:
             return []
@@ -76,6 +78,12 @@ class ProgramArgumentBinder:
         })
         return [(parameter, names[0]) for parameter, names in self.bind(direct, target)
                 if parameter.isidentifier() and len(names) == 1 and attribute_path(names[0]) is not None]
+
+    def is_uncertain(self, call: ProgramCallSite, target: FunctionProgramGraph) -> bool:
+        """未知映射展开只有条件性绑定；调用边本身确定也不能升级为 must 值流。"""
+        semantics = self.semantics.get(target.language) if self.semantics else None
+        return bool(semantics and any(item.confidence != "high"
+            for item in semantics.bind_program_arguments(call, self._explicit_target(target))))
 
     def slot_names(self, call: ProgramCallSite, target: FunctionProgramGraph) -> set[str]:
         """返回包括安全常量的目标槽位，供私有入口 Overlay 保留兄弟元素隔离。"""

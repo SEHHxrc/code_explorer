@@ -1,4 +1,4 @@
-"""JS/TS 平台和 Express 规则：结构候选不等同于可利用漏洞。"""
+"""JS/TS 服务端、Node.js 和 Express 规则：结构候选不等同于可利用漏洞。"""
 
 from .base import AccessRule, CallCondition, CallRule, EntrypointRule, RulePack
 
@@ -10,7 +10,7 @@ _CONTROL = (
 JAVASCRIPT_RULE_PACKS = (
     RulePack(
         name="javascript-typescript-core",
-        version="1.3",
+        version="1.4",
         languages=_LANGUAGES,
         entrypoint_rules=(
             EntrypointRule(
@@ -47,18 +47,6 @@ JAVASCRIPT_RULE_PACKS = (
         ),
         access_rules=(
             AccessRule(
-                "JS-SOURCE-VUE-MODEL", "source", "browser_input",
-                ("vue.template.v-model",), languages=_LANGUAGES,
-                trust_class="untrusted", result_role="source",
-                preconditions=("仅 script setup 原生文本输入的可写变量或显式 Vue ref；事件可能未发生，修饰符不视为安全净化。",),
-            ),
-            AccessRule(
-                "JS-SOURCE-INPUT-EVENT", "source", "browser_input",
-                ("react.DOM.InputEvent.target.value", "react.DOM.InputEvent.currentTarget.value"),
-                languages=_LANGUAGES, trust_class="untrusted", result_role="source",
-                preconditions=("已确认原生表单事件注册；仍须验证攻击者影响、传播与实际输出上下文。",),
-            ),
-            AccessRule(
                 "JS-SOURCE-NODE-BODY", "source", "http_body",
                 ("node.IncomingMessage.bodyChunk",),
                 languages=_LANGUAGES, trust_class="untrusted", result_role="source",
@@ -79,60 +67,6 @@ JAVASCRIPT_RULE_PACKS = (
                 "source",
                 "http_parameter",
                 ("node.IncomingMessage.url", "node.IncomingMessage.headers"),
-                languages=_LANGUAGES,
-                trust_class="untrusted",
-                result_role="source",
-            ),
-            AccessRule(
-                "JS-SOURCE-REACT-PROPS",
-                "source",
-                "component_property",
-                ("react.Component.props",),
-                languages=_LANGUAGES,
-                trust_class="unknown",
-                result_role="source",
-                preconditions=(
-                    "组件 props 并非天然攻击者输入，必须核实父组件、SSR 或外部数据来源。",
-                ),
-            ),
-            AccessRule(
-                "JS-SINK-REACT-HTML",
-                "sink",
-                "html_injection",
-                ("react.DOM.dangerouslySetInnerHTML",),
-                access_kinds=("write",),
-                languages=_LANGUAGES,
-                cwe="CWE-79",
-                severity="high",
-                argument_role="sink",
-                preconditions=(
-                    "必须确认 React 原生 DOM 渲染上下文与 __html 字段可控性；普通 JSX children 不属于此 Sink。",
-                ),
-            ),
-            AccessRule(
-                "JS-SINK-VUE-HTML",
-                "sink",
-                "html_injection",
-                ("vue.template.v-html", "vue.render.innerHTML"),
-                access_kinds=("write",),
-                languages=_LANGUAGES,
-                cwe="CWE-79",
-                severity="high",
-                argument_role="sink",
-                preconditions=(
-                    "必须确认原始 HTML 可控与输出上下文；普通模板插值不属于此 Sink。",
-                ),
-            ),
-            AccessRule(
-                "JS-SOURCE-BROWSER",
-                "source",
-                "browser_input",
-                (
-                    "location.search",
-                    "location.hash",
-                    "location.href",
-                    "document.cookie",
-                ),
                 languages=_LANGUAGES,
                 trust_class="untrusted",
                 result_role="source",
@@ -159,50 +93,8 @@ JAVASCRIPT_RULE_PACKS = (
                 result_role="source",
                 preconditions=_CONTROL,
             ),
-            AccessRule(
-                "JS-SINK-DOM",
-                "sink",
-                "html_injection",
-                (
-                    "DOM.Element.innerHTML",
-                    "DOM.Element.outerHTML",
-                    "DOM.Element.srcdoc",
-                ),
-                access_kinds=("write",),
-                languages=_LANGUAGES,
-                cwe="CWE-79",
-                severity="high",
-                argument_role="sink",
-                preconditions=(
-                    "必须确认写入值含可执行的攻击者 HTML，并考虑实际 DOM 上下文、净化器和 Trusted Types 策略。",
-                ),
-            ),
         ),
         call_rules=(
-            CallRule(
-                "JS-SOURCE-VUE-PROPS",
-                "source",
-                "component_property",
-                ("vue.defineProps",),
-                languages=_LANGUAGES,
-                trust_class="unknown",
-                result_role="source",
-                preconditions=(
-                    "Vue props 是否不可信取决于父组件或外部数据，不可仅凭 defineProps 判断漏洞。",
-                ),
-            ),
-            CallRule(
-                "JS-SOURCE-STORAGE",
-                "source",
-                "browser_storage",
-                ("localStorage.getItem", "sessionStorage.getItem"),
-                languages=_LANGUAGES,
-                trust_class="unknown",
-                result_role="source",
-                preconditions=(
-                    "浏览器存储不是天然外部输入，需确认攻击者可以影响该键对应的数据。",
-                ),
-            ),
             CallRule(
                 "JS-SOURCE-FILE",
                 "source",
@@ -285,28 +177,6 @@ JAVASCRIPT_RULE_PACKS = (
                 argument_positions=(0,),
             ),
             CallRule(
-                "JS-SINK-DOM-CALL",
-                "sink",
-                "html_injection",
-                ("document.write", "document.writeln"),
-                languages=_LANGUAGES,
-                cwe="CWE-79",
-                severity="high",
-                argument_role="sink",
-                argument_positions=(0,),
-            ),
-            CallRule(
-                "JS-SINK-ADJACENT-HTML",
-                "sink",
-                "html_injection",
-                ("DOM.Element.insertAdjacentHTML",),
-                languages=_LANGUAGES,
-                cwe="CWE-79",
-                severity="high",
-                argument_role="sink",
-                argument_positions=(1,),
-            ),
-            CallRule(
                 "JS-SINK-FILE",
                 "sink",
                 "file_path",
@@ -355,19 +225,7 @@ JAVASCRIPT_RULE_PACKS = (
                 argument_role="sink",
                 argument_positions=(0,),
                 preconditions=(
-                    "仅服务端可控目标请求可能构成 SSRF；浏览器 fetch 不等同服务端 SSRF，需核实运行环境和目标限制。",
-                ),
-            ),
-            CallRule(
-                "JS-SANITIZER-HTML",
-                "sanitizer",
-                "html_sanitizer",
-                ("dompurify.sanitize",),
-                languages=_LANGUAGES,
-                argument_role="sanitizer_input",
-                argument_positions=(0,),
-                preconditions=(
-                    "净化有效性取决于配置与输出上下文；未进行上下文匹配前不得自动删除候选路径。",
+                    "需核实代码运行于服务端、目标可控性和目标限制；请求调用本身不证明 SSRF。",
                 ),
             ),
         ),

@@ -213,7 +213,7 @@ class CitationAndPromptRulesTests(unittest.TestCase):
             self.assertIn(rule,REPORT_INSTRUCTIONS)
         for sample in ('audio2sheet','Spleeter','safe_id','AES'):
             self.assertNotIn(sample,SECURITY_EXPERIMENT_INSTRUCTIONS)
-        self.assertEqual('ledger-security-v7',REPORT_VERSION)
+        self.assertEqual('ledger-security-v8',REPORT_VERSION)
 
     def test_structural_pass_does_not_validate_wrong_variable_guard_or_missing_implementation(self):
         report='## 结论\n测试。\n## 已核实问题\n附近的清洗使所有值安全。\n## 未确认风险\n未读取被调用实现但认为无风险。\n## 范围与局限\n只读测试。\n'+REPORT_END

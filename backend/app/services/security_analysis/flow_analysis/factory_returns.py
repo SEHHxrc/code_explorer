@@ -5,7 +5,6 @@ from dataclasses import dataclass, replace
 import hashlib
 
 from backend.app.services.program_graph import FunctionProgramGraph, ProgramGraphArtifact
-from backend.app.services.program_graph.contracts import ProgramGraphNode
 from backend.app.services.semantic_index import SemanticIndex
 from backend.app.services.semantic_index.contracts import CallSiteFact
 from backend.app.services.value_binding.objects import instance_field_name as field_slot

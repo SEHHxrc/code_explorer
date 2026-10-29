@@ -11,7 +11,7 @@
           <div v-if="route.source" class="endpoint"><b>Source</b> {{ route.source.name }} · {{ route.source.trust_class }}<br>{{ pathLocation(route.source.location) }}</div>
           <div v-else class="warning">没有已保存的 Source 配对；不代表不存在输入来源，也不代表该操作构成漏洞。</div>
           <div class="endpoint"><b>Sink</b> {{ route.sink.name }}<br>{{ pathLocation(route.sink.location) }}</div>
-          <div v-if="unpaired" class="explanation">操作 ID：{{ route.id }}<br>规则：{{ route.rule_id }}；显示缺失 {{ route.projection_missing }}。此条不是路径族成员，不提供推测的输入链路。</div>
+          <div v-if="unpaired" class="explanation">操作 ID：{{ route.id }}<br>规则：{{ route.rule_id }}；显示缺失 {{ route.projection_missing }}。灰色细箭头仅表示已有调用结构，未证明值传播；此条不是路径族成员。</div>
           <div v-else class="explanation">
             <div>路线 ID：{{ route.id }}<br>路径族 ID：{{ route.path_group_id }}</div>
             {{ route.kind === 'propagation_path' ? '静态值传播推断，不等于可实际利用。' : '仅有调用或共现线索，未证明输入到达敏感参数。' }}
@@ -19,9 +19,22 @@
             路径状态：{{ route.path_status }}。
             <template v-if="route.condition_statuses.length">条件核验：{{ route.condition_statuses.join(' / ') }}（模型内结果，不是项目安全结论）。</template>
           </div>
+          <div v-if="Object.keys(route.call_connection_counts || {}).length" class="explanation">
+            调用目标依据：<span v-for="(count, status) in route.call_connection_counts" :key="status">{{ connectionStatusLabel(status) }} {{ count }}；</span>
+            保守绑定不等于虚连接；此计数不证明值传播或实际执行。
+          </div>
           <div v-if="loading">正在读取已保存步骤…</div>
           <div v-else-if="error" class="warning">{{ error }} <el-button link @click="$emit('retry')">重试详情</el-button></div>
           <template v-else-if="detail">
+            <div v-for="item in detail.call_connections || []" :key="item.call_edge_id" class="explanation">
+              <b>{{ connectionStatusLabel(item.status) }}</b> · {{ pathLocation(item.location) }}<br>
+              {{ item.speculative_target ? '候选目标（虚线）' : '已记录调用关系（实线）' }}<br>
+              {{ item.source }} → {{ item.target }}<br>
+              解析方式 {{ item.resolution_method }}；目标 {{ item.target_certainty }}；置信度 {{ item.confidence }}<template v-if="item.truncated">；解析达到上限</template>。
+            </div>
+            <div v-for="item in detail.boundaries || []" :key="item.id" class="warning">
+              <b>传播边界</b> · {{ pathLocation(item.location) }}<br>{{ item.reasons.map(boundaryReasonLabel).join('；') }}
+            </div>
             <ol>
               <li v-for="(step, index) in detail.steps" :key="index">
                 <b>{{ stepLabels[step.kind] || step.kind }}</b> · {{ pathLocation(step.location) }} · {{ step.certainty }}
@@ -46,7 +59,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { pathKindLabel, pathLocation } from '../domain/securityPaths.js'
+import { pathKindLabel, pathLocation, boundaryReasonLabel, connectionStatusLabel } from '../domain/securityPaths.js'
 const props = defineProps({ route: { type: Object, required: true }, detail: Object, loading: Boolean, error: String })
 const unpaired = computed(() => props.route.kind === 'unpaired_operation')
 defineEmits(['retry'])

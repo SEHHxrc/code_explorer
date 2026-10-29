@@ -115,7 +115,6 @@ def main() -> None:
     baseline = BaselineLoader(args.baseline_ref) if args.baseline_ref else None
     if baseline is not None:
         sys.meta_path.insert(0, baseline)
-    from backend.app.services.syntax_analysis.source_units import source_unit
     from backend.app.services.syntax_analysis.catalog import SOURCE_LANGUAGE_BY_EXTENSION
     from backend.app.services.syntax_analysis.session import syntax_session
 
@@ -126,8 +125,6 @@ def main() -> None:
         path.relative_to(root)
         raw = path.read_bytes()
         language = SOURCE_LANGUAGE_BY_EXTENSION[path.suffix.lower()]
-        if path.suffix.lower() == ".vue":
-            language = source_unit(relative, raw, language).language
         graph["nodes"].append({"kind": "module", "file": relative, "lang": language})
         fingerprints[relative] = hashlib.sha256(raw).hexdigest()
     print(json.dumps({"condition": "baseline" if baseline else "current", "baseline_ref": baseline.reference if baseline else None,

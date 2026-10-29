@@ -146,13 +146,15 @@ class AgentFoundationTests(unittest.TestCase):
         async def scenario():
             with tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                (root / "main.py").write_text("API_KEY=super-secret\nprint('ok')\n", encoding="utf-8")
+                (root / "main.py").write_text("API_KEY='super-secret'\nprint('ok')\n", encoding="utf-8")
                 registry = create_project_tool_registry()
                 context = ToolContext("p1", "u1", root, sample_artifact())
                 result = await registry.execute("read_file_range", context, {
                     "path": "main.py", "start_line": 1, "end_line": 20,
                 })
                 self.assertIn("[REDACTED]", result.content["text"])
+                self.assertNotIn("super-secret", result.content["text"])
+                self.assertIn("2: print('ok')", result.content["text"])
                 with self.assertRaises(ValueError):
                     await registry.execute("read_file_range", context, {
                         "path": "../outside.py", "start_line": 1, "end_line": 2,

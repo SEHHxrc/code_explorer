@@ -32,6 +32,9 @@
 ## 路径与回滚保证
 
 所有用户 ID、操作 ID 和项目 ID 都先校验再拼接路径；删除动作还会验证目标位于预期根目录内。
-ZIP 会拒绝目录穿越、绝对路径、链接和超预算条目；Git 来源仅允许策略许可的 URL。项目导入
+ZIP 会拒绝目录穿越、绝对路径、特殊设备文件和超预算条目；符号链接不创建、不跟随，
+在获取阶段跳过并合并到 `SanitizeReport.removed_links/filtered_out_files`，不因一个打包别名拒绝整包。
+Git 来源默认允许 `github.com`、`gitlab.com`，仍限制协议、凭据和公网 DNS；自建实例需配置准确主机名。
+显式配置空 `GIT_ALLOWED_HOSTS` 保持“全部解析地址均须为公网”的原语义。项目导入
 失败时由 `projects.ProjectImportTransaction` 补偿；项目删除先移动到 `.deleting` 隔离区，数据库
 失败时恢复，进程中断时由项目删除 Journal 和 Janitor 继续处理。

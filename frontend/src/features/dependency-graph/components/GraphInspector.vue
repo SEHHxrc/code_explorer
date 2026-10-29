@@ -24,6 +24,12 @@
           </div>
           <div class="detail-empty">尚未建立输入传播链路。<template v-if="node.security.operations.length > 20">此处只展开前 20 项，其余可通过顶部选择器查看。</template></div>
         </div>
+        <div v-if="node.security?.boundaries?.length" class="detail-section">
+          <div class="section-title">传播在此未闭合（不代表安全或漏洞成立）</div>
+          <div v-for="item in node.security.boundaries" :key="item.id" class="operation-row">
+            {{ operationLocation(item.location) }}<br>{{ item.labels.join('；') }}
+          </div>
+        </div>
         <div class="detail-actions">
           <el-button size="small" :type="focusMode ? 'primary' : ''" @click="$emit('toggle-focus')">
             {{ focusMode ? '退出单跳聚焦' : '只看单跳邻域' }}
@@ -57,6 +63,8 @@
           <span class="rel-tag" :style="{ color:edge.color, borderColor:edge.color }">{{ edge.relationLabel }}</span>
           <el-tag v-if="edge.dispatch" size="small" effect="plain">{{ edge.dispatch }} dispatch</el-tag>
         </div>
+        <div v-if="edge.security?.structural" class="detail-empty">仅有调用结构，尚未证明输入值经此边到达敏感参数。</div>
+        <div v-if="edge.security?.possible" class="detail-empty">虚线：包含动态派发或启发式解析的候选目标。可在路径详情核对解析方式和调用位置；不表示链路已闭合。</div>
         <div v-for="endpoint in [edge.source, edge.target]" :key="endpoint.id" class="detail-section">
           <div class="section-title">{{ endpoint.id === edge.source.id ? '起点' : '终点' }}</div>
           <div class="detail-row endpoint-row" @click="$emit('select-node', endpoint.id)">
@@ -69,7 +77,7 @@
       <div v-if="security?.families?.length" class="detail-section">
         <div class="section-title">路径族归属<template v-if="security.shared"> · 跨族共享</template></div>
         <div class="family-tags">
-          <span v-for="family in security.families" :key="family.id" class="family-tag" :title="family.id">
+          <span v-for="family in security.families" :key="family.id" class="family-tag" :title="family.title || family.label">
             <span class="swatch" :style="{ background:family.color }" />{{ family.label }}
           </span>
         </div>

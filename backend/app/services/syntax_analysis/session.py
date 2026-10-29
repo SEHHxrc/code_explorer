@@ -9,14 +9,11 @@ from contextvars import ContextVar
 from functools import wraps
 import hashlib
 import threading
-from typing import Any, ParamSpec, TYPE_CHECKING, TypeVar
+from typing import Any, ParamSpec, TypeVar
 
 import tree_sitter
 
 from .tree_parser import DEFAULT_TREE_SITTER_PARSER_POOL, TreeSitterParserPool
-
-if TYPE_CHECKING:
-    from .source_units import SourceUnit
 
 P = ParamSpec("P")
 T = TypeVar("T")
@@ -118,15 +115,3 @@ def parse_tree(path: str, source: bytes, grammar: str,
     return current.memo(key, lambda: pool.get(grammar).parse(source),
                         lambda tree: len(source) + tree.root_node.descendant_count * 128,
                         lambda tree: tree.copy())
-
-
-def source_view(path: str, source: bytes, language: str) -> SourceUnit:
-    """复用相同真实内容的混合源码视图；普通文件与 Vue 的字节坐标规则保持不变。"""
-    from .source_units import source_unit
-
-    current = _CURRENT.get()
-    if current is None:
-        return source_unit(path, source, language)
-    key = ("unit", path.replace("\\", "/"), language, hashlib.sha256(source).digest())
-    return current.memo(key, lambda: source_unit(path, source, language),
-                        lambda unit: len(unit.source) + len(unit.template_source) + len(unit.template_expressions) * 128)

@@ -20,6 +20,28 @@ const payload = () => ({ available: true, completed: true, paths: [
 } })
 const response = (config, data) => ({ config, status: 200, headers: {}, data: { code: 200, data } })
 
+test('existing call context is neutral and selectable but never receives a path family or taint claim', () => {
+  const data = payload()
+  data.paths = []
+  data.operations = [{ id: 'operation', node_id: 'b', context_node_ids: ['a', 'b'], context_edge_ids: ['call'] }]
+  data.structural_edge_ids = ['call']
+  data.boundaries = [{ id: 'gap', symbol: 'a', location: { path: 'app.py', line: 12 },
+    reasons: ['mapping_keys_or_duplicates_unknown'] }]
+  const original = JSON.stringify(data)
+  const selected = securityGraph(data, 'operation')
+  assert.deepEqual(selected.nodes.map((node) => node.id), ['a', 'b'])
+  assert.deepEqual(selected.edges.map((edge) => edge.id), ['call'])
+  assert.equal(selected.edges[0].security.structural, true)
+  assert.equal(selected.edges[0].security.pathCount, 0)
+  assert.equal(selected.pathFamilies.length, 0)
+  assert.equal(selected.nodes[0].security.boundaries[0].location.line, 12)
+  assert.match(selected.nodes[0].security.boundaries[0].labels[0], /字典键/)
+  const model = useGraphModel()
+  model.build(selected)
+  assert.equal(model.graph.value.getEdgeAttribute('call', 'size'), 0.8)
+  assert.equal(JSON.stringify(data), original)
+})
+
 test('path membership is explicit, all nodes are visible, sizes uniform, parallel relations retain IDs', () => {
   const data = payload()
   const one = securityGraph(data, 'p1')
@@ -62,6 +84,23 @@ test('family colors follow group IDs, remain stable on route selection/reorderin
   assert.equal(JSON.stringify(data), original)
   // Compatibility: an ungrouped route is not silently merged into another route's family.
   assert.equal(pathFamilies(payload().paths).length, 2)
+})
+
+test('family tooltips describe endpoint functions rather than opaque IDs or source-value names', () => {
+  const data = payload()
+  data.paths[0].path_group_id = 'pathgroup:opaque-id'
+  data.paths[0].source = { symbol: 'api/routes.py::ProviderAPI::query', name: 'body.command' }
+  data.paths[0].sink = { symbol: 'providers/bash.py::BashProvider::_query', name: 'subprocess.run' }
+  const before = JSON.stringify(data)
+  const all = securityGraph(data)
+  const family = all.pathFamilies.find((item) => item.id === 'pathgroup:opaque-id')
+  assert.equal(family.title, 'ProviderAPI.query → BashProvider._query')
+  const model = useGraphModel()
+  model.build(all)
+  assert.equal(model.node('a').security.families.find((item) => item.id === family.id).title, family.title)
+  assert.equal(securityGraph(data, 'p1').pathFamilies[0].title, family.title)
+  assert.deepEqual(pathFamilies([...data.paths].reverse()), all.pathFamilies)
+  assert.equal(JSON.stringify(data), before)
 })
 
 test('cross-family edges remain single neutral edges with every explicit membership and direction retained', () => {
@@ -107,9 +146,28 @@ test('family palette extends beyond preset colors and the renderer registers tar
   assert.equal(new Set(colors).size, colors.length)
   assert.ok(colors.every((color) => /^#[a-f\d]{6}$/i.test(color))) // Focus fading accepts hex colors.
   const renderer = await readFile(new URL('../src/features/dependency-graph/composables/useSigmaRenderer.js', import.meta.url), 'utf8')
-  assert.match(renderer, /createEdgeCurveProgram.*from '@sigma\/edge-curve'/)
-  assert.match(renderer, /extremity: 'target'/)
-  assert.match(renderer, /edgeProgramClasses: \{ curved: DirectedCurveProgram \}/)
+  const curve = await readFile(new URL('../src/features/dependency-graph/curvePrograms.js', import.meta.url), 'utf8')
+  assert.match(curve, /extremity: 'target'/)
+  assert.match(renderer, /edgeProgramClasses: \{ curved: DirectedCurveProgram, possible: PossibleCurveProgram \}/)
+})
+
+test('possible connections stay dashed through selection, highlighting, and merged-edge membership', () => {
+  const data = payload()
+  data.possible_edge_ids = ['call', 'missing']
+  data.paths[0].possible_edge_ids = ['call']
+  data.paths[1].edge_ids.push('call')
+  data.paths[1].possible_edge_ids = []
+  const all = securityGraph(data)
+  assert.equal(all.possibleCount, 1)
+  assert.equal(all.edges.find((edge) => edge.id === 'call').security.possible, true)
+  const selected = securityGraph(data, 'p2')
+  assert.equal(selected.possibleCount, 0)
+  const model = useGraphModel()
+  model.build(all)
+  assert.equal(model.graph.value.getEdgeAttribute('call', 'type'), 'possible')
+  model.build(selected)
+  assert.equal(model.graph.value.getEdgeAttribute('call', 'type'), 'curved')
+  assert.equal(all.nodes.length, data.graph.nodes.length) // 不为虚线复制节点或补造 Source。
 })
 
 const operationsPayload = () => ({
@@ -178,6 +236,7 @@ test('Explore, details and graph inspector templates compile without raw HTML in
     assert.deepEqual(compileTemplate({ id: 'security-paths', source: descriptor.template.content,
       compilerOptions: { bindingMetadata: script.bindings } }).errors, [])
     assert.doesNotMatch(source, /v-html/)
+    assert.doesNotMatch(source, /:title="family\.id"/)
   }
 })
 

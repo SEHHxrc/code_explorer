@@ -10,6 +10,8 @@ from backend.app.services.syntax_analysis import extensions_for_language, semant
 from backend.app.services.syntax_analysis import field as _field
 from backend.app.services.syntax_analysis.parameters import python_parameter_kinds
 from backend.app.services.value_binding import BindingPattern, BindingValue, PatternMember, ValueMember
+from backend.app.services.value_binding.contracts import CallableAccess
+from .conditions import condition_expression
 from backend.app.services.value_binding.returns import ReturnBinding, resolve_return
 
 from ..contracts import ValueTransferKind
@@ -222,7 +224,9 @@ class _PythonFunctionCollector(TreeSitterFunctionCollector):
                 if valid:
                     keywords.extend(parsed)
                 else:
-                    self._limitations.append("Python 动态 **实参展开未建模，不猜测关键字或将字典整体映射到某一形参。")
+                    if value is not None:
+                        keywords.append((f"**{len(keywords)}", value))
+                    self._limitations.append("Python 非字面量 **展开按有界成员槽绑定；键存在性、重复键及运行时映射协议未证明。")
                 continue
             if item.type != "keyword_argument":
                 if not unknown_positions:
@@ -233,6 +237,17 @@ class _PythonFunctionCollector(TreeSitterFunctionCollector):
             if value is not None:
                 keywords.append((name, value))
         return positional, keywords
+
+    def _callable_access(self, node: Any) -> CallableAccess | None:
+        """把 Python getattr 的接收者和成员表达式交给公共解析层，不在前端猜目标。"""
+        callee, arguments = self._call_parts(node)
+        if self._text(callee) != "getattr":
+            return None
+        positional, _ = self._call_arguments(arguments)
+        if len(positional) < 2:
+            return None
+        receiver = self._direct_reference(positional[0])
+        return CallableAccess(receiver, condition_expression(self, positional[1])) if receiver else None
 
     def _identifiers(self, node: Any | None) -> tuple[str, ...]:
         """提取 Python 数据值身份，保留可确定的完整访问路径。"""

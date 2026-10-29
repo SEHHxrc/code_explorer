@@ -134,7 +134,7 @@ class StaticAnalysisCacheTests(unittest.TestCase):
         self.assertEqual(ProgramIdentity.callsite_id('pkg/main.py',3,4,5,6),ProgramIdentity.callsite_for_location(location))
         with self.assertRaises(ValueError):ProgramIdentity.callsite_for_location('untrusted invalid identity')
 
-    def test_js_ts_vue_graphs_facts_and_flows_equal_without_cache(self):
+    def test_js_ts_graphs_facts_and_flows_equal_without_cache(self):
         samples={
             'app.js': "const cp = require('child_process'); function run(input) { const { command, safe = 'fixed' } = { command: input }; cp.exec(command); return safe; }",
             'server.ts': "import * as cp from 'child_process'; function execute(value: string) { const {a: x, ...rest} = {a: value, b: 'constant'}; cp.exec(x); return rest; }",

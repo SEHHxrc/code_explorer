@@ -49,7 +49,7 @@ class ChainEndpoint(LedgerRecord):
 
 
 class ChainState(LedgerRecord):
-    """显式声明闭合区间；closed 只适用于所填端点，不自动扩展到调用方。"""
+    """声明条件性闭合区间；closed 不表示每次执行均到达，也不自动扩展到调用方。"""
 
     status: Literal["closed", "open", "not_applicable"]
     scope: Literal["local_segment", "external_to_sink", "not_applicable"]
@@ -125,7 +125,9 @@ class Finding(LedgerRecord):
                 self.chain.status == "closed" and self.chain.scope == "external_to_sink"):
             raise ValueError("外部影响的建立或条件性判断需要外部到敏感操作的闭合链；局部区间只能确认局部行为，外部影响保留未知。")
         if self.status == "source_supported_risk" and unknowns - {"deployment"}:
-            raise ValueError("传播、安全要求或未分类条件未知时保留候选；仅部署未知可保留有条件的源码风险。")
+            kinds = ",".join(sorted(unknowns - {"deployment"}))
+            raise ValueError("status=source_supported_risk 与 unresolved_conditions.kind=" + kinds +
+                             " 不一致；保留未知条件，证据不足时使用 unclosed_candidate，不得通过删除条件或改成 deployment 规避校验。")
         if self.status == "source_supported_risk" and (self.behavior_status != "observed" or self.chain.status == "open" or self.impact.status == "not_established" or self.impact.scope == "unknown"):
             raise ValueError("源码支持风险须有已观察行为、闭合或明确不适用的链路及已建立/有条件影响；否则应为未闭合候选。")
         if self.status == "excluded" and not self.exclusion_reason.strip():
@@ -195,6 +197,7 @@ class FindingLedger(LedgerRecord):
         counts = {status: sum(item.status == status for item in self.findings) for status in STATUS_LABELS}
         lines = ["## 结论", "", "台账记录：" + "；".join(f"{STATUS_LABELS[key]} {value} 项" for key, value in counts.items()) + "。",
                  "状态是模型判断，不是已确认可利用漏洞；语义正确性未由后台证明。"]
+        lines.append("路径闭合可依赖列明条件；条件性源码结论不表示实际部署已满足这些前提。")
         lines.append("闭合范围：外部输入到敏感操作 " + str(sum(item.chain.status == "closed" and item.chain.scope == "external_to_sink" for item in self.findings))
                      + " 项；局部区间 " + str(sum(item.chain.status == "closed" and item.chain.scope == "local_segment" for item in self.findings))
                      + " 项。两类不能合并为 HTTP 可达性或核验质量分数。")
@@ -211,7 +214,7 @@ class FindingLedger(LedgerRecord):
                     *[f"- {label}（{endpoint.kind}）：{inline(endpoint.description)} {refs(endpoint.evidence)}"
                       for label, endpoint in (("起点", item.chain.start), ("终点", item.chain.end)) if endpoint],
                     f"- 安全影响（{item.impact.status}；{item.impact.scope}）：{inline(item.impact.description)}",
-                    "- 已核实利用前提：" + ("；".join(map(inline, item.confirmed_conditions)) or "未建立。"),
+                    "- 已核实条件/路径前提：" + ("；".join(map(inline, item.confirmed_conditions)) or "未建立。"),
                     "- 未满足/未知条件：" + ("；".join(f"{condition.kind}：{inline(condition.description)}" for condition in item.unresolved_conditions) or "未另列；不表示已证明全部满足。"),
                     "- 证据：" + refs(item.evidence)])
                 for guard in item.protections:
@@ -248,6 +251,16 @@ class LedgerValidationError(ValueError):
         self.category = category
         self.issues = issues[:6]
 
+    @classmethod
+    def from_validation_error(cls, error: ValidationError, *, prefix: tuple[str | int, ...] = ()) -> LedgerValidationError:
+        """复用台账和提交参数的安全诊断；不回显原字段值或校验器上下文。"""
+        errors = error.errors(include_input=False, include_url=False, include_context=False)
+        category = "state" if any(item["type"] == "value_error" for item in errors) else "schema"
+        issues = [{"type": item["type"], "path": [part if isinstance(part, int) else str(part)[:80]
+                   for part in (*prefix, *item["loc"])[:12]], "message": item["msg"][:400]} for item in errors[:6]]
+        fields = [".".join(map(str, item["path"])) + ": " + item["message"] for item in issues]
+        return cls("发现台账字段或状态不一致：" + "；".join(fields), category, issues)
+
 
 def parse_ledger(text: str) -> FindingLedger:
     """只接受完整 JSON 对象，可有单一 JSON 围栏；拒绝尾随解释和隐式补字段。"""
@@ -268,10 +281,4 @@ def parse_ledger(text: str) -> FindingLedger:
     try:
         return FindingLedger.model_validate(value)
     except ValidationError as exc:
-        errors = exc.errors(include_input=False, include_url=False, include_context=False)
-        category = "state" if any(item["type"] == "value_error" for item in errors) else "schema"
-        issues = [{"type": item["type"], "path": [part if isinstance(part, int) else str(part)[:80] for part in item["loc"][:12]],
-                   "message": item["msg"][:400]}
-                  for item in errors[:6]]
-        fields = [".".join(map(str, item["path"])) + ": " + item["message"] for item in issues]
-        raise LedgerValidationError("发现台账字段或状态不一致：" + "；".join(fields), category, issues) from None
+        raise LedgerValidationError.from_validation_error(exc) from None

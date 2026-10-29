@@ -3,6 +3,7 @@
 from typing import Any
 
 from backend.app.llm.conversation import ModelMessage
+from backend.app.llm.http import RETRY_POLICY_VERSION
 from backend.app.services.security_analysis.evidence_selection import SELECTION_VERSION
 from backend.app.llm.settings import pre_model_rejection_policy, get_model_transport_settings, get_model_configuration
 from backend.app.experiments.findings import LEDGER_VERSION
@@ -10,6 +11,7 @@ from backend.app.agents.batching import BATCH_VERSION
 from backend.app.agents.path_delivery import PATH_DELIVERY_VERSION
 from backend.app.experiments.report import FORMAT_RETRY_POLICY
 from backend.app.core.redaction import REDACTION_VERSION
+from backend.app.agents.instructions import ANALYSIS_SCOPE_VERSION
 
 PHASE_VERSION = "explicit-report-phases-v4-evidence-history"
 BATCH_REPORT_TOOL = "submit_analysis_batch"
@@ -29,6 +31,8 @@ def phase_tools(schemas: list[dict[str, Any]], phase: str) -> list[dict[str, Any
 def execution_policy(max_tool_rounds: int, final_report_mode: str, *, batch_mode: bool = False, full_source: bool = False, model: str | None = None) -> dict[str, Any]:
     """冻结两组共同的阶段版本、调查轮次与供应商收尾模式，用于审计及比较。"""
     policy = {"phase_version": PHASE_VERSION, "max_tool_rounds": max_tool_rounds,
+              "analysis_scope": ANALYSIS_SCOPE_VERSION,
+              "http_retry_policy": RETRY_POLICY_VERSION,
               "path_observation_version": PATH_DELIVERY_VERSION, "source_redaction": REDACTION_VERSION,
               "final_report_mode": final_report_mode, "security_evidence_schema": SELECTION_VERSION,
               "finalization_requests_max": 2 if batch_mode else 1, "findings_ledger": LEDGER_VERSION,

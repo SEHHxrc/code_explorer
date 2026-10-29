@@ -217,7 +217,11 @@ class SecurityExperimentWorkflowTests(unittest.IsolatedAsyncioTestCase):
         """验证真实导入、图、安全证据、队列、两组隔离、指标、恢复和依赖资源删除。"""
         project_id = await self._import()
         artifact = self.artifacts.load(project_id)
-        self.assertTrue(artifact["dependency_graph"]["nodes"])
+        self.assertEqual({}, artifact["dependency_graph"])
+        self.assertTrue(artifact["semantic_index"]["files"])
+        self.assertIn("callsites", artifact["semantic_index"])  # 函数内 DOM 写入样例没有调用表达式。
+        security_view = await self.queries.security_paths(project_id, "user1")
+        self.assertTrue(security_view["graph"]["nodes"])
         self.assertTrue(
             any(
                 item["dataflow_verified"]
@@ -226,6 +230,7 @@ class SecurityExperimentWorkflowTests(unittest.IsolatedAsyncioTestCase):
         )
         snapshot = await self.queries.snapshot(project_id, "user1")
         self.assertEqual(project_id, snapshot["project_id"])
+        self.assertGreater(snapshot["project_manifest"]["graph_summary"]["node_count"], 0)
         self.assertEqual(1, (await self.queries.list("user1"))["project_count"])
         view = self._create(project_id)
         record = self.repository.get(view["id"], "user1")

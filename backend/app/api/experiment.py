@@ -26,10 +26,39 @@ from backend.app.experiments import (
     ExperimentComparisonService,
     ExperimentError,
 )
+from backend.app.experiments.report_diagnostics import ReportDiagnosticService
 
 router = APIRouter(prefix="/api/experiments", tags=["Experiments"])
 T = TypeVar("T")
 comparison_service = ExperimentComparisonService()
+report_diagnostics = ReportDiagnosticService()
+
+
+def _diagnostic_run_id(comparison_id: str, lane: Literal["left", "right"], user_id: str) -> str:
+    """验证配对所有权，仅在服务器解析盲态侧对应运行，不返回组别映射。"""
+    record = _safe_call(lambda: comparison_service._record(comparison_id, user_id))
+    return record.baseline_run_id if record.blind_order[lane] == "baseline" else record.graph_run_id
+
+
+@router.post("/comparisons/{comparison_id}/diagnostic/{lane}", status_code=202)
+async def start_report_diagnostic(comparison_id: str, lane: Literal["left", "right"],
+                                  current_user: dict[str, str] = Depends(get_current_user)) -> dict[str, Any]:
+    """用户显式申请一次失败台账解释；不开放原始请求/审计，也不自动重跑实验。"""
+    run_id = _diagnostic_run_id(comparison_id, lane, current_user["user_id"])
+    try:
+        result = await report_diagnostics.start(run_id, current_user["user_id"])
+    except ExperimentError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.public_message) from error
+    return {"code": 200, "data": result}
+
+
+@router.get("/comparisons/{comparison_id}/diagnostic/{lane}")
+async def read_report_diagnostic(comparison_id: str, lane: Literal["left", "right"],
+                                 current_user: dict[str, str] = Depends(get_current_user)) -> dict[str, Any]:
+    """读取本人独立诊断状态；GET 永不调用模型，刷新和重复点击复用已有结果。"""
+    run_id = _diagnostic_run_id(comparison_id, lane, current_user["user_id"])
+    result = await asyncio.to_thread(lambda: _safe_call(lambda: report_diagnostics.read(run_id, current_user["user_id"])))
+    return {"code": 200, "data": result}
 
 
 def require_local_audit_access(request: Request, token: str | None) -> None:

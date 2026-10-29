@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import uuid
+from dataclasses import replace
 from pathlib import Path
 
 from .contracts import PreparedWorkspace, WorkspaceOperation, WorkspaceSource
@@ -11,7 +12,7 @@ from .exceptions import SourceValidationError, WorkspacePublishError
 from .filesystem import WorkspaceFilesystem
 from .journal import OperationJournal
 from .paths import ProjectWorkspacePaths
-from .policy import WorkspacePolicy
+from .policy import DEFAULT_GIT_HOSTS, WorkspacePolicy
 from .sanitizer import ProjectSanitizer
 from .sources import GitProjectSource, ZipProjectSource
 
@@ -20,7 +21,7 @@ def _default_policy() -> WorkspacePolicy:
     """从环境变量构造工作区安全限制。"""
     configured_hosts = {
         item.strip().casefold()
-        for item in os.getenv("GIT_ALLOWED_HOSTS", "").split(",")
+        for item in os.getenv("GIT_ALLOWED_HOSTS", ",".join(sorted(DEFAULT_GIT_HOSTS))).split(",")
         if item.strip()
     }
     return WorkspacePolicy(allowed_git_hosts=frozenset(configured_hosts))
@@ -70,9 +71,9 @@ class ProjectWorkspaceService:
         """获取项目源码并完成安全清洗。"""
         self.journal.transition(operation, "acquiring")
         if source.kind == "git" and source.repo_url and source.file_obj is None:
-            source_tag = self.git_source.acquire(source.repo_url, operation.source_root)
+            acquired = self.git_source.acquire(source.repo_url, operation.source_root)
         elif source.kind == "zip" and source.file_obj is not None and source.repo_url is None:
-            source_tag = self.zip_source.acquire(
+            acquired = self.zip_source.acquire(
                 source.file_obj,
                 source.filename,
                 operation.operation_root,
@@ -82,7 +83,11 @@ class ProjectWorkspaceService:
             raise SourceValidationError("Provide exactly one project source: repo_url or ZIP file.")
         self.journal.transition(operation, "sanitizing")
         report = self.sanitizer.clean(operation.source_root)
-        return PreparedWorkspace(operation=operation, source_tag=source_tag, sanitize_report=report)
+        if acquired.skipped_links:
+            report = replace(report, scanned_files=report.scanned_files + acquired.skipped_links,
+                filtered_out_files=report.filtered_out_files + acquired.skipped_links,
+                removed_links=report.removed_links + acquired.skipped_links)
+        return PreparedWorkspace(operation=operation, source_tag=acquired.source_tag, sanitize_report=report)
 
     def publish(self, prepared: PreparedWorkspace) -> Path:
         """把已清洗的暂存工作区原子发布为项目目录。"""

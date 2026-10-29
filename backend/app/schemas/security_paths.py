@@ -44,6 +44,17 @@ class SecurityPathDTO(BaseModel):
     unresolved_count: int = 0
     truncated: bool = False
     projection_missing: int = 0
+    possible_edge_ids: list[str] = Field(default_factory=list)
+    call_connection_counts: dict[str, int] = Field(default_factory=dict)
+
+
+class SecurityBoundaryDTO(BaseModel):
+    """可定位的传播缺口；只有已保存事实，不声称缺口两侧已经相连。"""
+
+    id: str
+    symbol: str
+    location: PathLocationDTO | None = None
+    reasons: list[str] = Field(default_factory=list)
 
 
 class SecurityOperationDTO(BaseModel):
@@ -57,12 +68,15 @@ class SecurityOperationDTO(BaseModel):
     sink: PathEndpointDTO
     node_id: str = Field(max_length=1000)
     projection_missing: int = 0
+    context_node_ids: list[str] = Field(default_factory=list)
+    context_edge_ids: list[str] = Field(default_factory=list)
+    boundary_ids: list[str] = Field(default_factory=list)
 
 
 class SecurityPathGraphDTO(BaseModel):
     """候选并集及独立操作；二者分开计数，展示截断不等同分析覆盖，零路径不等同安全。"""
 
-    schema_version: Literal["1.1"] = "1.1"
+    schema_version: Literal["1.4"] = "1.4"
     available: bool
     completed: bool
     graph: DependencyGraphDTO
@@ -80,6 +94,10 @@ class SecurityPathGraphDTO(BaseModel):
     files_scanned: int = 0
     files_considered: int = 0
     unsupported_languages: list[str] = Field(default_factory=list)
+    structural_edge_ids: list[str] = Field(default_factory=list)
+    possible_edge_ids: list[str] = Field(default_factory=list)
+    boundaries: list[SecurityBoundaryDTO] = Field(default_factory=list)
+    structure_truncated: bool = False
 
 
 class SecurityPathStepDTO(BaseModel):
@@ -93,6 +111,21 @@ class SecurityPathStepDTO(BaseModel):
     certainty: str = "unknown"
 
 
+class SecurityCallConnectionDTO(BaseModel):
+    """按需展示真实调用点的目标依据；不推断缺口另一端，不提供完整图。"""
+
+    call_edge_id: str
+    source: str
+    target: str
+    status: Literal["modelled", "possible", "unresolved"]
+    target_certainty: Literal["must", "may", "unresolved"]
+    confidence: Literal["high", "medium", "low"]
+    resolution_method: str = Field(max_length=80)
+    location: PathLocationDTO | None = None
+    truncated: bool = False
+    speculative_target: bool = False
+
+
 class SecurityPathDetailDTO(BaseModel):
     """按需展开路线；防护仅记录观察位置，不冒充已证明有效。"""
 
@@ -102,3 +135,5 @@ class SecurityPathDetailDTO(BaseModel):
     sanitizers: list[PathEndpointDTO] = Field(default_factory=list)
     value_boundary_count: int = 0
     unavailable_locations: int = 0
+    boundaries: list[SecurityBoundaryDTO] = Field(default_factory=list)
+    call_connections: list[SecurityCallConnectionDTO] = Field(default_factory=list)

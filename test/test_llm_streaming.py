@@ -208,6 +208,7 @@ class ChatStreamTests(unittest.TestCase):
         with patch.dict(os.environ, {'CODE_EXPLORER_LLM_PROVIDER': 'compatible', 'CODE_EXPLORER_LLM_CHAT_STREAM': '1'}, clear=True):
             provider = OpenAICompatibleProvider(provider_name='compatible', base_url='http://offline.invalid', model='mock')
             stream_policy = execution_policy(4, 'tools_none')['transport']
+            self.assertEqual('exponential-jitter-v2', execution_policy(4, 'tools_none')['http_retry_policy'])
             self.assertEqual('chat_sse', stream_policy['mode'])
             self.assertEqual('json', get_model_transport_settings().snapshot('openai')['mode'])
             with patch.dict(os.environ, {'CODE_EXPLORER_LLM_CHAT_STREAM': '0'}):

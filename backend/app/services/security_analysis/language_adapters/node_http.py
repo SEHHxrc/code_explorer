@@ -1,4 +1,4 @@
-"""有界 JS/TS 状态绑定适配；不模拟完整堆、闭包或事件循环。"""
+"""Node.js 请求体回调绑定适配；不模拟完整堆、闭包或事件循环。"""
 
 from __future__ import annotations
 
@@ -11,13 +11,11 @@ from backend.app.services.syntax_analysis.javascript import (
     JAVASCRIPT_FUNCTION_NODES,
     javascript_function,
     javascript_parameters,
+    javascript_scope_nodes,
 )
 from backend.app.services.syntax_analysis.javascript_bindings import (
     javascript_pattern,
     javascript_value,
-)
-from backend.app.services.syntax_analysis.javascript_inputs import (
-    javascript_scope_nodes,
 )
 from backend.app.services.syntax_analysis import field, text
 from backend.app.services.value_binding import BindingValue, StructuredBindingResolver
@@ -25,8 +23,8 @@ from backend.app.services.value_binding import BindingValue, StructuredBindingRe
 from ..ir import IRLocation, IRValueBoundary
 
 
-def _bindings(root: Any, source: bytes, *, assignments: bool = False) -> set[str]:
-    """读取当前作用域声明名；用于排除捕获变量与 setter 的遮蔽。"""
+def _bindings(root: Any, source: bytes) -> set[str]:
+    """读取当前作用域声明名，排除请求体捕获变量的遮蔽。"""
     result: set[str] = set()
     for node in javascript_scope_nodes(root, source):
         if node.type in {
@@ -41,40 +39,25 @@ def _bindings(root: Any, source: bytes, *, assignments: bool = False) -> set[str
                 .resolve(pattern, BindingValue())
                 .projections
             )
-        elif assignments and node.type in {
-            "assignment_expression",
-            "augmented_assignment_expression",
-        }:
-            left = field(node, "left")
-            if left is not None and left.type == "identifier":
-                # setter 重新赋值后不能继续当作 React hook 结果。
-                result.add(text(left, source))
     return result
 
 
-def collect_javascript_value_boundaries(
+def collect_request_body_boundaries(
     root: Any,
     source: bytes,
     path: str,
     scope: IRLocation,
     registrations: tuple[CallbackParameterInput, ...],
     *,
-    component: bool,
-    qualify: Callable[[Any], str],
     location: Callable[[Any], IRLocation],
 ) -> tuple[list[IRValueBoundary], tuple[str, ...]]:
-    """提取 useState setter→状态读、请求 data→end 的有限共享槽位。
+    """提取同一请求 data→end 的局部字符串/数组槽位绑定及覆盖缺口。
 
-    输入当前函数及已确认注册关系，返回规则无关的值边界和覆盖缺口。
-    React 仅简单二元素 hook 解构和直接 setter 值；Node 仅当前请求、当前
-    函数的局部字符串/数组；字符串使用公共 CFG 的退出值，数组仅支持直线
-    append。不把整个对象或任意闭包当输入。
+    输入已确认的回调注册和原始源码位置，输出通用值边界；不模拟事件循环、
+    完整 Buffer 解码或任意闭包。字符串使用 CFG 出口值，数组只支持直线追加。
     """
     types = {item.type_name for item in registrations}
-    if not (component and "react.DOM.InputEvent" in types) and not {
-        "node.IncomingMessage.bodyChunk",
-        "node.IncomingMessage.endCallback",
-    }.issubset(types):
+    if not {"node.IncomingMessage.bodyChunk", "node.IncomingMessage.endCallback"}.issubset(types):
         return [], ()
     nodes = list(javascript_scope_nodes(root, source))
     callbacks: dict[tuple[int, int], Any] = {}
@@ -138,10 +121,10 @@ def collect_javascript_value_boundaries(
             )
         )
 
-    def shadowed(callback: Any, *, assignments: bool) -> set[str]:
-        """返回参数和局部声明；React 另排除 setter 重绑定，Node 保留外层变量写入。"""
+    def shadowed(callback: Any) -> set[str]:
+        """返回参数和局部声明，保留请求体回调对外层变量的写入。"""
         body = field(callback, "body")
-        values = _bindings(body, source, assignments=assignments)
+        values = _bindings(body, source)
         for _, _, node in javascript_parameters(callback, source):
             values.update(
                 item.output
@@ -150,70 +133,6 @@ def collect_javascript_value_boundaries(
                 .projections
             )
         return values
-
-    if component:
-        hooks: dict[str, tuple[str, Any]] = {}
-        written = {
-            text(field(item, "left"), source)
-            for item in nodes
-            if item.type in {"assignment_expression", "augmented_assignment_expression"}
-        }
-        for statement in root.named_children:
-            if statement.type != "lexical_declaration":
-                continue
-            for node in statement.named_children:
-                value, pattern = field(node, "value"), field(node, "name")
-                if (
-                    value is None
-                    or value.type != "call_expression"
-                    or qualify(field(value, "function")) != "react.useState"
-                    or pattern is None
-                    or pattern.type != "array_pattern"
-                ):
-                    continue
-                names = pattern.named_children
-                if (
-                    len(names) == 2
-                    and all(item.type == "identifier" for item in names)
-                    and text(names[1], source) not in written
-                ):
-                    hooks[text(names[1], source)] = (text(names[0], source), node)
-        for registration in registrations:
-            callback = callbacks.get(registration.callback_span)
-            if registration.type_name != "react.DOM.InputEvent" or callback is None:
-                continue
-            shadows = shadowed(callback, assignments=True)
-            for call in javascript_scope_nodes(field(callback, "body"), source):
-                if call.type != "call_expression":
-                    continue
-                setter = text(field(call, "function"), source)
-                if setter not in hooks or setter in shadows:
-                    continue
-                args = field(call, "arguments")
-                if args is None or len(args.named_children) != 1:
-                    continue
-                value = args.named_children[0]
-                if value.type in JAVASCRIPT_FUNCTION_NODES:
-                    gaps.append("javascript_functional_state_updater_not_modeled")
-                    continue
-                state, declaration = hooks[setter]
-                profile = javascript_value(value, source, path)
-                if profile.kind in {"object", "array"}:
-                    # 不把一个危险成员污染整份状态，再误报安全兄弟字段。
-                    gaps.append("javascript_structured_state_update_not_modeled")
-                    continue
-                add(
-                    "react_state",
-                    call,
-                    profile.variables,
-                    callback,
-                    declaration,
-                    (state,),
-                    False,
-                    (
-                        "React 状态更新及重渲染只建立 may 值连接；未模拟批处理、卸载、并发调度或完整 hooks。",
-                    ),
-                )
 
     # 只绑定同一外层函数实际声明的字符串或空数组，不靠变量名猜测 body。
     slots: dict[str, str] = {}
@@ -255,7 +174,7 @@ def collect_javascript_value_boundaries(
             }
             for item in items
         )
-        shadows = shadowed(callback, assignments=False)
+        shadows = shadowed(callback)
         scalar_writes: dict[str, Any] = {}
         array_writes: list[tuple[str, Any, tuple[str, ...]]] = []
         for node in items:
@@ -305,7 +224,7 @@ def collect_javascript_value_boundaries(
                 or reader.receiver_key != registration.receiver_key
             ):
                 continue
-            hidden = shadowed(target, assignments=False)
+            hidden = shadowed(target)
             for name, node, names in (
                 *((name, node, (name,)) for name, node in scalar_writes.items()),
                 *array_writes,

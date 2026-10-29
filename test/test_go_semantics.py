@@ -146,7 +146,7 @@ func run() {
         pack, enriched = SecurityAnalysisService().analyze_with_semantic_index(project_root=self.root,
             dependency_graph=result["dependency_graph"], semantic_index=result["semantic_index"])
         values = SemanticIndex.load(enriched)
-        self.assertEqual("1.4", values.artifact.schema_version)
+        self.assertEqual("1.6", values.artifact.schema_version)
         parameter = next(item for item in values.artifact.parameters.values() if item.name == "command")
         self.assertIn(parameter.declaration_id, values.artifact.variable_declarations)
         self.assertEqual({"command": parameter.declaration_id}, values.artifact.value_slots[parameter.slot_id].value_ids)

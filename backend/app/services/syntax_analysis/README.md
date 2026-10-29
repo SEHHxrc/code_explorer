@@ -27,11 +27,8 @@
 - `normalize_type/split_qualified`：跨语言类型和限定名称文本归一化。
 - `javascript.py`：JS/TS 函数名称、参数语法和按扩展名选择 TSX grammar 的共同入口；依赖图、安全前端与公共程序图复用匿名函数身份，三种静态分析复用 parser 选择。
   `javascript_parameters()` 排除注释和 TypeScript 的 `this` 类型伪参数；`javascript_parameter_type()` 只提取简单/限定/泛型基名，不对联合类型或同名本地类型作运行时身份保证。
-- `javascript_bindings.py`：将对象/数组、默认值、rest 和静态计算键转换为公共绑定 IR，安全前端与程序图共同消费；函数值保持不透明，不把函数体当立即执行的表达式。`javascript_binding_scope(source, path)` 提供单文件绑定缓存，两种前端共用；统一装饰器按需创建模式、值与投影缓存，每类分别最多 1024 个 LRU 条目，只保存不可变结果，不再维护三套分发包装和私有计算入口。节点包含树身份，值/模式键包含递归深度，源码对象及路径不匹配时绕过缓存；Vue 模板切换不误用脚本结果。退出、嵌套作用域恢复或异常时清空节点引用，不常驻完整仓库 AST。调用表达式先选择实参与接收者分支，不再先构造随后被覆盖的通用子节点结果。
-- `source_units.py`：Vue SFC 的脚本/模板表达式视图，保持原始 UTF-8 字节偏移；依赖图、程序图、安全前端共享，不编译或执行 Vue。
+- `javascript_bindings.py`：将对象/数组、默认值、rest 和静态计算键转换为公共绑定 IR，安全前端与程序图共同消费；函数值保持不透明，不把函数体当立即执行的表达式。`javascript_binding_scope(source, path)` 提供单文件绑定缓存，两种前端共用；统一装饰器按需创建模式、值与投影缓存，每类分别最多 1024 个 LRU 条目，只保存不可变结果，不再维护三套分发包装和私有计算入口。节点包含树身份，值/模式键包含递归深度，源码对象及路径不匹配时绕过缓存。退出、嵌套作用域恢复或异常时清空节点引用，不常驻完整仓库 AST。调用表达式先选择实参与接收者分支，不再先构造随后被覆盖的通用子节点结果。
 - `callback_inputs.py`：无 AST/图/安全规则依赖的回调参数输入契约，用回调和注册点原字节范围标识绑定，避免同名函数串联。其他语言可复用契约，尚未自动接入其框架。
-- `javascript_inputs.py`：提取当前作用域内原生表单事件/已确认请求体回调；具名回调必须唯一且未重新绑定。`javascript_scope_nodes()` 排除嵌套函数体，供程序图及安全适配共享。end 注册用于值边界匹配，不把 end 参数当请求体 Source。项目运行库只读取根目录内有体量限制的 package.json，不运行包管理器或构建脚本。
-- `vue_bindings.py`：script setup 的有限可写绑定、ref 自动解包、模板指令与表达式范围关联；ProgramGraph 和安全前端复用，不包含 Source/Sink 判定或事件调度。
 - `parameters.py`：Python 声明参数类别及 Java 普通/可变参数名字和类型的纯语法读取；安全 IR 与公共图复用，不解析目标。
 - `python_names.py`：从既有 AST 建立文件私有词法导入/遮蔽环境；函数、类、lambda、推导式不泄漏局部导入，普通方法闭包跳过类命名空间。不读取/重新解析源码，不处理任意运行时导入、猴子补丁、跨文件可变全局效果或赋值别名；不是 Python 原生引用/SSA 后端。
 - `static_sequences.py`：static_sequence_value(node, identifiers) 将 Java/Go 的直接数组/切片字面量转成公共 BindingValue；不执行表达式或推断动态容器别名。
@@ -55,3 +52,5 @@
 分别使用正常额度与最小留存额度，比较同一实现的解析复用效果；未命中时分析照常进行。
 子集基准和解析次数下降不能直接外推全项目提速。本轮没有改变扫描范围、候选上限、安全规则、
 深度或模型输入；没有启用进程池或长期增量缓存。
+
+`node_http.py` 只提取 Node HTTP/Express 请求 handler 与 data/end 注册；通用 `javascript_scope_nodes()` 已归入 `javascript.py`。Vue 混合源码视图与浏览器回调识别代码已删除。

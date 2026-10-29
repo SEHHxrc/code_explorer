@@ -185,7 +185,7 @@ class ProgramGraphSemanticProvider:
             "返回值槽位当前覆盖局部变量接收的直接调用；字段、容器元素和多调用表达式按保守 may 处理。"
         )
         return artifact.model_copy(update={
-            "schema_version": "1.5" if artifact.types else "1.4" if any(item.declaration_id for item in parameters.values()) or any(item.value_ids for item in slots.values())
+            "schema_version": "1.6" if artifact.schema_version == "1.6" else "1.5" if artifact.types else "1.4" if any(item.declaration_id for item in parameters.values()) or any(item.value_ids for item in slots.values())
                 else artifact.schema_version if artifact.schema_version in {"1.2", "1.3", "1.4", "1.5"} else "1.1",
             "parameters": parameters,
             "returns": returns,

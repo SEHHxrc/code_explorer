@@ -38,7 +38,7 @@ class ImportProgressTests(unittest.TestCase):
             snapshot = store.snapshot(request_id, "alice")
             self.assertEqual(2, snapshot["total_files"])
             self.assertEqual("running", snapshot["status"])
-            self.assertEqual("生成依赖图和语义索引产物", snapshot["detail"])
+            self.assertEqual("生成公共语义事实与统计（依赖图可选导出）", snapshot["detail"])
 
     def test_ownership_and_replay_protection(self):
         store = ImportProgressStore()

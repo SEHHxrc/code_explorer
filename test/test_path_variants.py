@@ -86,7 +86,7 @@ class PathVariantTests(unittest.TestCase):
                     break
                 offset = page["next_offset"]
             self.assertEqual([step.model_dump() for step in pack.dataflows[candidate.dataflow_id].steps], items)
-        self.assertEqual("security-path-summary-v5-source-boundaries", json.loads(catalog.summary())["schema_version"])
+        self.assertEqual("security-path-summary-v6-possible-connections", json.loads(catalog.summary())["schema_version"])
 
     def test_variant_and_search_limits_never_claim_exhaustion(self) -> None:
         """数量和上下文预算各自保留诊断，旧路线仍可查询，截断不等于安全。"""

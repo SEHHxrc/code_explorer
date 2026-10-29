@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import json
 from typing import Any
 
@@ -106,3 +108,15 @@ def javascript_access_name(node: Any, source: bytes) -> str:
         return f"{owner}.{index}"
     encoded = json.dumps(index, ensure_ascii=False, separators=(",", ":"))
     return f"{owner}[{encoded}]"
+
+
+def javascript_scope_nodes(root: Any, source: bytes) -> Iterator[Any]:
+    """遍历当前词法作用域，保留函数声明节点但不进入其函数体。"""
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        yield node
+        if node.type in JAVASCRIPT_FUNCTION_NODES:
+            if javascript_function(node, source) is not None:
+                continue
+        pending.extend(reversed(node.named_children))

@@ -1,5 +1,18 @@
 # semantic_index 模块
 
+## 安全主流程的公共事实（1.6）
+
+`files` 保存项目相对文件到语言的范围；`None` 表示旧记录缺失，`{}` 表示明确空范围。
+`projection.ProgramFacts` 统一提供文件、声明节点和调用边投影；有新调用事实时不混入旧图的另一套目标。
+安全扫描、ProgramGraph 文件发现、结构搜索和前端路径投影均通过此入口读取，不再要求完整 node-link 图。
+
+`dynamic.BoundedCallableResolver.enrich(artifact, program_graph)` 消费前端的 `CallableAccess` 和 CFG 到达定义，
+返回新的事实索引及私有程序图。当前支持已知实例上的成员方法值、Python getattr、有限字符串成员名、
+模块函数别名和局部别名回溯；共用 TypeHierarchy 处理继承，候选始终为 inferred/may。
+每调用点最多 128 个目标、别名回溯最多 8 层；未知接收者、运行时成员名、遮蔽、覆盖和截断均保留边界。
+绑定后接收者变量被覆盖时，不借用新对象的 self 字段。动态导入、数据库选择的插件及任意反射仍可能未知。
+`CallSiteFact.binding_diagnostics` 保存展开与调用绑定局限，不表示代码有漏洞，也不用于证明净化有效。
+
 原生工具的进程、环境和协议实现已归入 `services/language_backends/`；本目录保留事实契约、
 索引、查询协议及图到事实的 Provider。原 go/typescript/go_environment/worker/wire 文件仅转出同一实现，
 不在事实层启动进程。默认后端装配通过 `language_backends.project_resolvers()`，调用协议仍定义于 resolution。

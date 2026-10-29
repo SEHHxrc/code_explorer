@@ -54,7 +54,7 @@ export const createGraph = (payload = {}) => {
     const style = edgeStyle(relation)
     const dynamic = edge.dispatch === 'dynamic'
     const color = edge.security?.color || (dynamic && relation === 'calls' ? DYNAMIC_CALL_COLOR : style.color)
-    const width = edge.security ? Math.max(PATH_EDGE_WIDTH, style.width) : style.width
+    const width = edge.security?.structural ? 0.8 : edge.security ? Math.max(PATH_EDGE_WIDTH, style.width) : style.width
     relationCounts[relation] = (relationCounts[relation] || 0) + 1
     const pair = JSON.stringify([source, target])
     const parallelIndex = pairCounts.get(pair) || 0
@@ -69,7 +69,7 @@ export const createGraph = (payload = {}) => {
       size: width,
       weight: edgeWeight(relation),
       curvature: 0.15 + parallelIndex * 0.18,
-      type: 'curved',
+      type: edge.security?.possible ? 'possible' : 'curved',
       hidden: false,
     })
   }

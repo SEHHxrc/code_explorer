@@ -376,6 +376,7 @@ class ProgramGraphSecurityFlowAnalyzer:
                                     or transition.certainty != "must"
                                     or transition.confidence != "high"
                                     or transition.truncated
+                                    or self.argument_binder.is_uncertain(call, target_function)
                                     or overloaded
                                     or any(pattern.kind != "name" for pattern in target_function.parameter_patterns)
                                     or any(edge.certainty == "may" for edge in local_path)
@@ -471,6 +472,7 @@ class ProgramGraphSecurityFlowAnalyzer:
                                    "external_api_semantics_unknown" if missing_body else "unresolved_call_with_tracked_argument", source_fact_id=source.fact_id,
                                    callsite_id=call.callsite_id, symbol=state.function.symbol_id,
                                    unresolved_reason=fact.unresolved_reason, name=fact.name,
+                                   binding_diagnostics=fact.binding_diagnostics,
                                    value_names=list(self._reached_names(path, state.names, arguments)),
                                    target_symbols=[target.target_symbol for target in fact.targets], return_relation="unknown",
                                    known_prefix=[step.model_dump(exclude={"expression"}) for step in prefix[:64]],

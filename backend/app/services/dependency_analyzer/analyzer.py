@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 import logging
 import threading
+import heapq
 from contextvars import copy_context
-from collections import defaultdict
+from collections import defaultdict, Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import networkx as nx
@@ -134,8 +135,19 @@ class UnifiedCodeAnalyzer(
             "truncations": [],
         }
 
+    def analyze_program(self) -> dict:
+        """安全主流程入口：输出公共事实及统计，跳过完整依赖图的重复导出。"""
+        return self.run_full_analysis(export_dependency_graph=False)
+
+    def _graph_summary(self) -> dict:
+        """从解析器临时关系直接计算概览，不为统计复制节点和边属性。"""
+        return {"node_count": self.global_graph.number_of_nodes(), "edge_count": self.global_graph.number_of_edges(),
+                "relations": dict(Counter(data.get("relation", "unknown") for _, _, data in self.global_graph.edges(data=True)).most_common()),
+                "central_nodes": [{"id": node, "degree": degree} for node, degree in
+                    heapq.nlargest(20, self.global_graph.degree, key=lambda item: item[1])]}
+
     @reuse_syntax
-    def run_full_analysis(self) -> dict:
+    def run_full_analysis(self, *, export_dependency_graph: bool = True) -> dict:
         """扫描项目并执行收集、索引和关系解析，输出符号表、依赖图与统计。"""
         target_files = self._collect_files()
         with self._progress_lock:
@@ -144,7 +156,8 @@ class UnifiedCodeAnalyzer(
         if not target_files:
             return {
                 "file_symbols": {},
-                "dependency_graph": self._graph_payload(),
+                "dependency_graph": self._graph_payload() if export_dependency_graph else {},
+                "graph_summary": self._graph_summary(),
                 "semantic_index": self._build_semantic_index(),
                 "stats": dict(self.stats),
                 "diagnostics": self._diagnostics_snapshot(),
@@ -209,10 +222,11 @@ class UnifiedCodeAnalyzer(
         self._set_progress_stage("解析调用、引用和派发关系")
         self._resolve_references()
 
-        self._set_progress_stage("生成依赖图和语义索引产物")
+        self._set_progress_stage("生成公共语义事实与统计（依赖图可选导出）")
         return {
             "file_symbols": self.file_symbols_map,
-            "dependency_graph": self._graph_payload(),
+            "dependency_graph": self._graph_payload() if export_dependency_graph else {},
+            "graph_summary": self._graph_summary(),
             "semantic_index": self._build_semantic_index(),
             "stats": dict(self.stats),
             "diagnostics": self._diagnostics_snapshot(),
@@ -237,6 +251,7 @@ class UnifiedCodeAnalyzer(
         if self._compiler_bindings is not None:
             artifact = self._compiler_bindings.enrich(artifact)
             self.diagnostics["semantic_backends"] = artifact.backend_runs
+        artifact = artifact.model_copy(update={"schema_version": "1.6", "files": dict(self.file_lang)})
         return artifact.model_dump()
 
     def _diagnostics_snapshot(self) -> dict:
